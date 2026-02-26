@@ -1,0 +1,48 @@
+version: '3'
+
+includes:
+  minion:
+    taskfile: tasks/minion.yaml
+  docker:
+    taskfile: tasks/docker.yaml
+
+tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list
+
+  # =============================================================================
+  # Setup
+  # =============================================================================
+
+  setup:uv-all:
+    desc: Pin Python version, regenerate lock file, and sync all packages
+    cmds:
+      - uv python pin 3.14
+      - uv lock
+      - uv sync
+
+  setup:init:
+    desc: First-time setup — install Python, sync deps, run preflight
+    cmds:
+      - uv python install 3.14
+      - uv python pin 3.14
+      - uv sync
+      - uv run python -m minions --preflight
+
+  # =============================================================================
+  # Formatting
+  # =============================================================================
+
+  fmt:
+    desc: Format and fix lint issues
+    cmds:
+      - uv run ruff format .
+      - uv run ruff check --fix .
+
+  lint:
+    desc: Check formatting and lint without modifying files
+    cmds:
+      - uv run ruff format --check .
+      - uv run ruff check .

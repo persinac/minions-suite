@@ -1,0 +1,33 @@
+version: '3'
+
+tasks:
+  preflight:
+    desc: Check all required tools and auth
+    cmds:
+      - uv run python -m minions --preflight
+
+  review:
+    desc: One-shot review of a merge/pull request
+    cmds:
+      - doppler run -- uv run python -m minions review {{.CLI_ARGS}}
+
+  server:
+    desc: Start MCP server + review engine
+    deps: [preflight]
+    cmds:
+      - doppler run -- uv run python -m minions --server
+
+  status:
+    desc: Show recent review history
+    cmds:
+      - doppler run -- uv run python -m minions --status
+
+  costs:
+    desc: Show cost summary
+    cmds:
+      - doppler run -- uv run python -m minions --costs {{.CLI_ARGS}}
+
+  logs:
+    desc: Tail active agent logs
+    cmds:
+      - tail -f logs/agents/*.log

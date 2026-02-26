@@ -1,0 +1,41 @@
+# Project registry — each entry defines a project to review.
+#
+# review_profile composes a prompt from:
+#   roles:     domain expertise (backend, frontend, data_engineer, devops, security)
+#   languages: language-specific rules (python, typescript, go, sql, shell)
+#   custom:    org/team-specific rules loaded from prompts/custom/
+#
+# model can be overridden per-project (falls back to global default in env).
+
+defaults:
+  model: gpt-4o
+  git_provider: gitlab
+
+projects:
+  # --- Example entries (uncomment and adapt) ---
+
+  # payments-api:
+  #   project_id: team/payments-api
+  #   gitlab_url: https://gitlab.company.com
+  #   repo_path: /repos/payments-api
+  #   review_profile:
+  #     roles: [backend, security]
+  #     languages: [python, sql]
+  #   ignore_paths: ["*.lock", "alembic/versions/"]
+
+  # checkout-ui:
+  #   project_id: team/checkout-ui
+  #   gitlab_url: https://gitlab.company.com
+  #   repo_path: /repos/checkout-ui
+  #   review_profile:
+  #     roles: [frontend]
+  #     languages: [typescript]
+  #   model: claude-sonnet-4-20250514
+
+  # data-pipeline:
+  #   project_id: team/data-pipeline
+  #   gitlab_url: https://gitlab.company.com
+  #   repo_path: /repos/data-pipeline
+  #   review_profile:
+  #     roles: [data_engineer, devops]
+  #     languages: [python, sql, shell]

@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+.venv/
+*.db
+logs/
+.env
+.env.*
+prompts/custom/
+.python-version

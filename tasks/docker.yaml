@@ -1,0 +1,34 @@
+version: '3'
+
+tasks:
+  build:
+    desc: Build the minion-suite Docker image
+    cmds:
+      - docker build -t minion-suite:dev .
+
+  rebuild:
+    desc: Clean build — prune cache and build from scratch
+    cmds:
+      - docker builder prune -af
+      - docker build --no-cache -t minion-suite:dev .
+
+  up:
+    desc: Start minion-suite container (detached)
+    deps: [build]
+    cmds:
+      - docker compose up -d --force-recreate --no-build
+
+  down:
+    desc: Stop and remove containers
+    cmds:
+      - docker compose down
+
+  logs:
+    desc: Tail container logs
+    cmds:
+      - docker compose logs -f
+
+  shell:
+    desc: Open a shell in the running container
+    cmds:
+      - docker compose exec minion-suite bash
