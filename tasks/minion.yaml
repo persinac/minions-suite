@@ -1,5 +1,13 @@
 version: '3'
 
+vars:
+  # Secrets runner — override via env var to swap providers.
+  # Default: doppler run --
+  # AWS SM:  SECRETS_CMD="./scripts/aws-sm-run minion/prod --" task minion:server
+  # None:    SECRETS_CMD="" task minion:server  (env vars already in shell)
+  SECRETS_CMD:
+    sh: echo "${SECRETS_CMD:-doppler run --}"
+
 tasks:
   preflight:
     desc: Check all required tools and auth
@@ -9,23 +17,23 @@ tasks:
   review:
     desc: One-shot review of a merge/pull request
     cmds:
-      - doppler run -- uv run python -m minions review {{.CLI_ARGS}}
+      - "{{.SECRETS_CMD}} uv run python -m minions review {{.CLI_ARGS}}"
 
   server:
     desc: Start MCP server + review engine
     deps: [preflight]
     cmds:
-      - doppler run -- uv run python -m minions --server
+      - "{{.SECRETS_CMD}} uv run python -m minions --server"
 
   status:
     desc: Show recent review history
     cmds:
-      - doppler run -- uv run python -m minions --status
+      - "{{.SECRETS_CMD}} uv run python -m minions --status"
 
   costs:
     desc: Show cost summary
     cmds:
-      - doppler run -- uv run python -m minions --costs {{.CLI_ARGS}}
+      - "{{.SECRETS_CMD}} uv run python -m minions --costs {{.CLI_ARGS}}"
 
   logs:
     desc: Tail active agent logs

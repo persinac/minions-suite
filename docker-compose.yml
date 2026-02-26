@@ -1,0 +1,49 @@
+services:
+
+  minion-suite:
+    build: .
+    image: minion-suite:dev
+    env_file: .env
+    ports:
+      - "${MCP_PORT:-8321}:8321"
+    volumes:
+      - ./projects.yaml:/app/projects.yaml:ro
+      - ./prompts:/app/prompts:ro
+      - logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_started
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: minion
+      POSTGRES_PASSWORD: minion
+      POSTGRES_DB: minion
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U minion -d minion"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "5432:5432"
+
+  nats:
+    image: nats:latest
+    command: ["-js", "--store_dir=/data"]
+    volumes:
+      - natsdata:/data
+    ports:
+      - "4222:4222"   # client connections
+      - "8222:8222"   # HTTP monitoring endpoint
+
+volumes:
+  pgdata:
+  natsdata:
+  logs:
