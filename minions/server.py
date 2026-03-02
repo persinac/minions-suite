@@ -11,12 +11,14 @@ validation, circuit breaking, and anomaly detection.
 
 import json
 import logging
+from pathlib import Path
 
+import httpx
 from fastmcp import FastMCP
 
 from .config import Config
 from .db import AbstractDatabase
-from .models import Job, JobStatus, Message, Review, ReviewStatus, Subtask, SubtaskStatus, Task, TaskStatus, _now
+from .models import AgentRole, Job, JobStatus, Message, Subtask, SubtaskStatus, Task, TaskStatus, _now
 from .state_transitions import InvalidTransitionError, PreconditionError
 
 logger = logging.getLogger(__name__)
@@ -24,6 +26,44 @@ logger = logging.getLogger(__name__)
 # Module-level NATS client reference, set by CLI when arbiter_enabled.
 # When set, state-mutating tools route through the Arbiter.
 _nats_client = None
+
+
+VALID_ROLES = [r.value for r in AgentRole]
+VALID_ROLES_STR = ", ".join(VALID_ROLES)
+
+
+def _resolve_role(raw: str) -> AgentRole:
+    """Best-effort resolution of a role string to AgentRole.
+
+    Handles dashes, underscores, and common hallucinated names.
+    """
+    normalized = raw.strip().lower().replace("-", "_")
+
+    # Direct match
+    try:
+        return AgentRole(normalized)
+    except ValueError:
+        pass
+
+    # Common hallucinated names
+    if "spec" in normalized or "analyst" in normalized or "product" in normalized:
+        return AgentRole.SPEC_ANALYST
+    if "database" in normalized or "migration" in normalized or "schema" in normalized:
+        return AgentRole.DATABASE_ENGINEER
+    if "backend" in normalized or "api" in normalized:
+        return AgentRole.BACKEND_ENGINEER
+    if "frontend" in normalized or "dashboard" in normalized or "store" in normalized:
+        return AgentRole.FRONTEND_ENGINEER
+    if "review" in normalized:
+        return AgentRole.CODE_REVIEWER
+    if "deploy" in normalized or "monitor" in normalized:
+        return AgentRole.DEPLOY_MONITOR
+    if "orchestrat" in normalized or "arbiter" in normalized:
+        return AgentRole.ARBITER
+    if normalized == "engineer":
+        return AgentRole.BACKEND_ENGINEER
+
+    raise ValueError(f"'{raw}' is not a valid role. Valid roles: {VALID_ROLES_STR}")
 
 
 def set_nats_client(nats_client) -> None:
@@ -64,61 +104,91 @@ def create_server(db: AbstractDatabase, config: Config | None = None) -> FastMCP
     """Create and return the FastMCP server with review + job orchestration tools."""
     mcp = FastMCP("Minion Suite", instructions="AI agent suite — composable, vendor-agnostic agents. Code review + multi-agent job orchestration.")
 
+    from .tool_audit_middleware import ToolAuditMiddleware
+
+    mcp.add_middleware(ToolAuditMiddleware(db=db))
+
     # =========================================================================
-    # Review Tools (backward compatible)
+    # Review Tools (via Job/Task infrastructure)
     # =========================================================================
 
     @mcp.tool()
     async def request_review(project: str, mr_url: str, mr_id: str) -> str:
-        """Queue a new review for a merge/pull request."""
-        review = Review(project=project, mr_url=mr_url, mr_id=mr_id)
-        review = await db.create_review(review)
-        return json.dumps({"review_id": review.id, "status": review.status, "project": project})
+        """Queue a new code review by creating a review-type job with a CODE_REVIEWER task."""
+        job, task = await db.create_review_job(project, mr_url, mr_id)
+        return json.dumps({"job_id": job.id, "task_id": task.id, "status": str(job.status), "project": project})
 
     @mcp.tool()
-    async def get_review_status(review_id: str) -> str:
-        """Get the current status of a review."""
-        review = await db.get_review(review_id)
-        if not review:
-            return json.dumps({"error": f"Review {review_id} not found"})
+    async def get_review_status(job_id: str) -> str:
+        """Get the current status of a review job and its tasks."""
+        job = await db.get_job(job_id)
+        if not job:
+            return json.dumps({"error": f"Job {job_id} not found"})
+        tasks = await db.get_tasks(job_id)
+        review_tasks = [t for t in tasks if t.agent_role == AgentRole.CODE_REVIEWER]
+        task = review_tasks[0] if review_tasks else None
         return json.dumps({
-            "review_id": review.id,
-            "project": review.project,
-            "mr_url": review.mr_url,
-            "status": review.status,
-            "verdict": review.verdict,
-            "comments_posted": review.comments_posted,
-            "error": review.error,
+            "job_id": job.id,
+            "status": str(job.status),
+            "mr_url": job.mr_url,
+            "verdict": task.verdict if task else None,
+            "comments_posted": task.comments_posted if task else 0,
+            "error": job.error,
         })
 
     @mcp.tool()
     async def get_review_history(project: str | None = None, limit: int = 20) -> str:
         """Get recent review history, optionally filtered by project."""
-        reviews = await db.get_reviews(project=project, limit=limit)
-        return json.dumps([
-            {
-                "id": r.id,
-                "project": r.project,
-                "mr_url": r.mr_url,
-                "status": r.status,
-                "verdict": r.verdict,
-                "comments_posted": r.comments_posted,
-                "created_at": r.created_at,
-                "completed_at": r.completed_at,
-            }
-            for r in reviews
-        ])
+        all_jobs = await db.get_all_jobs()
+        review_jobs = [j for j in all_jobs if j.job_type == "review"]
+        if project:
+            filtered = []
+            for j in review_jobs:
+                tasks = await db.get_tasks(j.id)
+                if any(t.service == project for t in tasks):
+                    filtered.append(j)
+            review_jobs = filtered
+        review_jobs = review_jobs[:limit]
+
+        results = []
+        for j in review_jobs:
+            tasks = await db.get_tasks(j.id)
+            review_task = next((t for t in tasks if t.agent_role == AgentRole.CODE_REVIEWER), None)
+            results.append({
+                "job_id": j.id,
+                "project": review_task.service if review_task else "",
+                "mr_url": j.mr_url or "",
+                "status": str(j.status),
+                "verdict": review_task.verdict if review_task else None,
+                "comments_posted": review_task.comments_posted if review_task else 0,
+                "created_at": j.created_at,
+            })
+        return json.dumps(results)
 
     @mcp.tool()
-    async def cancel_review(review_id: str) -> str:
-        """Cancel a queued review (cannot cancel in-progress reviews)."""
-        review = await db.get_review(review_id)
-        if not review:
-            return json.dumps({"error": f"Review {review_id} not found"})
-        if review.status != ReviewStatus.QUEUED:
-            return json.dumps({"error": f"Can only cancel queued reviews (current: {review.status})"})
-        await db.update_review(review_id, status=ReviewStatus.FAILED, error="Cancelled by user")
-        return json.dumps({"review_id": review_id, "status": "cancelled"})
+    async def cancel_review(job_id: str) -> str:
+        """Cancel a pending review job."""
+        job = await db.get_job(job_id)
+        if not job:
+            return json.dumps({"error": f"Job {job_id} not found"})
+        if job.job_type != "review":
+            return json.dumps({"error": f"Job {job_id} is not a review job"})
+        terminal = {JobStatus.DONE, JobStatus.FAILED, JobStatus.NO_WORK_NEEDED}
+        if job.status in terminal:
+            return json.dumps({"error": f"Job already in terminal state: {job.status}"})
+        # Fail all pending tasks
+        tasks = await db.get_tasks(job_id)
+        for t in tasks:
+            if t.status not in {TaskStatus.DONE, TaskStatus.FAILED}:
+                try:
+                    await db.update_task(t.id, status=TaskStatus.FAILED, error="Cancelled by user")
+                except Exception:
+                    pass
+        try:
+            await db.update_job_status(job_id, JobStatus.FAILED, error="Cancelled by user")
+        except Exception:
+            pass
+        return json.dumps({"job_id": job_id, "status": "cancelled"})
 
     # =========================================================================
     # Cost & Stats Tools
@@ -131,9 +201,9 @@ def create_server(db: AbstractDatabase, config: Config | None = None) -> FastMCP
         return json.dumps(summary)
 
     @mcp.tool()
-    async def get_agent_logs(review_id: str) -> str:
-        """List agent invocations for a review with their metrics."""
-        agents = await db.get_agents(review_id)
+    async def get_agent_logs(job_id: str) -> str:
+        """List agent invocations for a job with their metrics."""
+        agents = await db.get_agents_for_job(job_id)
         return json.dumps([
             {
                 "id": a.id,
@@ -185,15 +255,20 @@ def create_server(db: AbstractDatabase, config: Config | None = None) -> FastMCP
         agent_role: str,
     ) -> str:
         """Create a development task for a specific service within a job."""
+        resolved_role = _resolve_role(agent_role)
+        # Hard guard: database service must always use database_engineer
+        if service.strip().lower() == "database" and resolved_role != AgentRole.DATABASE_ENGINEER:
+            logger.warning("create_task: overriding role %s -> database_engineer for service=database", resolved_role)
+            resolved_role = AgentRole.DATABASE_ENGINEER
         task = Task(
             job_id=job_id,
             title=title,
             description=description,
             service=service,
-            agent_role=agent_role,
+            agent_role=resolved_role,
         )
         task = await db.create_task(task)
-        await db.record_event(job_id, "task_created", "arbiter", f"task={task.id} service={service} role={agent_role}")
+        await db.record_event(job_id, "task_created", "arbiter", f"task={task.id} service={service} role={resolved_role}")
         return json.dumps({"task_id": task.id, "job_id": job_id, "status": str(task.status)})
 
     @mcp.tool()
@@ -536,22 +611,217 @@ def create_server(db: AbstractDatabase, config: Config | None = None) -> FastMCP
         return json.dumps({"status": "ok"})
 
     # =========================================================================
-    # Resources
+    # Trello Tools
     # =========================================================================
 
-    @mcp.resource("review://{review_id}")
-    async def review_resource(review_id: str) -> str:
-        """Get full review details including comments."""
-        review = await db.get_review(review_id)
-        if not review:
-            return json.dumps({"error": "Not found"})
-        comments = await db.get_comments(review_id)
-        agents = await db.get_agents(review_id)
+    @mcp.tool()
+    async def create_trello_tech_debt(job_id: str, title: str, description: str) -> str:
+        """Create a Trello card in the minions-on-deck list for tech debt follow-up."""
+        cfg = config or Config.from_env()
+        if not cfg.trello_api_key or not cfg.trello_token or not cfg.trello_board_id:
+            return json.dumps({"error": "Trello credentials not configured, skipping tech debt card creation"})
+
+        auth_params = {"key": cfg.trello_api_key, "token": cfg.trello_token}
+        trello_api = "https://api.trello.com/1"
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.get(
+                    f"{trello_api}/boards/{cfg.trello_board_id}/lists",
+                    params={**auth_params, "fields": "name"},
+                )
+                resp.raise_for_status()
+                lists = resp.json()
+
+                list_id = None
+                for lst in lists:
+                    if lst["name"].strip().lower() == "minions-on-deck":
+                        list_id = lst["id"]
+                        break
+
+                if not list_id:
+                    return json.dumps({"error": "Could not find 'minions-on-deck' list on board"})
+
+                card_desc = f"{description}\n\n---\n_Tech debt from job `{job_id}`_"
+                resp = await client.post(
+                    f"{trello_api}/cards",
+                    params={**auth_params, "idList": list_id, "name": title, "desc": card_desc},
+                )
+                resp.raise_for_status()
+                card = resp.json()
+                card_id = card["id"]
+                card_url = card.get("shortUrl", card.get("url", ""))
+
+                # Add minion label
+                resp = await client.get(
+                    f"{trello_api}/boards/{cfg.trello_board_id}/labels",
+                    params={**auth_params, "fields": "name"},
+                )
+                resp.raise_for_status()
+                for label in resp.json():
+                    if label.get("name", "").strip().lower() == "minion":
+                        await client.post(
+                            f"{trello_api}/cards/{card_id}/idLabels",
+                            params={**auth_params, "value": label["id"]},
+                        )
+                        break
+
+                await client.post(
+                    f"{trello_api}/cards/{card_id}/actions/comments",
+                    params={**auth_params, "text": f"Tech debt created from job `{job_id}`"},
+                )
+
+                logger.info("Created tech debt Trello card: %s", card_url)
+                return json.dumps({"card_id": card_id, "url": card_url})
+
+        except httpx.HTTPError as e:
+            logger.error("Trello API error creating tech debt card: %s", e)
+            return json.dumps({"error": f"Trello API error: {e}"})
+        except Exception as e:
+            logger.error("Unexpected error creating tech debt card: %s", e)
+            return json.dumps({"error": f"Unexpected error: {e}"})
+
+    @mcp.tool()
+    async def create_phase_card(job_id: str, title: str, description: str, phase_number: int) -> str:
+        """Create a Trello card in the On-deck list for a phase of a decomposed spec."""
+        cfg = config or Config.from_env()
+        if not cfg.trello_api_key or not cfg.trello_token or not cfg.trello_board_id:
+            return json.dumps({"error": "Trello credentials not configured"})
+
+        job = await db.get_job(job_id)
+        if not job:
+            return json.dumps({"error": f"Job {job_id} not found"})
+
+        auth_params = {"key": cfg.trello_api_key, "token": cfg.trello_token}
+        trello_api = "https://api.trello.com/1"
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.get(
+                    f"{trello_api}/boards/{cfg.trello_board_id}/lists",
+                    params={**auth_params, "fields": "name"},
+                )
+                resp.raise_for_status()
+                lists = resp.json()
+
+                list_id = None
+                for lst in lists:
+                    if lst["name"].strip().lower() == "on-deck":
+                        list_id = lst["id"]
+                        break
+
+                if not list_id:
+                    return json.dumps({"error": "Could not find 'On-deck' list on board"})
+
+                card_name = f"Phase {phase_number}: {title}"
+                resp = await client.post(
+                    f"{trello_api}/cards",
+                    params={**auth_params, "idList": list_id, "name": card_name, "desc": description},
+                )
+                resp.raise_for_status()
+                card = resp.json()
+                card_id = card["id"]
+                card_url = card.get("shortUrl", card.get("url", ""))
+
+                original_card_id = job.trello_card_id or "unknown"
+                await client.post(
+                    f"{trello_api}/cards/{card_id}/actions/comments",
+                    params={**auth_params, "text": f"Phase {phase_number} decomposed from job `{job_id}` (original card: {original_card_id})"},
+                )
+
+                logger.info("Created phase %d Trello card: %s", phase_number, card_url)
+                return json.dumps({"card_id": card_id, "url": card_url, "phase_number": phase_number})
+
+        except httpx.HTTPError as e:
+            logger.error("Trello API error creating phase card: %s", e)
+            return json.dumps({"error": f"Trello API error: {e}"})
+        except Exception as e:
+            logger.error("Unexpected error creating phase card: %s", e)
+            return json.dumps({"error": f"Unexpected error: {e}"})
+
+    @mcp.tool()
+    async def mark_phases_created(job_id: str, phase_count: int) -> str:
+        """Signal that the spec analyst has decomposed the spec into phase cards. Archives the original Trello card and completes the job."""
+        job = await db.get_job(job_id)
+        if not job:
+            return json.dumps({"error": f"Job {job_id} not found"})
+
+        cfg = config or Config.from_env()
+
+        # Archive the original Trello card if it exists
+        if job.trello_card_id and cfg.trello_api_key and cfg.trello_token:
+            auth_params = {"key": cfg.trello_api_key, "token": cfg.trello_token}
+            trello_api = "https://api.trello.com/1"
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    await client.put(
+                        f"{trello_api}/cards/{job.trello_card_id}",
+                        params={**auth_params, "closed": "true"},
+                    )
+                    logger.info("Archived original Trello card %s", job.trello_card_id)
+            except Exception as e:
+                logger.warning("Failed to archive Trello card %s: %s", job.trello_card_id, e)
+
+        try:
+            if _nats_client:
+                await _propose_transition("job", job_id, "done", job_id=job_id)
+            else:
+                await db.update_job_status(job_id, JobStatus.DONE)
+        except InvalidTransitionError as e:
+            return json.dumps({"error": str(e), "type": "invalid_transition"})
+
+        await db.record_event(job_id, "phases_created", source="spec_analyst", detail=f"Decomposed into {phase_count} phase cards")
+
+        logger.info("Job %s completed with %d phase cards", job_id, phase_count)
+        return json.dumps({"job_id": job_id, "status": "done", "phase_count": phase_count})
+
+    # =========================================================================
+    # Log Tools
+    # =========================================================================
+
+    @mcp.tool()
+    async def get_agent_log(agent_id: str, tail: int = 50) -> str:
+        """Get the last N lines of an agent's log file. Useful for debugging agent behavior."""
+        agent = await db.get_agent(agent_id)
+        if not agent:
+            return json.dumps({"error": f"Agent {agent_id} not found"})
+        if not agent.log_file:
+            return json.dumps({"error": f"No log file for agent {agent_id}"})
+
+        log_path = Path(agent.log_file)
+        if not log_path.exists():
+            return json.dumps({"error": f"Log file not found: {agent.log_file}"})
+
+        lines = log_path.read_text().splitlines()
+        tail_lines = lines[-tail:] if len(lines) > tail else lines
         return json.dumps({
-            "review": review.model_dump(),
-            "comments": [c.model_dump() for c in comments],
-            "agents": [a.model_dump() for a in agents],
+            "agent_id": agent_id,
+            "role": agent.role,
+            "log_file": agent.log_file,
+            "total_lines": len(lines),
+            "showing_last": len(tail_lines),
+            "lines": tail_lines,
         })
+
+    @mcp.tool()
+    async def list_agent_logs(job_id: str) -> str:
+        """List all agent log files for a job with their sizes and status."""
+        agents = await db.get_agents_for_job(job_id)
+        logs = []
+        for a in agents:
+            entry = {"agent_id": a.id, "role": a.role, "status": a.status, "log_file": a.log_file}
+            if a.log_file:
+                p = Path(a.log_file)
+                entry["exists"] = p.exists()
+                if p.exists():
+                    entry["size_bytes"] = p.stat().st_size
+                    entry["line_count"] = len(p.read_text().splitlines())
+            logs.append(entry)
+        return json.dumps(logs)
+
+    # =========================================================================
+    # Resources
+    # =========================================================================
 
     @mcp.resource("job://{job_id}")
     async def job_resource(job_id: str) -> str:
@@ -578,5 +848,16 @@ def create_server(db: AbstractDatabase, config: Config | None = None) -> FastMCP
         """Get all agents for a job."""
         agents = await db.get_agents_for_job(job_id)
         return json.dumps([a.model_dump() for a in agents])
+
+    @mcp.resource("logs://{agent_id}")
+    async def agent_log_resource(agent_id: str) -> str:
+        """Get the full log content for an agent."""
+        agent = await db.get_agent(agent_id)
+        if not agent or not agent.log_file:
+            return json.dumps({"error": "No log available"})
+        log_path = Path(agent.log_file)
+        if not log_path.exists():
+            return json.dumps({"error": "Log file not found"})
+        return log_path.read_text()
 
     return mcp

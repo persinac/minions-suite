@@ -5,6 +5,7 @@ Usage:
     minion review --watch --project <name>        # Poll for new MRs
     minion job <spec-text-or-file>                # Submit a job and watch
     minion --server                               # MCP server + review engine + job engine + arbiter
+    minion --dashboard                            # Web dashboard (read-only job viewer)
     minion --trello-only                          # Trello poller mode
     minion --preflight                            # Health checks
     minion --status                               # Recent reviews
@@ -23,7 +24,7 @@ from pathlib import Path
 
 from .config import Config
 from .db import SQLiteDatabase
-from .models import Job, Review, ReviewStatus
+from .models import AgentRole, Job, JobStatus, TaskStatus
 
 
 logger = logging.getLogger("minions")
@@ -69,7 +70,10 @@ def _find_project_for_url(url: str, projects: dict) -> str:
 
 
 async def _run_one_shot(url: str, project_name: str, config: Config) -> int:
-    """Run a single review and exit."""
+    """Run a single review as a Job+Task and exit."""
+    from .agent import run_agent
+    from .git_provider import create_provider
+    from .job_engine import _create_provider_for_project
     from .project_registry import build_registry
 
     db = _create_db(config)
@@ -90,11 +94,11 @@ async def _run_one_shot(url: str, project_name: str, config: Config) -> int:
         from .project_registry import ProjectConfig
 
         mr_id, provider_hint = _parse_mr_url(url)
-        provider = provider_hint or config.git_provider
+        provider_type = provider_hint or config.git_provider
         project = ProjectConfig(
             name="_adhoc",
             project_id="",
-            git_provider=provider,
+            git_provider=provider_type,
             gitlab_url=config.gitlab_url,
             model=config.model,
         )
@@ -109,16 +113,11 @@ async def _run_one_shot(url: str, project_name: str, config: Config) -> int:
     mr_id, _ = _parse_mr_url(url)
     project = projects[project_name]
 
-    # Create review
-    review = Review(project=project_name, mr_url=url, mr_id=mr_id, model=project.model or config.model)
-    review = await db.create_review(review)
-    print(f"Review {review.id} queued for {url}")
+    # Create review job + task
+    job, task = await db.create_review_job(project_name, url, mr_id, project.model or config.model)
+    print(f"Job {job.id} (task {task.id}) created for {url}")
 
-    # Run directly (no engine needed for one-shot)
-    from .agent import run_review
-    from .git_provider import create_provider
-    from .review_engine import _create_provider_for_project
-
+    # Create git provider
     try:
         provider = _create_provider_for_project(project, config)
     except ValueError as e:
@@ -126,23 +125,41 @@ async def _run_one_shot(url: str, project_name: str, config: Config) -> int:
         await db.close()
         return 1
 
-    await db.update_review(review.id, status=ReviewStatus.IN_PROGRESS)
-    agent = await run_review(review, project, provider, config, db)
+    # Fetch MR metadata
+    mr_info = {"project_id": project.project_id, "changed_files": []}
+    try:
+        changed_files = await provider.get_changed_files(project.project_id, mr_id)
+        mr_info["changed_files"] = changed_files
+    except Exception as e:
+        logger.warning("Could not fetch changed files: %s", e)
+
+    # Mark task in-progress and run directly
+    await db.update_task(task.id, status=TaskStatus.IN_PROGRESS)
+    agent = await run_agent(
+        job=job,
+        task=task,
+        project=project,
+        config=config,
+        db=db,
+        provider=provider,
+        mr_info=mr_info,
+    )
 
     if agent.status == "done":
-        await db.update_review(
-            review.id,
-            status=ReviewStatus.DONE,
-            verdict=review.verdict,
-            summary=review.summary,
-            comments_posted=review.comments_posted,
-        )
-        print(f"\nReview complete: {review.verdict or 'done'}")
-        print(f"  Comments posted: {review.comments_posted}")
+        verdict = getattr(agent, "_review_verdict", None)
+        comments_posted = getattr(agent, "_review_comments_posted", 0)
+        await db.update_task(task.id, status=TaskStatus.DONE, verdict=verdict, comments_posted=comments_posted)
+        await db.update_job_status(job.id, JobStatus.REVIEW_IN_PROGRESS)
+        await db.update_job_status(job.id, JobStatus.DONE)
+
+        print(f"\nReview complete: {verdict or 'done'}")
+        print(f"  Comments posted: {comments_posted}")
         print(f"  Cost: ${agent.cost_usd:.4f} ({agent.input_tokens + agent.output_tokens} tokens)")
         print(f"  Log: {agent.log_file}")
     else:
-        await db.update_review(review.id, status=ReviewStatus.FAILED, error=agent.error)
+        await db.update_task(task.id, status=TaskStatus.FAILED, error=agent.error)
+        await db.update_job_status(job.id, JobStatus.REVIEW_IN_PROGRESS)
+        await db.update_job_status(job.id, JobStatus.FAILED, error=agent.error)
         print(f"\nReview failed: {agent.error}")
         return 1
 
@@ -151,13 +168,20 @@ async def _run_one_shot(url: str, project_name: str, config: Config) -> int:
 
 
 async def _run_server(config: Config) -> None:
-    """Run the MCP server + review engine + job engine + arbiter."""
+    """Run the MCP server + job engine + arbiter."""
     from .connectors.nats_client import NatsClient
     from .job_engine import JobEngine
+    from .preflight import print_preflight, run_preflight
     from .project_registry import build_registry
-    from .review_engine import ReviewEngine
     from .server import create_server
     from .tool_audit_middleware import ToolAuditMiddleware
+
+    # Run preflight checks before anything else
+    checks = run_preflight(config)
+    ok = print_preflight(checks)
+    if not ok:
+        logger.error("Preflight checks failed — aborting server startup")
+        return
 
     db = _create_db(config)
     await db.connect()
@@ -168,9 +192,11 @@ async def _run_server(config: Config) -> None:
     nats_client = None
     if config.nats_enabled:
         from .connectors.nats_config import NatsConfig
+        from .connectors.nats_init import ensure_jetstream_stream
 
         nats_client = NatsClient()
         await nats_client.connect(NatsConfig.from_env())
+        await ensure_jetstream_stream(nats_client)
 
     # Optional K8s launcher
     k8s_launcher = None
@@ -194,8 +220,7 @@ async def _run_server(config: Config) -> None:
 
     artifact_uploader = ArtifactUploader(db, config)
 
-    # Create engines
-    review_engine = ReviewEngine(db, config, projects, nats_client)
+    # Job engine handles both development and review jobs
     job_engine = JobEngine(db, config, k8s_launcher=k8s_launcher, nats_client=nats_client, artifact_uploader=artifact_uploader)
 
     # Optional arbiter — route MCP tool state mutations through NATS
@@ -210,15 +235,13 @@ async def _run_server(config: Config) -> None:
 
     # Start all components
     tasks = []
-    tasks.append(asyncio.create_task(review_engine.start(), name="review-engine"))
     tasks.append(asyncio.create_task(job_engine.start(), name="job-engine"))
     if arbiter:
         tasks.append(asyncio.create_task(arbiter.start(), name="arbiter"))
 
     try:
-        await mcp.run_sse_async(host=config.mcp_host, port=config.mcp_port)
+        await mcp.run_async(transport="sse", host=config.mcp_host, port=config.mcp_port)
     finally:
-        await review_engine.stop()
         await job_engine.stop()
         if arbiter:
             await arbiter.stop()
@@ -367,20 +390,27 @@ async def _run_job(spec_text: str, config: Config) -> int:
 
 
 async def _show_status(config: Config) -> None:
-    """Show recent review status."""
+    """Show recent review job status."""
     db = _create_db(config)
     await db.connect()
 
-    reviews = await db.get_reviews(limit=20)
-    if not reviews:
-        print("No reviews found.")
+    all_jobs = await db.get_all_jobs()
+    review_jobs = [j for j in all_jobs if j.job_type == "review"][:20]
+    if not review_jobs:
+        print("No review jobs found.")
         await db.close()
         return
 
-    print(f"\n{'ID':<10} {'Project':<20} {'Status':<14} {'Verdict':<18} {'Comments':<10} {'MR'}")
-    print("-" * 100)
-    for r in reviews:
-        print(f"{r.id:<10} {r.project:<20} {r.status:<14} {r.verdict or '-':<18} {r.comments_posted:<10} {r.mr_url[:40]}")
+    print(f"\n{'Job ID':<10} {'Status':<20} {'MR URL':<50} {'Created'}")
+    print("-" * 110)
+    for j in review_jobs:
+        tasks = await db.get_tasks(j.id)
+        # Show task-level detail
+        for t in tasks:
+            verdict_str = t.verdict or "-"
+            print(f"{j.id:<10} {j.status:<20} {(t.mr_url or j.mr_url or '-')[:50]:<50} {j.created_at[:19]}")
+            if t.verdict or t.comments_posted:
+                print(f"{'':10} verdict={verdict_str} comments={t.comments_posted}")
 
     await db.close()
 
@@ -534,6 +564,7 @@ def main():
 
     # Global flags
     parser.add_argument("--server", action="store_true", help="Run MCP server + review engine + job engine + arbiter")
+    parser.add_argument("--dashboard", action="store_true", help="Run web dashboard (read-only job viewer)")
     parser.add_argument("--trello-only", action="store_true", help="Run Trello poller + job engine only")
     parser.add_argument("--preflight", action="store_true", help="Run health checks")
     parser.add_argument("--status", action="store_true", help="Show recent review status")
@@ -578,6 +609,12 @@ def main():
 
     if args.server:
         asyncio.run(_run_server(config))
+        return
+
+    if args.dashboard:
+        from .dashboard import run_dashboard
+
+        run_dashboard()
         return
 
     if args.trello_only:

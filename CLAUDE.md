@@ -10,9 +10,14 @@ Requires **Python 3.14+**. Uses `uv` for dependency management and `task` (Taskf
 
 ## Architecture
 
-**Data flow:** MR webhook / CLI → NATS `reviews.requested.<project>` → ReviewEngine → LiteLLM agent loop → Git provider API → inline comments + review verdict
+**Data flow:** MR webhook / CLI → `db.create_review_job()` → JobEngine → `run_agent()` (LiteLLM tool-use loop) → Git provider API → inline comments + review verdict
 
-**Review engine states:** `QUEUED → IN_PROGRESS → COMMENTED → DONE` (can transition to `FAILED`)
+**Review job states:** A code review is a review-type Job with a single CODE_REVIEWER Task:
+- Job: `TASKS_CREATED → REVIEW_IN_PROGRESS → DONE` (or `FAILED`)
+- Task: `PENDING → IN_PROGRESS → DONE` (or `FAILED`)
+
+**Development job states:** Multi-agent orchestration:
+- Job: `SPEC_RECEIVED → SPEC_READY → TASKS_CREATED → DEV_IN_PROGRESS → PR_OPEN → REVIEW_IN_PROGRESS → MERGED → DEPLOYING → DEPLOYED → DONE`
 
 **Prompt composition:** `base.md` + role mixins (`roles/*.md`) + language mixins (`languages/*.md`) + custom rules (`custom/*.md`). Configured per-project in `projects.yaml`. Roles and languages can also be **auto-inferred** from changed file extensions/paths (e.g. `.py` → python, `/api/` → backend).
 
@@ -20,17 +25,17 @@ Requires **Python 3.14+**. Uses `uv` for dependency management and `task` (Taskf
 
 - `cli.py` — Entry point: `minion review <url>`, `--server`, `--status`, `--costs`, `--preflight`
 - `config.py` — Config dataclass loaded from environment (`Config.from_env()`)
-- `agent.py` — LiteLLM tool-use loop; max 30 turns, 600s timeout; logs every turn to file
+- `agent.py` — Unified LiteLLM tool-use loop (`run_agent()` / `_agent_loop_generic()`); handles both review and development agents; max 30 turns, logs every turn to file
 - `tools.py` — Tool definitions (OpenAI function schema) + `ToolExecutor` dispatch
 - `server.py` — FastMCP server (port 8321) for external integrations
-- `review_engine.py` — Polling loop: pick up queued reviews, run agent, publish results
+- `job_engine.py` — JobEngine: polls for active jobs, dispatches agents (in-process or K8s), manages state transitions for both review and development jobs
 - `prompt.py` — Composable prompt assembly from markdown mixins + auto-inference
 - `git_provider.py` — `GitProviderProtocol` + GitLab (REST API v4) / GitHub (`gh` CLI) implementations
 - `project_registry.py` — Multi-project config from `projects.yaml`
-- `models.py` — Pydantic models: `Review`, `ReviewComment`, `Agent`; enums: `ReviewStatus`, `ReviewVerdict`, `GitProvider`
+- `models.py` — Pydantic models: `Job`, `Task`, `Agent`, `Subtask`, `Message`; enums: `JobStatus`, `TaskStatus`, `AgentRole`, `GitProvider`
 - `db.py` / `db_postgres.py` — `AbstractDatabase` protocol; SQLite (dev) and PostgreSQL (prod) implementations
 - `preflight.py` — Health checks for CLI tools, API keys, git provider credentials, DB, NATS
-- `connectors/nats_client.py` — Persistent NATS connection; subjects: `reviews.{requested,started,completed,failed}.<project>`
+- `connectors/nats_client.py` — Persistent NATS connection; subjects: `jobs.review.{requested,started,completed,failed}.<project>`, `jobs.<id>.status`, `agents.*`
 
 ## Agent Tools
 

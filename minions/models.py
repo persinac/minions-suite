@@ -1,4 +1,4 @@
-"""Pydantic models and enums for PR review orchestration and job orchestration."""
+"""Pydantic models and enums for job orchestration and agent management."""
 
 import uuid
 from datetime import datetime, timezone
@@ -9,21 +9,8 @@ from pydantic import BaseModel, Field
 
 
 # ---------------------------------------------------------------------------
-# Review enums (existing)
+# Enums
 # ---------------------------------------------------------------------------
-
-
-class ReviewStatus(StrEnum):
-    QUEUED = "queued"
-    IN_PROGRESS = "in_progress"
-    COMMENTED = "commented"
-    DONE = "done"
-    FAILED = "failed"
-
-
-class ReviewVerdict(StrEnum):
-    APPROVE = "approve"
-    REQUEST_CHANGES = "request_changes"
 
 
 class GitProvider(StrEnum):
@@ -106,44 +93,6 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-# ---------------------------------------------------------------------------
-# Review models (existing)
-# ---------------------------------------------------------------------------
-
-
-class Review(BaseModel):
-    """A single MR/PR review request."""
-
-    id: str = Field(default_factory=_short_id)
-    project: str = Field(..., description="Project key from projects.yaml")
-    mr_url: str = Field(..., description="Full URL of the merge/pull request")
-    mr_id: str = Field(..., description="MR/PR identifier (number or IID)")
-    branch: Optional[str] = None
-    title: Optional[str] = None
-    author: Optional[str] = None
-    status: ReviewStatus = ReviewStatus.QUEUED
-    verdict: Optional[ReviewVerdict] = None
-    summary: Optional[str] = None
-    comments_posted: int = 0
-    model: Optional[str] = None
-    error: Optional[str] = None
-    created_at: str = Field(default_factory=_now)
-    started_at: Optional[str] = None
-    completed_at: Optional[str] = None
-
-
-class ReviewComment(BaseModel):
-    """An inline comment left on a specific file/line."""
-
-    id: str = Field(default_factory=_short_id)
-    review_id: str
-    file_path: str
-    line: Optional[int] = None
-    severity: str = "nit"  # critical, warning, nit
-    body: str
-    created_at: str = Field(default_factory=_now)
-
-
 class Agent(BaseModel):
     """Tracks a single agent invocation (LLM call session)."""
 
@@ -179,6 +128,8 @@ class Job(BaseModel):
     id: str = Field(default_factory=_short_id)
     spec: str = Field(..., description="The feature specification text")
     status: JobStatus = JobStatus.SPEC_RECEIVED
+    job_type: str = Field(default="development", description="Job type: 'development' or 'review'")
+    mr_url: Optional[str] = Field(default=None, description="MR/PR URL (for review jobs)")
     error: Optional[str] = None
     trello_card_id: Optional[str] = None
     created_at: str = Field(default_factory=_now)
@@ -204,6 +155,11 @@ class Task(BaseModel):
     attempt: int = 1
     max_attempts: int = 3
     error: Optional[str] = None
+    # Review task fields
+    mr_url: Optional[str] = Field(default=None, description="MR/PR URL (for review tasks)")
+    mr_id: Optional[str] = Field(default=None, description="MR/PR identifier (for review tasks)")
+    verdict: Optional[str] = Field(default=None, description="Review verdict: approve or request_changes")
+    comments_posted: int = Field(default=0, description="Number of inline comments posted")
     created_at: str = Field(default_factory=_now)
     updated_at: str = Field(default_factory=_now)
 

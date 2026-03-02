@@ -1,4 +1,4 @@
-"""Preflight checks for the PR reviewer."""
+"""Preflight checks for the minions-suite."""
 
 import asyncio
 import logging
@@ -7,7 +7,6 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
-from typing import Optional
 
 from .config import Config
 
@@ -16,6 +15,11 @@ logger = logging.getLogger(__name__)
 PASS = "[PASS]"
 FAIL = "[FAIL]"
 WARN = "[WARN]"
+
+
+def _in_container() -> bool:
+    """Detect if running inside a Docker/K8s container."""
+    return os.getenv("CONTAINER_ENV", "").lower() in ("1", "true", "yes") or os.path.exists("/.dockerenv")
 
 
 @dataclass
@@ -76,36 +80,175 @@ def check_litellm() -> Check:
 
 def check_git_provider(config: Config) -> Check:
     """Check git provider credentials."""
+    container = _in_container()
+
     if config.git_provider == "gitlab":
         if config.gitlab_token:
             return Check("gitlab auth", PASS, f"token set, url={config.gitlab_url or 'not set'}")
-        return Check("gitlab auth", FAIL, "GITLAB_TOKEN not set")
+        return Check("gitlab auth", FAIL if not container else WARN, "GITLAB_TOKEN not set", required=not container)
 
     if config.git_provider == "github":
         if config.github_token:
             return Check("github auth", PASS, "GH_TOKEN set")
         # Check gh CLI auth
-        code, stdout, stderr = _run(["gh", "auth", "status"])
+        code, _stdout, _stderr = _run(["gh", "auth", "status"])
         if code == 0:
             return Check("github auth", PASS, "gh CLI authenticated")
-        return Check("github auth", FAIL, "GH_TOKEN not set and gh CLI not authenticated")
+        hint = "set GH_TOKEN env var" if container else "run: gh auth login"
+        return Check("github auth", FAIL, f"not authenticated - {hint}")
 
     return Check("git provider", WARN, f"unknown provider: {config.git_provider}")
 
 
+def check_doppler_auth() -> Check:
+    """Check if doppler is authenticated."""
+    code, stdout, _stderr = _run(["doppler", "me"])
+    if code == 0:
+        for line in stdout.split("\n"):
+            if "Workplace" in line or "Email" in line:
+                return Check("doppler auth", PASS, line.strip())
+        return Check("doppler auth", PASS, "authenticated")
+    return Check("doppler auth", FAIL, "not authenticated - run: doppler login")
+
+
+def _aws_profile_args(profile: str) -> list[str]:
+    """Return ['--profile', profile] unless env-based AWS credentials are set."""
+    if os.environ.get("AWS_ACCESS_KEY_ID") and os.environ.get("AWS_SECRET_ACCESS_KEY"):
+        return []
+    return ["--profile", profile]
+
+
+def check_aws_auth(profile: str = "mcp-minions") -> Check:
+    """Check if AWS CLI is authenticated via env vars or named profile."""
+    profile_args = _aws_profile_args(profile)
+    cmd = ["aws", "sts", "get-caller-identity", *profile_args]
+    code, _stdout, stderr = _run(cmd)
+    if code == 0:
+        source = "env credentials" if not profile_args else f"profile: {profile}"
+        return Check("aws auth", PASS, f"{source}, authenticated", required=False)
+    if "could not be found" in stderr.lower() or "not found" in stderr.lower():
+        return Check(
+            "aws auth",
+            WARN,
+            f"profile '{profile}' not found in ~/.aws/credentials - add static IAM keys for the mcp-minions user",
+            required=False,
+        )
+    return Check("aws auth", WARN, f"auth failed: {stderr[:80]}", required=False)
+
+
+def check_apprunner_access(profile: str = "mcp-minions") -> Check:
+    """Check if AWS CLI can list AppRunner services."""
+    cmd = ["aws", "apprunner", "list-services", *_aws_profile_args(profile), "--max-results", "1"]
+    code, _stdout, stderr = _run(cmd)
+    if code == 0:
+        source = "env credentials" if not _aws_profile_args(profile) else f"profile: {profile}"
+        return Check("apprunner access", PASS, f"can list AppRunner services ({source})", required=False)
+    if "ExpiredToken" in stderr or "SSO" in stderr or "expired" in stderr.lower():
+        return Check("apprunner access", WARN, f"session expired: {stderr[:60]}", required=False)
+    return Check("apprunner access", WARN, f"cannot list AppRunner services: {stderr[:80]}", required=False)
+
+
+def check_circleci_auth() -> Check:
+    """Check if CircleCI CLI is authenticated."""
+    code, stdout, stderr = _run(["circleci", "diagnostic"])
+    if code == 0 and "OK" in (stdout + stderr):
+        return Check("circleci auth", PASS, "authenticated", required=False)
+    return Check("circleci auth", WARN, "not configured - deploy monitor won't work for CircleCI", required=False)
+
+
+def check_s3_artifact_bucket(config: Config) -> Check:
+    """Check if S3 artifact bucket is configured and accessible."""
+    if not config.s3_artifact_bucket:
+        return Check("s3 artifacts", WARN, "S3_ARTIFACT_BUCKET not set - artifact archival disabled", required=False)
+    cmd = [
+        "aws",
+        "s3api",
+        "head-bucket",
+        "--bucket",
+        config.s3_artifact_bucket,
+        "--region",
+        config.s3_artifact_region,
+        *_aws_profile_args(config.aws_profile),
+    ]
+    code, _stdout, stderr = _run(cmd)
+    if code == 0:
+        return Check("s3 artifacts", PASS, f"bucket={config.s3_artifact_bucket} region={config.s3_artifact_region}", required=False)
+    return Check("s3 artifacts", WARN, f"cannot access bucket '{config.s3_artifact_bucket}': {stderr[:80]}", required=False)
+
+
+def check_k8s(config: Config) -> Check:
+    """Check K8s API connectivity and agent Job creation permissions."""
+    try:
+        from kubernetes_asyncio import client as k8s_client
+        from kubernetes_asyncio import config as k8s_config
+    except ImportError:
+        return Check("k8s dispatch", FAIL, "kubernetes-asyncio not installed -- run: uv add kubernetes-asyncio")
+
+    if not config.k8s_agent_image:
+        return Check("k8s dispatch", FAIL, "K8S_AGENT_IMAGE not set -- required for K8s dispatch")
+
+    async def _probe():
+        try:
+            k8s_config.load_incluster_config()
+        except k8s_config.ConfigException:
+            try:
+                await k8s_config.load_kube_config()
+            except k8s_config.ConfigException:
+                return Check("k8s dispatch", FAIL, "no K8s config found (not in-cluster and no kubeconfig)")
+
+        batch_v1 = k8s_client.BatchV1Api()
+        try:
+            job = k8s_client.V1Job(
+                metadata=k8s_client.V1ObjectMeta(name="preflight-test"),
+                spec=k8s_client.V1JobSpec(
+                    template=k8s_client.V1PodTemplateSpec(
+                        spec=k8s_client.V1PodSpec(
+                            containers=[k8s_client.V1Container(name="test", image="busybox")],
+                            restart_policy="Never",
+                        )
+                    )
+                ),
+            )
+            await batch_v1.create_namespaced_job(
+                namespace=config.k8s_namespace,
+                body=job,
+                dry_run="All",
+            )
+            await batch_v1.api_client.close()
+            return Check("k8s dispatch", PASS, f"K8s API reachable, RBAC ok (ns={config.k8s_namespace})")
+        except Exception as e:
+            await batch_v1.api_client.close()
+            return Check("k8s dispatch", FAIL, f"K8s API error: {str(e)[:80]}")
+
+    try:
+        asyncio.get_running_loop()
+        in_loop = True
+    except RuntimeError:
+        in_loop = False
+
+    if in_loop:
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, _probe()).result(timeout=15)
+    else:
+        return asyncio.run(_probe())
+
+
 def check_postgres(config: Config) -> Check:
-    """Check if Postgres is reachable."""
-    if config.db_backend != "postgres":
-        return Check("postgres", WARN, f"not required (db_backend={config.db_backend})", required=False)
+    """Check if Postgres is reachable and the minions schema exists."""
     if not config.postgres_url:
-        return Check("postgres", FAIL, "POSTGRES_URL not set")
+        required = config.db_backend == "postgres"
+        return Check("postgres", FAIL if required else WARN, "POSTGRES_URL not set (and no DB_HOST)", required=required)
     try:
         import psycopg
 
-        with psycopg.connect(config.postgres_url, connect_timeout=5) as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT 1")
-                return Check("postgres", PASS, "connected")
+        with psycopg.connect(config.postgres_url, connect_timeout=5) as conn, conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM information_schema.schemata WHERE schema_name = 'minions'")
+                row = cur.fetchone()
+                if row:
+                    return Check("postgres", PASS, f"connected, minions schema found (backend={config.db_backend})")
+                return Check("postgres", WARN, "connected, but minions schema not found -- run dbmate up")
     except ImportError:
         return Check("postgres", FAIL, "psycopg not installed -- run: uv add psycopg[binary]")
     except Exception as e:
@@ -113,9 +256,7 @@ def check_postgres(config: Config) -> Check:
 
 
 def check_nats(config: Config) -> Check:
-    """Check if NATS is reachable."""
-    if not config.nats_enabled:
-        return Check("nats", WARN, "disabled (NATS_ENABLED not set)", required=False)
+    """Check if NATS is reachable by attempting a connect/close cycle."""
     try:
         import nats
 
@@ -131,31 +272,57 @@ def check_nats(config: Config) -> Check:
             nc = await nats.connect(**connect_opts)
             await nc.close()
 
+        # Handle being called from within an already-running event loop
+        # (e.g. watch_trello -> run_preflight) by running in a thread.
         try:
             asyncio.get_running_loop()
+            in_loop = True
+        except RuntimeError:
+            in_loop = False
+
+        if in_loop:
             import concurrent.futures
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                 pool.submit(asyncio.run, _probe()).result(timeout=10)
-        except RuntimeError:
+        else:
             asyncio.run(_probe())
 
         servers_str = ", ".join(nats_config.servers)
-        return Check("nats", PASS, f"connected to {servers_str}")
+        return Check("nats", PASS, f"connected to {servers_str} (stream={config.nats_stream})")
     except ImportError:
         return Check("nats", FAIL, "nats-py not installed -- run: uv add nats-py")
     except Exception as e:
         return Check("nats", FAIL, f"connection failed: {str(e)[:80]}")
 
 
-def run_preflight(config: Optional[Config] = None) -> list[Check]:
+def check_arbiter(config: Config) -> Check:
+    """Validate arbiter prerequisites: NATS enabled, Postgres backend."""
+    issues = []
+    if not config.nats_enabled:
+        issues.append("NATS_ENABLED must be true")
+    if config.db_backend == "sqlite":
+        issues.append("DB_BACKEND must be postgres or dual (heartbeats table is Postgres-only)")
+    if issues:
+        return Check("arbiter", FAIL, "; ".join(issues))
+    return Check("arbiter", PASS, f"prerequisites met (nats={config.nats_enabled}, db={config.db_backend})")
+
+
+def run_preflight(config: Config | None = None) -> list[Check]:
     """Run all preflight checks and return results."""
     config = config or Config.from_env()
     checks: list[Check] = []
 
+    container = _in_container()
+
     # Core CLIs
     checks.append(check_cli("git", ["git", "--version"]))
     checks.append(check_cli("rg", ["rg", "--version"], required=False))
+    checks.append(check_cli("doppler", ["doppler", "--version"], required=not container))
+
+    # Deploy monitor CLIs (optional)
+    checks.append(check_cli("circleci", ["circleci", "version"], required=False))
+    checks.append(check_cli("aws", ["aws", "--version"], required=False))
 
     # LiteLLM
     checks.append(check_litellm())
@@ -163,20 +330,38 @@ def run_preflight(config: Optional[Config] = None) -> list[Check]:
     # Git provider
     checks.append(check_git_provider(config))
 
-    # Database
-    if config.db_backend == "postgres":
+    # Auth checks
+    if shutil.which("doppler") and not container:
+        checks.append(check_doppler_auth())
+    if shutil.which("circleci"):
+        checks.append(check_circleci_auth())
+    if shutil.which("aws"):
+        checks.append(check_aws_auth(config.aws_profile))
+        checks.append(check_apprunner_access(config.aws_profile))
+        checks.append(check_s3_artifact_bucket(config))
+
+    # Database backend check
+    if config.db_backend in ("postgres", "dual"):
         checks.append(check_postgres(config))
 
-    # NATS
+    # NATS check (required when enabled)
     if config.nats_enabled:
         checks.append(check_nats(config))
+
+    # Arbiter check (when enabled)
+    if config.arbiter_enabled:
+        checks.append(check_arbiter(config))
+
+    # K8s dispatch check (when enabled)
+    if config.k8s_dispatch:
+        checks.append(check_k8s(config))
 
     return checks
 
 
 def print_preflight(checks: list[Check]) -> bool:
     """Print preflight results and return True if all required checks pass."""
-    print("\n=== PR Reviewer Preflight Checks ===\n")
+    print("\n=== Minions Suite Preflight Checks ===\n")
 
     max_name = max(len(c.name) for c in checks)
     failed_required = False
@@ -199,5 +384,17 @@ def print_preflight(checks: list[Check]) -> bool:
     if warned:
         print("\n  All required checks passed. Warnings are for optional features.\n")
         return True
-    print("\n  All checks passed. Ready to review.\n")
+    print("\n  All checks passed. Ready to launch.\n")
     return True
+
+
+def main():
+    """Run preflight checks as standalone script."""
+    config = Config.from_env()
+    checks = run_preflight(config)
+    ok = print_preflight(checks)
+    sys.exit(0 if ok else 1)
+
+
+if __name__ == "__main__":
+    main()

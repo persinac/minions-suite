@@ -12,6 +12,22 @@ tasks:
       - docker builder prune -af
       - docker build --no-cache -t minion-suite:dev .
 
+  ecr:push:
+    desc: "Login to ECR and push full + slim images  [AWS_ACCOUNT=..., AWS_REGION=..., ECR_FULL=..., ECR_SLIM=...]"
+    deps: [build]
+    vars:
+      AWS_ACCOUNT: '{{.AWS_ACCOUNT | default "059039070213"}}'
+      AWS_REGION: '{{.AWS_REGION | default "us-east-1"}}'
+      ECR_FULL: '{{.ECR_FULL | default "mcp-minions-mcpm-cackalacky"}}'
+      ECR_SLIM: '{{.ECR_SLIM | default "mcp-minions-mcpm-cackalacky-slim"}}'
+      REGISTRY: "{{.AWS_ACCOUNT}}.dkr.ecr.{{.AWS_REGION}}.amazonaws.com"
+    cmds:
+      - aws ecr get-login-password --region {{.AWS_REGION}} --profile {{.AWS_PROFILE | default "sandbox"}} | docker login --username AWS --password-stdin {{.REGISTRY}}
+      - docker tag minion-suite:dev {{.REGISTRY}}/{{.ECR_FULL}}:latest
+      - docker push {{.REGISTRY}}/{{.ECR_FULL}}:latest
+      - docker tag minion-suite:dev {{.REGISTRY}}/{{.ECR_SLIM}}:latest
+      - docker push {{.REGISTRY}}/{{.ECR_SLIM}}:latest
+
   up:
     desc: Start minion-suite container (detached)
     deps: [build]

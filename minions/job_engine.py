@@ -309,6 +309,10 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
         self._running = True
         logger.info("Job engine started (poll interval: %ds, k8s_dispatch=%s)", self.config.job_engine_poll_interval, self._k8s_enabled)
 
+        # Backfill any terminal jobs that haven't been archived yet
+        if self._artifact_uploader and self._artifact_uploader.is_enabled():
+            self._spawn(self._run_backfill(), name="artifact-backfill")
+
         # K8s dispatch: subscribe to NATS results and start Job watcher
         if self._k8s_enabled:
             if self._nats_client:
@@ -488,7 +492,12 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
             elif job.status == JobStatus.SPEC_READY:
                 await self._launch_arbiter(job)
             elif job.status == JobStatus.TASKS_CREATED:
-                await self._launch_engineers(job)
+                if job.job_type == "review":
+                    await self._launch_review_tasks(job)
+                else:
+                    await self._launch_engineers(job)
+            elif job.status == JobStatus.REVIEW_IN_PROGRESS:
+                await self._check_review_tasks(job)
             elif job.status == JobStatus.DEV_IN_PROGRESS:
                 await self._manage_dev_tasks(job)
             elif job.status == JobStatus.MERGED:
@@ -603,6 +612,142 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
 
     # =========================================================================
     # State handlers
+    # =========================================================================
+
+    # =========================================================================
+    # Review job handlers
+    # =========================================================================
+
+    async def _launch_review_tasks(self, job: Job):
+        """Launch CODE_REVIEWER tasks for a review-type job."""
+        pending_tasks = await self.db.get_tasks_by_status(job.id, TaskStatus.PENDING)
+        review_tasks = [t for t in pending_tasks if t.agent_role == AgentRole.CODE_REVIEWER]
+
+        if not review_tasks:
+            logger.warning("Review job %s has no pending reviewer tasks", job.id)
+            await self.db.update_job_status(job.id, JobStatus.FAILED, error="No reviewer tasks found")
+            return
+
+        await self.db.update_job_status(job.id, JobStatus.REVIEW_IN_PROGRESS)
+
+        for task in review_tasks:
+            self._spawn(self._run_review_in_process(job, task), name=f"review-{task.id[:8]}")
+
+    async def _run_review_in_process(self, job: Job, task: Task):
+        """Run a single review task in-process using the unified agent loop."""
+        from .git_provider import create_provider
+
+        # Resolve project config
+        project = self.registry.get(task.service)
+        if not project:
+            # Ad-hoc project — create minimal config
+            from .project_registry import ProjectConfig
+
+            provider_hint = "gitlab"
+            if task.mr_url and "/pull/" in task.mr_url:
+                provider_hint = "github"
+            project = ProjectConfig(
+                name=task.service,
+                project_id="",
+                git_provider=provider_hint,
+                gitlab_url=self.config.gitlab_url,
+                model=self.config.model,
+            )
+
+        # Create git provider
+        try:
+            provider = _create_provider_for_project(project, self.config)
+        except ValueError as e:
+            logger.error("Failed to create provider for task %s: %s", task.id, e)
+            await self.db.update_task(task.id, status=TaskStatus.FAILED, error=str(e)[:200])
+            return
+
+        # Transition task to IN_PROGRESS
+        try:
+            await self.db.update_task(task.id, status=TaskStatus.IN_PROGRESS)
+        except InvalidTransitionError as e:
+            logger.warning("Could not advance task %s to in_progress: %s", task.id, e)
+            return
+
+        # Fetch MR metadata
+        mr_info = {}
+        try:
+            changed_files = await provider.get_changed_files(project.project_id, task.mr_id)
+            mr_info = {
+                "project_id": project.project_id,
+                "changed_files": changed_files,
+            }
+        except Exception as e:
+            logger.warning("Failed to fetch MR info for task %s: %s", task.id, e)
+            mr_info = {"project_id": project.project_id, "changed_files": []}
+
+        # Create agent record
+        agent = Agent(job_id=job.id, role=AgentRole.CODE_REVIEWER, task_id=task.id, model=self.config.model)
+        agent = await self.db.create_agent(agent)
+
+        await self.db.record_event(job.id, "agent_launched", "engine", f"agent={agent.id} role=code_reviewer task={task.id}")
+        await self._nats_agent_status(job.id, agent.id, "code_reviewer", "launched")
+
+        # Run the agent
+        result_agent = await run_agent(
+            job=job,
+            task=task,
+            project=project,
+            config=self.config,
+            db=self.db,
+            provider=provider,
+            mr_info=mr_info,
+        )
+
+        # Update task with review results
+        if result_agent.status == "done":
+            verdict = getattr(result_agent, "_review_verdict", None)
+            comments_posted = getattr(result_agent, "_review_comments_posted", 0)
+            try:
+                await self.db.update_task(
+                    task.id,
+                    status=TaskStatus.DONE,
+                    verdict=verdict,
+                    comments_posted=comments_posted,
+                )
+            except InvalidTransitionError as e:
+                logger.warning("Could not mark review task %s as done: %s", task.id, e)
+
+            await self.db.record_event(
+                job.id, "review_complete", "engine",
+                f"task={task.id} verdict={verdict} comments={comments_posted}",
+            )
+            await self._nats_agent_status(job.id, agent.id, "code_reviewer", "completed")
+        else:
+            error = result_agent.error or "unknown"
+            try:
+                await self.db.update_task(task.id, status=TaskStatus.FAILED, error=error[:200])
+            except InvalidTransitionError:
+                logger.warning("Could not mark review task %s as failed", task.id)
+            await self._nats_agent_status(job.id, agent.id, "code_reviewer", "failed")
+
+    async def _check_review_tasks(self, job: Job):
+        """Check if all review tasks are terminal and advance the job."""
+        tasks = await self.db.get_tasks(job.id)
+        review_tasks = [t for t in tasks if t.agent_role == AgentRole.CODE_REVIEWER]
+
+        if not review_tasks:
+            return
+
+        terminal = {TaskStatus.DONE, TaskStatus.FAILED}
+        all_terminal = all(t.status in terminal for t in review_tasks)
+        if not all_terminal:
+            return
+
+        all_failed = all(t.status == TaskStatus.FAILED for t in review_tasks)
+        if all_failed:
+            await self.db.update_job_status(job.id, JobStatus.FAILED, error="All review tasks failed")
+        else:
+            await self.db.update_job_status(job.id, JobStatus.DONE)
+            logger.info("Review job %s completed", job.id)
+
+    # =========================================================================
+    # Development job handlers
     # =========================================================================
 
     async def _launch_spec_analyst(self, job: Job):
@@ -1069,3 +1214,35 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
                 await self._on_job_terminal(job.id)
             else:
                 await self.db.update_job_status(job.id, JobStatus.DEPLOYED)
+                await self._on_job_terminal(job.id)
+
+    async def _run_backfill(self):
+        """Run artifact backfill for terminal jobs that weren't archived, catching all errors."""
+        if not self._artifact_uploader:
+            return
+        try:
+            await self._artifact_uploader.backfill()
+        except Exception:
+            logger.exception("Artifact backfill failed")
+
+
+def _create_provider_for_project(project, config):
+    """Create the appropriate git provider for a project."""
+    from .git_provider import create_provider
+
+    provider_type = project.git_provider or config.git_provider
+
+    if provider_type == "gitlab":
+        return create_provider(
+            "gitlab",
+            gitlab_url=project.gitlab_url or config.gitlab_url,
+            token=config.gitlab_token,
+        )
+    if provider_type == "github":
+        return create_provider("github", token=config.github_token)
+
+    raise ValueError(f"Unsupported provider: {provider_type}")
+
+
+# Backward compat alias
+WorkflowEngine = JobEngine

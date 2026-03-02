@@ -12,7 +12,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from .models import Job, Review, Task
+from .models import Job, Task
 from .project_registry import ProjectConfig, ReviewProfile, ServiceTarget, infer_profile
 
 logger = logging.getLogger(__name__)
@@ -30,12 +30,13 @@ def _load(relative_path: str) -> Optional[str]:
 
 
 def build_review_prompt(
-    review: Review,
+    task: Task,
     project: ProjectConfig,
     changed_files: list[str],
 ) -> str:
     """Assemble the full review prompt from composable sections.
 
+    Accepts a Task (with mr_url/mr_id fields) instead of the old Review model.
     If the project has no explicit review_profile, infer one from changed files.
     """
     sections: list[str] = []
@@ -70,14 +71,14 @@ def build_review_prompt(
             sections.append(content)
 
     # 6. Review context
-    context = _build_review_context(review, project, changed_files)
+    context = _build_review_context(task, project, changed_files)
     sections.append(context)
 
     return "\n\n---\n\n".join(sections)
 
 
 def _build_review_context(
-    review: Review,
+    task: Task,
     project: ProjectConfig,
     changed_files: list[str],
 ) -> str:
@@ -98,12 +99,10 @@ def _build_review_context(
 
     return f"""## Review Context
 
-- Review ID: `{review.id}`
+- Task ID: `{task.id}`
 - Project: `{project.name}` ({project.git_provider})
-- MR/PR: {review.mr_url}
-- Branch: `{review.branch or 'unknown'}` -> `target`
-- Title: {review.title or 'N/A'}
-- Author: {review.author or 'N/A'}{ignore_note}{auto_approve_note}
+- MR/PR: {task.mr_url or 'N/A'}
+- MR ID: {task.mr_id or 'N/A'}{ignore_note}{auto_approve_note}
 
 ### Changed Files
 {files_list}"""

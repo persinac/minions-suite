@@ -6,19 +6,19 @@ from pathlib import Path
 
 
 def _build_postgres_url() -> str:
-    """Build Postgres URL from explicit env var or component parts."""
+    """Build Postgres URL from explicit env var or DB_* components."""
     explicit = os.getenv("POSTGRES_URL", os.getenv("DATABASE_URL", ""))
     if explicit:
         return explicit
 
-    host = os.getenv("PG_HOST", "")
+    host = os.getenv("DB_HOST", "")
     if not host:
         return ""
 
-    user = os.getenv("PG_USER", "")
-    password = os.getenv("PG_PASSWORD", "")
-    port = os.getenv("PG_PORT", "5432")
-    dbname = os.getenv("PG_DATABASE", "pr_reviewer")
+    user = os.getenv("DB_ADMIN", "")
+    password = os.getenv("DB_PASSWORD", "")
+    port = os.getenv("DB_PORT", "25061")
+    dbname = os.getenv("DB_NAME", "fbf-conn-pool")
     return f"postgresql://{user}:{password}@{host}:{port}/{dbname}?sslmode=require"
 
 
@@ -56,7 +56,7 @@ class Config:
 
     # NATS (optional)
     nats_enabled: bool = False
-    nats_stream: str = "reviews"
+    nats_stream: str = "minions"
 
     # Projects config
     projects_file: str = "projects.yaml"
@@ -90,6 +90,9 @@ class Config:
     trello_board_id: str = ""
     trello_poll_interval: int = 180
 
+    # AWS
+    aws_profile: str = "mcp-minions"
+
     # S3 artifact upload (optional — set bucket to enable)
     s3_artifact_bucket: str = ""
     s3_artifact_region: str = "us-east-1"
@@ -100,7 +103,7 @@ class Config:
     mcp_connect_host: str = "localhost"
 
     @classmethod
-    def from_env(cls) -> "Config":
+    def from_env(cls) -> Config:
         """Load configuration from environment variables."""
         base = Path(__file__).parent.parent
 
@@ -122,7 +125,7 @@ class Config:
             engine_poll_interval=int(os.getenv("ENGINE_POLL_INTERVAL", "10")),
             max_concurrent_reviews=int(os.getenv("MAX_CONCURRENT_REVIEWS", "3")),
             nats_enabled=os.getenv("NATS_ENABLED", "").lower() in ("1", "true", "yes"),
-            nats_stream=os.getenv("NATS_STREAM", "reviews"),
+            nats_stream=os.getenv("NATS_STREAM", "minions"),
             projects_file=os.getenv("PROJECTS_FILE", str(base / "projects.yaml")),
             log_level=os.getenv("LOG_LEVEL", "INFO"),
             arbiter_enabled=os.getenv("ARBITER_ENABLED", "").lower() in ("1", "true", "yes"),
@@ -141,6 +144,7 @@ class Config:
             trello_token=os.getenv("TRELLO_TOKEN", ""),
             trello_board_id=os.getenv("TRELLO_BOARD_ID", ""),
             trello_poll_interval=int(os.getenv("TRELLO_POLL_INTERVAL", "180")),
+            aws_profile=os.getenv("AWS_PROFILE_NAME", "mcp-minions"),
             s3_artifact_bucket=os.getenv("S3_ARTIFACT_BUCKET", ""),
             s3_artifact_region=os.getenv("S3_ARTIFACT_REGION", "us-east-1"),
             s3_artifact_prefix=os.getenv("S3_ARTIFACT_PREFIX", "minions"),

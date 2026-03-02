@@ -1,8 +1,7 @@
-"""PostgreSQL implementation of the review database and job orchestration.
+"""PostgreSQL implementation of the job orchestration database.
 
-Uses psycopg3 with an async connection pool. Tables for reviews live under
-``reviewer.*`` schema; tables for job orchestration live under ``minions.*``
-schema (created by dbmate migration 20260220160006).
+Uses psycopg3 with an async connection pool. All tables live under
+``minions.*`` schema.
 """
 
 import json
@@ -21,9 +20,6 @@ from .models import (
     Job,
     JobStatus,
     Message,
-    Review,
-    ReviewComment,
-    ReviewStatus,
     Subtask,
     SubtaskStatus,
     Task,
@@ -40,8 +36,7 @@ from .state_transitions import (
 
 logger = logging.getLogger(__name__)
 
-REVIEW_SCHEMA = "reviewer"  # Review tables
-JOB_SCHEMA = "minions"  # Job orchestration tables
+JOB_SCHEMA = "minions"
 
 
 def _ts(value) -> Optional[str]:
@@ -79,87 +74,10 @@ class PostgresDatabase:
             logger.info("PostgresDatabase pool closed")
 
     # ===================================================================
-    # Reviews
-    # ===================================================================
-
-    async def create_review(self, review: Review) -> Review:
-        async with self._pool.connection() as conn:
-            await conn.execute(
-                f"""INSERT INTO {REVIEW_SCHEMA}.reviews
-                    (id, project, mr_url, mr_id, branch, title, author, status, model, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                (review.id, review.project, review.mr_url, review.mr_id, review.branch, review.title, review.author, review.status, review.model, review.created_at),
-            )
-        return review
-
-    async def get_review(self, review_id: str) -> Optional[Review]:
-        async with self._pool.connection() as conn:
-            cur = await conn.execute(
-                f"SELECT * FROM {REVIEW_SCHEMA}.reviews WHERE id = %s",
-                (review_id,),
-            )
-            row = await cur.fetchone()
-            if not row:
-                return None
-            return _dict_to_review(row)
-
-    async def get_reviews(self, project: Optional[str] = None, limit: int = 50) -> List[Review]:
-        async with self._pool.connection() as conn:
-            if project:
-                cur = await conn.execute(
-                    f"SELECT * FROM {REVIEW_SCHEMA}.reviews WHERE project = %s ORDER BY created_at DESC LIMIT %s",
-                    (project, limit),
-                )
-            else:
-                cur = await conn.execute(
-                    f"SELECT * FROM {REVIEW_SCHEMA}.reviews ORDER BY created_at DESC LIMIT %s",
-                    (limit,),
-                )
-            rows = await cur.fetchall()
-            return [_dict_to_review(r) for r in rows]
-
-    async def get_queued_reviews(self, limit: int = 10) -> List[Review]:
-        async with self._pool.connection() as conn:
-            cur = await conn.execute(
-                f"SELECT * FROM {REVIEW_SCHEMA}.reviews WHERE status = 'queued' ORDER BY created_at ASC LIMIT %s",
-                (limit,),
-            )
-            rows = await cur.fetchall()
-            return [_dict_to_review(r) for r in rows]
-
-    async def update_review(self, review_id: str, **kwargs) -> Optional[Review]:
-        if not kwargs:
-            return await self.get_review(review_id)
-        sets = ", ".join(f"{k} = %s" for k in kwargs)
-        values = list(kwargs.values()) + [review_id]
-        async with self._pool.connection() as conn:
-            await conn.execute(
-                f"UPDATE {REVIEW_SCHEMA}.reviews SET {sets} WHERE id = %s",
-                values,
-            )
-        return await self.get_review(review_id)
-
-    # ===================================================================
-    # Agents (shared — review agents in reviewer.agents, job agents in minions.agents)
+    # Agents
     # ===================================================================
 
     async def create_agent(self, agent: Agent) -> Agent:
-        # Route to correct schema based on whether this is a job agent or review agent
-        if agent.job_id:
-            return await self._create_job_agent(agent)
-        return await self._create_review_agent(agent)
-
-    async def _create_review_agent(self, agent: Agent) -> Agent:
-        async with self._pool.connection() as conn:
-            await conn.execute(
-                f"""INSERT INTO {REVIEW_SCHEMA}.agents
-                    (id, review_id, model, status, started_at, log_file)
-                    VALUES (%s, %s, %s, %s, %s, %s)""",
-                (agent.id, agent.review_id, agent.model, agent.status, agent.started_at, agent.log_file),
-            )
-        return agent
-
-    async def _create_job_agent(self, agent: Agent) -> Agent:
         async with self._pool.connection() as conn:
             await conn.execute(
                 f"""INSERT INTO {JOB_SCHEMA}.agents
@@ -182,37 +100,16 @@ class PostgresDatabase:
             return
         sets = ", ".join(f"{k} = %s" for k in kwargs)
         values = list(kwargs.values()) + [agent_id]
-        # Try both schemas
         async with self._pool.connection() as conn:
-            # Try minions schema first (job agents), fall back to reviewer schema
-            cur = await conn.execute(f"SELECT 1 FROM {JOB_SCHEMA}.agents WHERE id = %s", (agent_id,))
-            if await cur.fetchone():
-                await conn.execute(f"UPDATE {JOB_SCHEMA}.agents SET {sets} WHERE id = %s", values)
-            else:
-                await conn.execute(f"UPDATE {REVIEW_SCHEMA}.agents SET {sets} WHERE id = %s", values)
-
-    async def get_agents(self, review_id: str) -> List[Agent]:
-        async with self._pool.connection() as conn:
-            cur = await conn.execute(
-                f"SELECT * FROM {REVIEW_SCHEMA}.agents WHERE review_id = %s ORDER BY started_at",
-                (review_id,),
-            )
-            rows = await cur.fetchall()
-            return [_dict_to_agent(r) for r in rows]
+            await conn.execute(f"UPDATE {JOB_SCHEMA}.agents SET {sets} WHERE id = %s", values)
 
     async def get_agent(self, agent_id: str) -> Optional[Agent]:
         async with self._pool.connection() as conn:
-            # Try minions schema first
             cur = await conn.execute(f"SELECT * FROM {JOB_SCHEMA}.agents WHERE id = %s", (agent_id,))
             row = await cur.fetchone()
-            if row:
-                return _dict_to_job_agent(row)
-            # Fall back to reviewer schema
-            cur = await conn.execute(f"SELECT * FROM {REVIEW_SCHEMA}.agents WHERE id = %s", (agent_id,))
-            row = await cur.fetchone()
-            if row:
-                return _dict_to_agent(row)
-        return None
+            if not row:
+                return None
+            return _dict_to_job_agent(row)
 
     async def get_agents_for_job(self, job_id: str) -> List[Agent]:
         async with self._pool.connection() as conn:
@@ -224,47 +121,25 @@ class PostgresDatabase:
             return [_dict_to_job_agent(r) for r in rows]
 
     # ===================================================================
-    # Comments
-    # ===================================================================
-
-    async def create_comment(self, comment: ReviewComment) -> ReviewComment:
-        async with self._pool.connection() as conn:
-            await conn.execute(
-                f"""INSERT INTO {REVIEW_SCHEMA}.review_comments
-                    (id, review_id, file_path, line, severity, body, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)""",
-                (comment.id, comment.review_id, comment.file_path, comment.line, comment.severity, comment.body, comment.created_at),
-            )
-        return comment
-
-    async def get_comments(self, review_id: str) -> List[ReviewComment]:
-        async with self._pool.connection() as conn:
-            cur = await conn.execute(
-                f"SELECT * FROM {REVIEW_SCHEMA}.review_comments WHERE review_id = %s ORDER BY created_at",
-                (review_id,),
-            )
-            rows = await cur.fetchall()
-            return [_dict_to_comment(r) for r in rows]
-
-    # ===================================================================
     # Stats
     # ===================================================================
 
     async def get_cost_summary(self, project: Optional[str] = None, days: int = 30) -> dict:
         query = f"""
             SELECT
-                COUNT(DISTINCT r.id) as total_reviews,
+                COUNT(DISTINCT j.id) as total_reviews,
                 COALESCE(SUM(a.cost_usd), 0) as total_cost,
                 COALESCE(SUM(a.input_tokens), 0) as total_input_tokens,
                 COALESCE(SUM(a.output_tokens), 0) as total_output_tokens,
                 COALESCE(AVG(a.cost_usd), 0) as avg_cost_per_review
-            FROM {REVIEW_SCHEMA}.reviews r
-            LEFT JOIN {REVIEW_SCHEMA}.agents a ON a.review_id = r.id
-            WHERE r.created_at >= NOW() - INTERVAL '%s days'
+            FROM {JOB_SCHEMA}.jobs j
+            LEFT JOIN {JOB_SCHEMA}.agents a ON a.job_id = j.id
+            WHERE j.job_type = 'review'
+            AND j.created_at >= NOW() - INTERVAL '%s days'
         """
         params = [days]
         if project:
-            query += f" AND r.project = %s"
+            query += f" AND EXISTS (SELECT 1 FROM {JOB_SCHEMA}.tasks t WHERE t.job_id = j.id AND t.service = %s)"
             params.append(project)
 
         async with self._pool.connection() as conn:
@@ -287,13 +162,51 @@ class PostgresDatabase:
         job = Job(spec=spec, trello_card_id=trello_card_id)
         async with self._pool.connection() as conn:
             await conn.execute(
-                f"""INSERT INTO {JOB_SCHEMA}.jobs (id, spec, status, created_at, updated_at, trello_card_id)
-                    VALUES (%s, %s, %s, %s, %s, %s)""",
-                (job.id, job.spec, job.status, job.created_at, job.updated_at, job.trello_card_id),
+                f"""INSERT INTO {JOB_SCHEMA}.jobs (id, spec, status, job_type, mr_url, created_at, updated_at, trello_card_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                (job.id, job.spec, job.status, job.job_type, job.mr_url, job.created_at, job.updated_at, job.trello_card_id),
             )
         logger.info("Created job %s", job.id)
         await self.record_event(job.id, "job_created", "db", f"status={job.status}")
         return job
+
+    async def create_review_job(self, project: str, mr_url: str, mr_id: str, model: Optional[str] = None) -> tuple[Job, Task]:
+        """Create a review-type job with a single CODE_REVIEWER task atomically."""
+        job = Job(spec=mr_url, status=JobStatus.TASKS_CREATED, job_type="review", mr_url=mr_url)
+        task = Task(
+            job_id=job.id,
+            title=f"Review {mr_url}",
+            description=f"Code review for MR {mr_id}",
+            service=project,
+            agent_role=AgentRole.CODE_REVIEWER,
+            mr_url=mr_url,
+            mr_id=mr_id,
+        )
+        async with self._pool.connection() as conn:
+            await conn.execute(
+                f"""INSERT INTO {JOB_SCHEMA}.jobs (id, spec, status, job_type, mr_url, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                (job.id, job.spec, job.status, job.job_type, job.mr_url, job.created_at, job.updated_at),
+            )
+            await conn.execute(
+                f"""INSERT INTO {JOB_SCHEMA}.tasks
+                    (id, job_id, title, description, service, agent_role, status,
+                     branch_name, pr_number, pr_url, review_status, deploy_status,
+                     revision_count, attempt, max_attempts, error,
+                     mr_url, mr_id, verdict, comments_posted, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                (
+                    task.id, task.job_id, task.title, task.description, task.service,
+                    task.agent_role, task.status, task.branch_name, task.pr_number,
+                    task.pr_url, task.review_status, task.deploy_status,
+                    task.revision_count, task.attempt, task.max_attempts, task.error,
+                    task.mr_url, task.mr_id, task.verdict, task.comments_posted,
+                    task.created_at, task.updated_at,
+                ),
+            )
+        logger.info("Created review job %s with task %s for %s", job.id, task.id, mr_url)
+        await self.record_event(job.id, "job_created", "db", f"type=review mr_url={mr_url}")
+        return job, task
 
     async def get_job(self, job_id: str) -> Optional[Job]:
         async with self._pool.connection() as conn:
@@ -383,14 +296,16 @@ class PostgresDatabase:
                 f"""INSERT INTO {JOB_SCHEMA}.tasks
                     (id, job_id, title, description, service, agent_role, status,
                      branch_name, pr_number, pr_url, review_status, deploy_status,
-                     revision_count, attempt, max_attempts, error, created_at, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                     revision_count, attempt, max_attempts, error,
+                     mr_url, mr_id, verdict, comments_posted, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     task.id, task.job_id, task.title, task.description, task.service,
                     task.agent_role, task.status, task.branch_name, task.pr_number,
                     task.pr_url, task.review_status, task.deploy_status,
                     task.revision_count, task.attempt, task.max_attempts,
-                    task.error, task.created_at, task.updated_at,
+                    task.error, task.mr_url, task.mr_id, task.verdict, task.comments_posted,
+                    task.created_at, task.updated_at,
                 ),
             )
         logger.info("Created task %s: %s", task.id, task.title)
@@ -766,44 +681,6 @@ class PostgresDatabase:
 # ---------------------------------------------------------------------------
 
 
-def _dict_to_review(d: dict) -> Review:
-    return Review(
-        id=d["id"],
-        project=d["project"],
-        mr_url=d["mr_url"],
-        mr_id=d["mr_id"],
-        branch=d.get("branch"),
-        title=d.get("title"),
-        author=d.get("author"),
-        status=ReviewStatus(d["status"]),
-        verdict=d.get("verdict"),
-        summary=d.get("summary"),
-        comments_posted=d.get("comments_posted", 0),
-        model=d.get("model"),
-        error=d.get("error"),
-        created_at=_ts(d["created_at"]) or "",
-        started_at=_ts(d.get("started_at")),
-        completed_at=_ts(d.get("completed_at")),
-    )
-
-
-def _dict_to_agent(d: dict) -> Agent:
-    return Agent(
-        id=d["id"],
-        review_id=d.get("review_id"),
-        model=d.get("model", ""),
-        status=d["status"],
-        started_at=_ts(d["started_at"]) or "",
-        finished_at=_ts(d.get("finished_at")),
-        input_tokens=d.get("input_tokens", 0),
-        output_tokens=d.get("output_tokens", 0),
-        cost_usd=d.get("cost_usd", 0.0),
-        num_turns=d.get("num_turns", 0),
-        log_file=d.get("log_file"),
-        error=d.get("error"),
-    )
-
-
 def _dict_to_job_agent(d: dict) -> Agent:
     return Agent(
         id=d["id"],
@@ -827,23 +704,13 @@ def _dict_to_job_agent(d: dict) -> Agent:
     )
 
 
-def _dict_to_comment(d: dict) -> ReviewComment:
-    return ReviewComment(
-        id=d["id"],
-        review_id=d["review_id"],
-        file_path=d["file_path"],
-        line=d.get("line"),
-        severity=d.get("severity", "nit"),
-        body=d["body"],
-        created_at=_ts(d["created_at"]) or "",
-    )
-
-
 def _dict_to_job(d: dict) -> Job:
     return Job(
         id=d["id"],
         spec=d["spec"],
         status=JobStatus(d["status"]),
+        job_type=d.get("job_type") or "development",
+        mr_url=d.get("mr_url"),
         error=d.get("error"),
         trello_card_id=d.get("trello_card_id"),
         created_at=_ts(d["created_at"]) or "",
@@ -869,6 +736,10 @@ def _dict_to_task(d: dict) -> Task:
         attempt=d.get("attempt", 1),
         max_attempts=d.get("max_attempts", 3),
         error=d.get("error"),
+        mr_url=d.get("mr_url"),
+        mr_id=d.get("mr_id"),
+        verdict=d.get("verdict"),
+        comments_posted=d.get("comments_posted", 0),
         created_at=_ts(d["created_at"]) or "",
         updated_at=_ts(d["updated_at"]) or "",
     )

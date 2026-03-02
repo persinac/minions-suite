@@ -27,10 +27,10 @@ class PreconditionError(Exception):
 JOB_TRANSITIONS: dict[str, set[str]] = {
     "spec_received": {"spec_ready", "done", "failed"},
     "spec_ready": {"tasks_created", "failed"},
-    "tasks_created": {"dev_in_progress", "no_work_needed", "failed"},
+    "tasks_created": {"dev_in_progress", "review_in_progress", "no_work_needed", "failed"},
     "dev_in_progress": {"pr_open", "merged", "failed"},
     "pr_open": {"review_in_progress", "in_progress", "failed"},
-    "review_in_progress": {"tasks_created", "merged", "failed"},
+    "review_in_progress": {"tasks_created", "merged", "done", "failed"},
     "merged": {"deploying", "deployed", "failed"},
     "deploying": {"deployed", "failed"},
     "deployed": {"done", "failed"},

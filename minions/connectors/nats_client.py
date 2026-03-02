@@ -1,13 +1,18 @@
-"""Persistent NATS client for review event publishing and subscription.
+"""Persistent NATS client for the minions-suite.
 
-Carries forward the pattern from mcp-minions but scoped to review events.
+Uses the shared 'minions' JetStream stream (same as mcp-minions).
+All subjects are captured by the single stream.
 
 Subjects:
-    reviews.requested.<project>     — new MR needs review
-    reviews.started.<project>       — engine picked it up
-    reviews.completed.<project>     — review done (approve/request_changes)
-    reviews.failed.<project>        — agent errored
-    reviews.cost.<project>          — cost event for tracking
+    jobs.review.requested.<project> — new review job created
+    jobs.review.started.<project>   — review job picked up
+    jobs.review.completed.<project> — review job done (approve/request_changes)
+    jobs.review.failed.<project>    — review job errored
+    agents.work                     — job work items (K8s dispatch)
+    agents.<job_id>.status          — agent lifecycle events
+    agents.results.<job_id>         — agent completion results
+    jobs.<job_id>.status            — job status updates
+    system.events                   — dashboard SSE events
 """
 
 import asyncio
@@ -84,33 +89,33 @@ class NatsClient:
         self._subscriptions.append(sub)
         logger.info("Subscribed to %s", subject)
 
-    # -- Convenience methods for review events --
+    # -- Convenience methods for review job events --
 
-    async def publish_review_requested(self, project: str, review_id: str, mr_url: str) -> None:
-        await self.publish(f"reviews.requested.{project}", {
-            "review_id": review_id,
+    async def publish_review_requested(self, project: str, job_id: str, mr_url: str) -> None:
+        await self.publish(f"jobs.review.requested.{project}", {
+            "job_id": job_id,
             "mr_url": mr_url,
             "project": project,
         })
 
-    async def publish_review_started(self, project: str, review_id: str) -> None:
-        await self.publish(f"reviews.started.{project}", {
-            "review_id": review_id,
+    async def publish_review_started(self, project: str, job_id: str) -> None:
+        await self.publish(f"jobs.review.started.{project}", {
+            "job_id": job_id,
             "project": project,
         })
 
-    async def publish_review_completed(self, project: str, review_id: str, verdict: str, comments: int, cost: float) -> None:
-        await self.publish(f"reviews.completed.{project}", {
-            "review_id": review_id,
+    async def publish_review_completed(self, project: str, job_id: str, verdict: str, comments: int, cost: float) -> None:
+        await self.publish(f"jobs.review.completed.{project}", {
+            "job_id": job_id,
             "project": project,
             "verdict": verdict,
             "comments_posted": comments,
             "cost_usd": cost,
         })
 
-    async def publish_review_failed(self, project: str, review_id: str, error: str) -> None:
-        await self.publish(f"reviews.failed.{project}", {
-            "review_id": review_id,
+    async def publish_review_failed(self, project: str, job_id: str, error: str) -> None:
+        await self.publish(f"jobs.review.failed.{project}", {
+            "job_id": job_id,
             "project": project,
             "error": error[:500],
         })

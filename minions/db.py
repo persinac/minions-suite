@@ -1,4 +1,4 @@
-"""Database protocol and SQLite implementation for review history and job orchestration."""
+"""Database protocol and SQLite implementation for job orchestration."""
 
 import json
 import logging
@@ -12,9 +12,6 @@ from .models import (
     Job,
     JobStatus,
     Message,
-    Review,
-    ReviewComment,
-    ReviewStatus,
     Subtask,
     SubtaskStatus,
     Task,
@@ -39,41 +36,21 @@ logger = logging.getLogger(__name__)
 
 @runtime_checkable
 class AbstractDatabase(Protocol):
-    """Database interface for review persistence and job orchestration."""
+    """Database interface for job orchestration."""
 
     async def connect(self) -> None: ...
 
     async def close(self) -> None: ...
 
-    # -- Reviews --
-
-    async def create_review(self, review: Review) -> Review: ...
-
-    async def get_review(self, review_id: str) -> Optional[Review]: ...
-
-    async def get_reviews(self, project: Optional[str] = None, limit: int = 50) -> List[Review]: ...
-
-    async def get_queued_reviews(self, limit: int = 10) -> List[Review]: ...
-
-    async def update_review(self, review_id: str, **kwargs) -> Optional[Review]: ...
-
-    # -- Agents (review agents) --
+    # -- Agents --
 
     async def create_agent(self, agent: Agent) -> Agent: ...
 
     async def update_agent(self, agent_id: str, **kwargs) -> None: ...
 
-    async def get_agents(self, review_id: str) -> List[Agent]: ...
-
     async def get_agents_for_job(self, job_id: str) -> List[Agent]: ...
 
     async def get_agent(self, agent_id: str) -> Optional[Agent]: ...
-
-    # -- Comments (tracking only — actual posting goes through git provider) --
-
-    async def create_comment(self, comment: ReviewComment) -> ReviewComment: ...
-
-    async def get_comments(self, review_id: str) -> List[ReviewComment]: ...
 
     # -- Stats --
 
@@ -82,6 +59,8 @@ class AbstractDatabase(Protocol):
     # -- Jobs --
 
     async def create_job(self, spec: str, trello_card_id: Optional[str] = None) -> Job: ...
+
+    async def create_review_job(self, project: str, mr_url: str, mr_id: str, model: Optional[str] = None) -> tuple[Job, Task]: ...
 
     async def get_job(self, job_id: str) -> Optional[Job]: ...
 
@@ -193,25 +172,6 @@ class AbstractDatabase(Protocol):
 
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS reviews (
-    id TEXT PRIMARY KEY,
-    project TEXT NOT NULL,
-    mr_url TEXT NOT NULL,
-    mr_id TEXT NOT NULL,
-    branch TEXT,
-    title TEXT,
-    author TEXT,
-    status TEXT NOT NULL DEFAULT 'queued',
-    verdict TEXT,
-    summary TEXT,
-    comments_posted INTEGER DEFAULT 0,
-    model TEXT,
-    error TEXT,
-    created_at TEXT NOT NULL,
-    started_at TEXT,
-    completed_at TEXT
-);
-
 CREATE TABLE IF NOT EXISTS agents (
     id TEXT PRIMARY KEY,
     review_id TEXT,
@@ -233,20 +193,12 @@ CREATE TABLE IF NOT EXISTS agents (
     k8s_job_name TEXT
 );
 
-CREATE TABLE IF NOT EXISTS review_comments (
-    id TEXT PRIMARY KEY,
-    review_id TEXT NOT NULL REFERENCES reviews(id),
-    file_path TEXT NOT NULL,
-    line INTEGER,
-    severity TEXT DEFAULT 'nit',
-    body TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS jobs (
     id TEXT PRIMARY KEY,
     spec TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'spec_received',
+    job_type TEXT NOT NULL DEFAULT 'development',
+    mr_url TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     error TEXT,
@@ -270,6 +222,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     attempt INTEGER DEFAULT 1,
     max_attempts INTEGER DEFAULT 3,
     error TEXT,
+    mr_url TEXT,
+    mr_id TEXT,
+    verdict TEXT,
+    comments_posted INTEGER DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -335,10 +291,8 @@ CREATE TABLE IF NOT EXISTS state_transitions (
 );
 CREATE INDEX IF NOT EXISTS idx_transitions_job ON state_transitions(job_id, created_at);
 
-CREATE INDEX IF NOT EXISTS idx_reviews_status ON reviews(status);
-CREATE INDEX IF NOT EXISTS idx_reviews_project ON reviews(project);
-CREATE INDEX IF NOT EXISTS idx_agents_review ON agents(review_id);
-CREATE INDEX IF NOT EXISTS idx_comments_review ON review_comments(review_id);
+CREATE INDEX IF NOT EXISTS idx_jobs_type ON jobs(job_type);
+CREATE INDEX IF NOT EXISTS idx_tasks_mr ON tasks(mr_url);
 """
 
 
@@ -362,58 +316,7 @@ class SQLiteDatabase:
             self._db = None
 
     # ===================================================================
-    # Reviews
-    # ===================================================================
-
-    async def create_review(self, review: Review) -> Review:
-        await self._db.execute(
-            """INSERT INTO reviews (id, project, mr_url, mr_id, branch, title, author, status, model, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (review.id, review.project, review.mr_url, review.mr_id, review.branch, review.title, review.author, review.status, review.model, review.created_at),
-        )
-        await self._db.commit()
-        return review
-
-    async def get_review(self, review_id: str) -> Optional[Review]:
-        cursor = await self._db.execute("SELECT * FROM reviews WHERE id = ?", (review_id,))
-        row = await cursor.fetchone()
-        if not row:
-            return None
-        return _row_to_review(row)
-
-    async def get_reviews(self, project: Optional[str] = None, limit: int = 50) -> List[Review]:
-        if project:
-            cursor = await self._db.execute(
-                "SELECT * FROM reviews WHERE project = ? ORDER BY created_at DESC LIMIT ?",
-                (project, limit),
-            )
-        else:
-            cursor = await self._db.execute(
-                "SELECT * FROM reviews ORDER BY created_at DESC LIMIT ?",
-                (limit,),
-            )
-        rows = await cursor.fetchall()
-        return [_row_to_review(r) for r in rows]
-
-    async def get_queued_reviews(self, limit: int = 10) -> List[Review]:
-        cursor = await self._db.execute(
-            "SELECT * FROM reviews WHERE status = 'queued' ORDER BY created_at ASC LIMIT ?",
-            (limit,),
-        )
-        rows = await cursor.fetchall()
-        return [_row_to_review(r) for r in rows]
-
-    async def update_review(self, review_id: str, **kwargs) -> Optional[Review]:
-        if not kwargs:
-            return await self.get_review(review_id)
-        sets = ", ".join(f"{k} = ?" for k in kwargs)
-        values = list(kwargs.values()) + [review_id]
-        await self._db.execute(f"UPDATE reviews SET {sets} WHERE id = ?", values)
-        await self._db.commit()
-        return await self.get_review(review_id)
-
-    # ===================================================================
-    # Agents (shared between review and job orchestration)
+    # Agents
     # ===================================================================
 
     async def create_agent(self, agent: Agent) -> Agent:
@@ -441,14 +344,6 @@ class SQLiteDatabase:
         await self._db.execute(f"UPDATE agents SET {sets} WHERE id = ?", values)
         await self._db.commit()
 
-    async def get_agents(self, review_id: str) -> List[Agent]:
-        cursor = await self._db.execute(
-            "SELECT * FROM agents WHERE review_id = ? ORDER BY started_at",
-            (review_id,),
-        )
-        rows = await cursor.fetchall()
-        return [_row_to_agent(r) for r in rows]
-
     async def get_agent(self, agent_id: str) -> Optional[Agent]:
         cursor = await self._db.execute("SELECT * FROM agents WHERE id = ?", (agent_id,))
         row = await cursor.fetchone()
@@ -465,45 +360,25 @@ class SQLiteDatabase:
         return [_row_to_agent(r) for r in rows]
 
     # ===================================================================
-    # Comments
-    # ===================================================================
-
-    async def create_comment(self, comment: ReviewComment) -> ReviewComment:
-        await self._db.execute(
-            """INSERT INTO review_comments (id, review_id, file_path, line, severity, body, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (comment.id, comment.review_id, comment.file_path, comment.line, comment.severity, comment.body, comment.created_at),
-        )
-        await self._db.commit()
-        return comment
-
-    async def get_comments(self, review_id: str) -> List[ReviewComment]:
-        cursor = await self._db.execute(
-            "SELECT * FROM review_comments WHERE review_id = ? ORDER BY created_at",
-            (review_id,),
-        )
-        rows = await cursor.fetchall()
-        return [_row_to_comment(r) for r in rows]
-
-    # ===================================================================
     # Stats
     # ===================================================================
 
     async def get_cost_summary(self, project: Optional[str] = None, days: int = 30) -> dict:
         base_query = """
             SELECT
-                COUNT(DISTINCT r.id) as total_reviews,
+                COUNT(DISTINCT j.id) as total_reviews,
                 COALESCE(SUM(a.cost_usd), 0) as total_cost,
                 COALESCE(SUM(a.input_tokens), 0) as total_input_tokens,
                 COALESCE(SUM(a.output_tokens), 0) as total_output_tokens,
                 COALESCE(AVG(a.cost_usd), 0) as avg_cost_per_review
-            FROM reviews r
-            LEFT JOIN agents a ON a.review_id = r.id
-            WHERE r.created_at >= datetime('now', ?)
+            FROM jobs j
+            LEFT JOIN agents a ON a.job_id = j.id
+            WHERE j.job_type = 'review'
+            AND j.created_at >= datetime('now', ?)
         """
         params: list = [f"-{days} days"]
         if project:
-            base_query += " AND r.project = ?"
+            base_query += " AND EXISTS (SELECT 1 FROM tasks t WHERE t.job_id = j.id AND t.service = ?)"
             params.append(project)
 
         cursor = await self._db.execute(base_query, params)
@@ -524,13 +399,51 @@ class SQLiteDatabase:
     async def create_job(self, spec: str, trello_card_id: Optional[str] = None) -> Job:
         job = Job(spec=spec, trello_card_id=trello_card_id)
         await self._db.execute(
-            "INSERT INTO jobs (id, spec, status, created_at, updated_at, trello_card_id) VALUES (?, ?, ?, ?, ?, ?)",
-            (job.id, job.spec, job.status, job.created_at, job.updated_at, job.trello_card_id),
+            "INSERT INTO jobs (id, spec, status, job_type, mr_url, created_at, updated_at, trello_card_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (job.id, job.spec, job.status, job.job_type, job.mr_url, job.created_at, job.updated_at, job.trello_card_id),
         )
         await self._db.commit()
         logger.info("Created job %s", job.id)
         await self.record_event(job.id, "job_created", "db", f"status={job.status}")
         return job
+
+    async def create_review_job(self, project: str, mr_url: str, mr_id: str, model: Optional[str] = None) -> tuple[Job, Task]:
+        """Create a review-type job with a single CODE_REVIEWER task atomically."""
+        from .models import AgentRole
+
+        job = Job(spec=mr_url, status=JobStatus.TASKS_CREATED, job_type="review", mr_url=mr_url)
+        await self._db.execute(
+            "INSERT INTO jobs (id, spec, status, job_type, mr_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (job.id, job.spec, job.status, job.job_type, job.mr_url, job.created_at, job.updated_at),
+        )
+
+        task = Task(
+            job_id=job.id,
+            title=f"Review {mr_url}",
+            description=f"Code review for MR {mr_id}",
+            service=project,
+            agent_role=AgentRole.CODE_REVIEWER,
+            mr_url=mr_url,
+            mr_id=mr_id,
+        )
+        await self._db.execute(
+            """INSERT INTO tasks (id, job_id, title, description, service, agent_role, status,
+               branch_name, pr_number, pr_url, review_status, deploy_status, revision_count,
+               attempt, max_attempts, error, mr_url, mr_id, verdict, comments_posted, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                task.id, task.job_id, task.title, task.description, task.service,
+                task.agent_role, task.status, task.branch_name, task.pr_number,
+                task.pr_url, task.review_status, task.deploy_status,
+                task.revision_count, task.attempt, task.max_attempts, task.error,
+                task.mr_url, task.mr_id, task.verdict, task.comments_posted,
+                task.created_at, task.updated_at,
+            ),
+        )
+        await self._db.commit()
+        logger.info("Created review job %s with task %s for %s", job.id, task.id, mr_url)
+        await self.record_event(job.id, "job_created", "db", f"type=review mr_url={mr_url}")
+        return job, task
 
     async def get_job(self, job_id: str) -> Optional[Job]:
         cursor = await self._db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
@@ -611,13 +524,14 @@ class SQLiteDatabase:
         await self._db.execute(
             """INSERT INTO tasks (id, job_id, title, description, service, agent_role, status,
                branch_name, pr_number, pr_url, review_status, deploy_status, revision_count,
-               attempt, max_attempts, error, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               attempt, max_attempts, error, mr_url, mr_id, verdict, comments_posted, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 task.id, task.job_id, task.title, task.description, task.service,
                 task.agent_role, task.status, task.branch_name, task.pr_number,
                 task.pr_url, task.review_status, task.deploy_status,
                 task.revision_count, task.attempt, task.max_attempts, task.error,
+                task.mr_url, task.mr_id, task.verdict, task.comments_posted,
                 task.created_at, task.updated_at,
             ),
         )
@@ -907,27 +821,6 @@ class SQLiteDatabase:
 # ---------------------------------------------------------------------------
 
 
-def _row_to_review(row) -> Review:
-    return Review(
-        id=row["id"],
-        project=row["project"],
-        mr_url=row["mr_url"],
-        mr_id=row["mr_id"],
-        branch=row["branch"],
-        title=row["title"],
-        author=row["author"],
-        status=ReviewStatus(row["status"]),
-        verdict=row["verdict"],
-        summary=row["summary"],
-        comments_posted=row["comments_posted"] or 0,
-        model=row["model"],
-        error=row["error"],
-        created_at=row["created_at"],
-        started_at=row["started_at"],
-        completed_at=row["completed_at"],
-    )
-
-
 def _row_to_agent(row) -> Agent:
     return Agent(
         id=row["id"],
@@ -951,23 +844,13 @@ def _row_to_agent(row) -> Agent:
     )
 
 
-def _row_to_comment(row) -> ReviewComment:
-    return ReviewComment(
-        id=row["id"],
-        review_id=row["review_id"],
-        file_path=row["file_path"],
-        line=row["line"],
-        severity=row["severity"],
-        body=row["body"],
-        created_at=row["created_at"],
-    )
-
-
 def _row_to_job(row) -> Job:
     return Job(
         id=row["id"],
         spec=row["spec"],
         status=JobStatus(row["status"]),
+        job_type=row["job_type"] if row["job_type"] else "development",
+        mr_url=row["mr_url"],
         error=row["error"],
         trello_card_id=row["trello_card_id"],
         created_at=row["created_at"],
@@ -993,6 +876,10 @@ def _row_to_task(row) -> Task:
         attempt=row["attempt"] or 1,
         max_attempts=row["max_attempts"] or 3,
         error=row["error"],
+        mr_url=row["mr_url"],
+        mr_id=row["mr_id"],
+        verdict=row["verdict"],
+        comments_posted=row["comments_posted"] or 0,
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
