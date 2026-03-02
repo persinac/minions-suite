@@ -20,6 +20,37 @@ class ReviewProfile:
 
 
 @dataclass
+class AgentProfile:
+    """Composable agent profile: roles, languages, custom rules, and overrides."""
+
+    roles: list[str] = field(default_factory=list)
+    languages: list[str] = field(default_factory=list)
+    custom: list[str] = field(default_factory=list)
+    timeout: int = 600
+    model: str = ""
+    allowed_tools: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ServiceTarget:
+    """A deployable service within a project."""
+
+    name: str
+    project_id: str = ""
+    git_provider: str = "gitlab"
+    gitlab_url: str = ""
+    repo_path: str = ""
+    clone_url: str = ""
+    ci_type: str = ""  # e.g. "circleci", "github_actions", "gitlab_ci"
+    deploy_target: str = ""  # e.g. "apprunner", "k8s", "amplify"
+    language: str = ""
+    framework: str = ""
+    test_command: str = ""
+    lint_command: str = ""
+    default_branch: str = "main"
+
+
+@dataclass
 class ProjectConfig:
     """Configuration for a single project."""
 
@@ -32,6 +63,10 @@ class ProjectConfig:
     review_profile: ReviewProfile = field(default_factory=ReviewProfile)
     ignore_paths: list[str] = field(default_factory=list)
     auto_approve_paths: list[str] = field(default_factory=list)
+    # Job orchestration profiles
+    engineer_profile: AgentProfile = field(default_factory=AgentProfile)
+    deploy_profile: AgentProfile = field(default_factory=AgentProfile)
+    services: dict[str, ServiceTarget] = field(default_factory=dict)
 
 
 class ProjectRegistryError(Exception):
@@ -47,6 +82,46 @@ def _parse_profile(raw: dict) -> ReviewProfile:
         languages=raw.get("languages", []),
         custom=raw.get("custom", []),
     )
+
+
+def _parse_agent_profile(raw: dict) -> AgentProfile:
+    """Parse an agent profile section from YAML."""
+    if not raw:
+        return AgentProfile()
+    return AgentProfile(
+        roles=raw.get("roles", []),
+        languages=raw.get("languages", []),
+        custom=raw.get("custom", []),
+        timeout=raw.get("timeout", 600),
+        model=raw.get("model", ""),
+        allowed_tools=raw.get("allowed_tools", []),
+    )
+
+
+def _parse_services(raw: dict) -> dict[str, ServiceTarget]:
+    """Parse services section from YAML."""
+    if not raw:
+        return {}
+    services = {}
+    for name, svc in raw.items():
+        if svc is None:
+            continue
+        services[name] = ServiceTarget(
+            name=name,
+            project_id=svc.get("project_id", ""),
+            git_provider=svc.get("git_provider", "gitlab"),
+            gitlab_url=svc.get("gitlab_url", ""),
+            repo_path=svc.get("repo_path", ""),
+            clone_url=svc.get("clone_url", ""),
+            ci_type=svc.get("ci_type", ""),
+            deploy_target=svc.get("deploy_target", ""),
+            language=svc.get("language", ""),
+            framework=svc.get("framework", ""),
+            test_command=svc.get("test_command", ""),
+            lint_command=svc.get("lint_command", ""),
+            default_branch=svc.get("default_branch", "main"),
+        )
+    return services
 
 
 def build_registry(config_path: str) -> dict[str, ProjectConfig]:
@@ -85,6 +160,9 @@ def build_registry(config_path: str) -> dict[str, ProjectConfig]:
             review_profile=_parse_profile(proj.get("review_profile", {})),
             ignore_paths=proj.get("ignore_paths", []),
             auto_approve_paths=proj.get("auto_approve_paths", []),
+            engineer_profile=_parse_agent_profile(proj.get("engineer_profile", {})),
+            deploy_profile=_parse_agent_profile(proj.get("deploy_profile", {})),
+            services=_parse_services(proj.get("services", {})),
         )
 
     logger.info("Loaded %d projects from %s", len(registry), config_path)

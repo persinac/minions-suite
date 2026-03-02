@@ -1,5 +1,7 @@
 # Minion Suite
 
+Public-ish project
+
 Composable AI agent suite — vendor-agnostic (via [LiteLLM](https://github.com/BerriAI/litellm)), supporting GitLab, GitHub, and Bitbucket. Starting with a **code reviewer**, with more agents to follow.
 
 ## Quickstart

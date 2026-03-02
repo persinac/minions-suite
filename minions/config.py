@@ -64,6 +64,41 @@ class Config:
     # Logging
     log_level: str = "INFO"
 
+    # Arbiter coordination service (requires nats_enabled=True)
+    arbiter_enabled: bool = False
+
+    # Agent dispatch mode: "in_process" (LiteLLM loop) or "k8s" (Kubernetes Jobs)
+    agent_dispatch_mode: str = "in_process"
+
+    # K8s dispatch settings
+    k8s_dispatch: bool = False
+    k8s_namespace: str = "minion-suite"
+    k8s_agent_image: str = ""
+    k8s_agent_sa: str = "minion-suite-agent"
+    k8s_job_ttl: int = 3600
+    k8s_secrets_name: str = "minion-suite-secrets"
+
+    # Job engine
+    job_engine_poll_interval: int = 5
+    max_concurrent_jobs: int = 3
+    max_revisions: int = 3
+    dry_run: bool = False
+
+    # Trello poller (optional)
+    trello_api_key: str = ""
+    trello_token: str = ""
+    trello_board_id: str = ""
+    trello_poll_interval: int = 180
+
+    # S3 artifact upload (optional — set bucket to enable)
+    s3_artifact_bucket: str = ""
+    s3_artifact_region: str = "us-east-1"
+    s3_artifact_prefix: str = "minions"
+
+    # Container / deployment settings
+    repo_base_dir: str = "/repos"
+    mcp_connect_host: str = "localhost"
+
     @classmethod
     def from_env(cls) -> "Config":
         """Load configuration from environment variables."""
@@ -90,6 +125,27 @@ class Config:
             nats_stream=os.getenv("NATS_STREAM", "reviews"),
             projects_file=os.getenv("PROJECTS_FILE", str(base / "projects.yaml")),
             log_level=os.getenv("LOG_LEVEL", "INFO"),
+            arbiter_enabled=os.getenv("ARBITER_ENABLED", "").lower() in ("1", "true", "yes"),
+            agent_dispatch_mode=os.getenv("AGENT_DISPATCH_MODE", "in_process"),
+            k8s_dispatch=os.getenv("K8S_DISPATCH", "").lower() in ("1", "true", "yes"),
+            k8s_namespace=os.getenv("K8S_NAMESPACE", "minion-suite"),
+            k8s_agent_image=os.getenv("K8S_AGENT_IMAGE", ""),
+            k8s_agent_sa=os.getenv("K8S_AGENT_SERVICE_ACCOUNT", "minion-suite-agent"),
+            k8s_job_ttl=int(os.getenv("K8S_JOB_TTL_SECONDS", "3600")),
+            k8s_secrets_name=os.getenv("K8S_SECRETS_NAME", "minion-suite-secrets"),
+            job_engine_poll_interval=int(os.getenv("JOB_ENGINE_POLL_INTERVAL", "5")),
+            max_concurrent_jobs=int(os.getenv("MAX_CONCURRENT_JOBS", "3")),
+            max_revisions=int(os.getenv("MAX_REVISIONS", "3")),
+            dry_run=os.getenv("DRY_RUN", "").lower() in ("1", "true", "yes"),
+            trello_api_key=os.getenv("TRELLO_API_KEY", ""),
+            trello_token=os.getenv("TRELLO_TOKEN", ""),
+            trello_board_id=os.getenv("TRELLO_BOARD_ID", ""),
+            trello_poll_interval=int(os.getenv("TRELLO_POLL_INTERVAL", "180")),
+            s3_artifact_bucket=os.getenv("S3_ARTIFACT_BUCKET", ""),
+            s3_artifact_region=os.getenv("S3_ARTIFACT_REGION", "us-east-1"),
+            s3_artifact_prefix=os.getenv("S3_ARTIFACT_PREFIX", "minions"),
+            repo_base_dir=os.getenv("REPO_BASE_DIR", "/repos"),
+            mcp_connect_host=os.getenv("MCP_CONNECT_HOST", "localhost"),
         )
 
     @property

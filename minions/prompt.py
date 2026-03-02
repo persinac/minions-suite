@@ -12,8 +12,8 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from .models import Review
-from .project_registry import ProjectConfig, ReviewProfile, infer_profile
+from .models import Job, Review, Task
+from .project_registry import ProjectConfig, ReviewProfile, ServiceTarget, infer_profile
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ def _load(relative_path: str) -> Optional[str]:
     return path.read_text(encoding="utf-8").strip()
 
 
-def build_prompt(
+def build_review_prompt(
     review: Review,
     project: ProjectConfig,
     changed_files: list[str],
@@ -107,3 +107,122 @@ def _build_review_context(
 
 ### Changed Files
 {files_list}"""
+
+
+# Backward compat alias
+build_prompt = build_review_prompt
+
+
+# ---------------------------------------------------------------------------
+# Agent prompt assembly (job orchestration)
+# ---------------------------------------------------------------------------
+
+# Map agent_role to prompt template file
+_ROLE_TO_PROMPT: dict[str, str] = {
+    "spec_analyst": "agents/spec_analyst.md",
+    "arbiter": "agents/arbiter.md",
+    "backend_engineer": "agents/engineer.md",
+    "frontend_engineer": "agents/engineer.md",
+    "database_engineer": "agents/engineer.md",
+    "code_reviewer": "agents/spec_analyst.md",  # reuse base analysis prompt
+    "deploy_monitor": "agents/deployer.md",
+}
+
+# Map agent_role to language inference
+_ROLE_TO_LANGUAGE: dict[str, str] = {
+    "backend_engineer": "python",
+    "frontend_engineer": "typescript",
+    "database_engineer": "sql",
+}
+
+
+def build_agent_prompt(
+    job: Job,
+    task: Task,
+    project: Optional[ProjectConfig] = None,
+    service: Optional[ServiceTarget] = None,
+    context: Optional[str] = None,
+) -> str:
+    """Assemble a prompt for a job orchestration agent.
+
+    Selects the agent prompt template based on task.agent_role,
+    then layers on role and language mixins plus task context.
+    """
+    sections: list[str] = []
+
+    # 1. Agent-specific base prompt
+    prompt_file = _ROLE_TO_PROMPT.get(task.agent_role, "agents/engineer.md")
+    agent_base = _load(prompt_file)
+    if agent_base:
+        sections.append(agent_base)
+
+    # 2. Role mixins (if applicable)
+    role = task.agent_role
+    if role in ("backend_engineer", "frontend_engineer"):
+        role_name = role.replace("_engineer", "")
+        content = _load(f"roles/{role_name}.md")
+        if content:
+            sections.append(content)
+
+    # 3. Language mixin
+    lang = _ROLE_TO_LANGUAGE.get(role, "")
+    if service and service.language:
+        lang = service.language
+    if lang:
+        content = _load(f"languages/{lang}.md")
+        if content:
+            sections.append(content)
+
+    # 4. Task context
+    task_context = _build_task_context(job, task, project, service)
+    sections.append(task_context)
+
+    # 5. Additional context (e.g. checkpoint summary for retries)
+    if context:
+        sections.append(context)
+
+    return "\n\n---\n\n".join(sections)
+
+
+def _build_task_context(
+    job: Job,
+    task: Task,
+    project: Optional[ProjectConfig] = None,
+    service: Optional[ServiceTarget] = None,
+) -> str:
+    """Build the runtime context section for an agent prompt."""
+    lines = [
+        "## Task Context",
+        "",
+        f"- Job ID: `{job.id}`",
+        f"- Task ID: `{task.id}`",
+        f"- Task: {task.title}",
+        f"- Service: `{task.service}`",
+        f"- Role: `{task.agent_role}`",
+        f"- Attempt: {task.attempt}/{task.max_attempts}",
+    ]
+
+    if task.description:
+        lines.append(f"\n### Description\n{task.description}")
+
+    if project:
+        lines.append(f"\n- Project: `{project.name}`")
+
+    if service:
+        if service.clone_url:
+            lines.append(f"- Repo: `{service.clone_url}`")
+        if service.default_branch:
+            lines.append(f"- Default branch: `{service.default_branch}`")
+        if service.test_command:
+            lines.append(f"- Test command: `{service.test_command}`")
+        if service.lint_command:
+            lines.append(f"- Lint command: `{service.lint_command}`")
+        if service.framework:
+            lines.append(f"- Framework: `{service.framework}`")
+
+    if task.branch_name:
+        lines.append(f"- Branch: `{task.branch_name}`")
+
+    lines.append(f"\n### Spec\n{job.spec}")
+
+    return "\n".join(lines)

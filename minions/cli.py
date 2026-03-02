@@ -3,9 +3,12 @@
 Usage:
     minion review <mr-url>                        # One-shot code review
     minion review --watch --project <name>        # Poll for new MRs
-    minion --server                               # MCP server + review engine
+    minion job <spec-text-or-file>                # Submit a job and watch
+    minion --server                               # MCP server + review engine + job engine + arbiter
+    minion --trello-only                          # Trello poller mode
     minion --preflight                            # Health checks
     minion --status                               # Recent reviews
+    minion --job-status <JOB_ID>                  # Show job status + tasks
     minion --costs [--project <name>]             # Cost summary
 """
 
@@ -20,7 +23,7 @@ from pathlib import Path
 
 from .config import Config
 from .db import SQLiteDatabase
-from .models import Review, ReviewStatus
+from .models import Job, Review, ReviewStatus
 
 
 logger = logging.getLogger("minions")
@@ -76,7 +79,6 @@ async def _run_one_shot(url: str, project_name: str, config: Config) -> int:
         projects = build_registry(config.projects_file)
     except Exception as e:
         logger.error("Failed to load projects: %s", e)
-        # Create a minimal project config for ad-hoc reviews
         projects = {}
 
     # Resolve project
@@ -149,11 +151,13 @@ async def _run_one_shot(url: str, project_name: str, config: Config) -> int:
 
 
 async def _run_server(config: Config) -> None:
-    """Run the MCP server + review engine."""
+    """Run the MCP server + review engine + job engine + arbiter."""
     from .connectors.nats_client import NatsClient
+    from .job_engine import JobEngine
     from .project_registry import build_registry
     from .review_engine import ReviewEngine
     from .server import create_server
+    from .tool_audit_middleware import ToolAuditMiddleware
 
     db = _create_db(config)
     await db.connect()
@@ -168,24 +172,198 @@ async def _run_server(config: Config) -> None:
         nats_client = NatsClient()
         await nats_client.connect(NatsConfig.from_env())
 
-    # Create MCP server
+    # Optional K8s launcher
+    k8s_launcher = None
+    if config.k8s_dispatch:
+        from .k8s_launcher import K8sJobLauncher
+
+        k8s_launcher = K8sJobLauncher(
+            namespace=config.k8s_namespace,
+            agent_image=config.k8s_agent_image,
+            agent_sa=config.k8s_agent_sa,
+            job_ttl=config.k8s_job_ttl,
+            secrets_name=config.k8s_secrets_name,
+        )
+
+    # Create MCP server with audit middleware
     mcp = create_server(db, config)
+    mcp.add_middleware(ToolAuditMiddleware(db))
 
-    # Create engine
-    engine = ReviewEngine(db, config, projects, nats_client)
+    # Create artifact uploader
+    from .artifact_uploader import ArtifactUploader
 
-    # Run both
-    engine_task = asyncio.create_task(engine.start())
+    artifact_uploader = ArtifactUploader(db, config)
+
+    # Create engines
+    review_engine = ReviewEngine(db, config, projects, nats_client)
+    job_engine = JobEngine(db, config, k8s_launcher=k8s_launcher, nats_client=nats_client, artifact_uploader=artifact_uploader)
+
+    # Optional arbiter — route MCP tool state mutations through NATS
+    arbiter = None
+    if config.arbiter_enabled and nats_client:
+        from .arbiter import Arbiter
+        from .server import set_nats_client
+        from .timeout_config import TimeoutConfig
+
+        arbiter = Arbiter(db, TimeoutConfig(), nats_client)
+        set_nats_client(nats_client)
+
+    # Start all components
+    tasks = []
+    tasks.append(asyncio.create_task(review_engine.start(), name="review-engine"))
+    tasks.append(asyncio.create_task(job_engine.start(), name="job-engine"))
+    if arbiter:
+        tasks.append(asyncio.create_task(arbiter.start(), name="arbiter"))
 
     try:
-        # Run MCP server (blocks)
         await mcp.run_sse_async(host=config.mcp_host, port=config.mcp_port)
+    finally:
+        await review_engine.stop()
+        await job_engine.stop()
+        if arbiter:
+            await arbiter.stop()
+        for t in tasks:
+            t.cancel()
+        if nats_client:
+            await nats_client.close()
+        await db.close()
+
+
+async def _run_trello_only(config: Config) -> None:
+    """Run only the Trello poller + job engine (for infrastructure compatibility)."""
+    from .job_engine import JobEngine
+    from .trello_poller import TrelloPoller
+
+    if not config.trello_api_key or not config.trello_token or not config.trello_board_id:
+        print("Error: TRELLO_API_KEY, TRELLO_TOKEN, and TRELLO_BOARD_ID must be set")
+        sys.exit(1)
+
+    db = _create_db(config)
+    await db.connect()
+
+    # Optional NATS
+    nats_client = None
+    if config.nats_enabled:
+        from .connectors.nats_client import NatsClient
+        from .connectors.nats_config import NatsConfig
+
+        nats_client = NatsClient()
+        await nats_client.connect(NatsConfig.from_env())
+
+    # Optional K8s launcher
+    k8s_launcher = None
+    if config.k8s_dispatch:
+        from .k8s_launcher import K8sJobLauncher
+
+        k8s_launcher = K8sJobLauncher(
+            namespace=config.k8s_namespace,
+            agent_image=config.k8s_agent_image,
+            agent_sa=config.k8s_agent_sa,
+            job_ttl=config.k8s_job_ttl,
+            secrets_name=config.k8s_secrets_name,
+        )
+
+    from .artifact_uploader import ArtifactUploader
+
+    artifact_uploader = ArtifactUploader(db, config)
+    job_engine = JobEngine(db, config, k8s_launcher=k8s_launcher, nats_client=nats_client, artifact_uploader=artifact_uploader)
+    poller = TrelloPoller(config, db)
+
+    # Optional arbiter — route MCP tool state mutations through NATS
+    arbiter = None
+    if config.arbiter_enabled and nats_client:
+        from .arbiter import Arbiter
+        from .server import set_nats_client
+        from .timeout_config import TimeoutConfig
+
+        arbiter = Arbiter(db, TimeoutConfig(), nats_client)
+        set_nats_client(nats_client)
+
+    engine_task = asyncio.create_task(job_engine.start(), name="job-engine")
+    poller_task = asyncio.create_task(poller.start(), name="trello-poller")
+    arbiter_task = None
+    if arbiter:
+        arbiter_task = asyncio.create_task(arbiter.start(), name="arbiter")
+
+    try:
+        # Wait forever (until interrupted)
+        await asyncio.Event().wait()
+    finally:
+        await poller.stop()
+        await job_engine.stop()
+        if arbiter:
+            await arbiter.stop()
+        engine_task.cancel()
+        poller_task.cancel()
+        if arbiter_task:
+            arbiter_task.cancel()
+        if nats_client:
+            await nats_client.close()
+        await db.close()
+
+
+async def _run_job(spec_text: str, config: Config) -> int:
+    """Submit a job and run the engine until it completes."""
+    from .job_engine import JobEngine
+    from .models import JobStatus
+
+    db = _create_db(config)
+    await db.connect()
+
+    # Create job
+    job = Job(spec=spec_text)
+    job = await db.create_job(job)
+    print(f"Job {job.id} created (status: {job.status})")
+
+    # Optional NATS
+    nats_client = None
+    if config.nats_enabled:
+        from .connectors.nats_client import NatsClient
+        from .connectors.nats_config import NatsConfig
+
+        nats_client = NatsClient()
+        await nats_client.connect(NatsConfig.from_env())
+
+    from .artifact_uploader import ArtifactUploader
+
+    artifact_uploader = ArtifactUploader(db, config)
+    engine = JobEngine(db, config, nats_client=nats_client, artifact_uploader=artifact_uploader)
+
+    terminal_statuses = {JobStatus.DONE, JobStatus.FAILED, JobStatus.NO_WORK_NEEDED}
+    exit_code = 0
+
+    # Run engine in background, poll job status
+    engine_task = asyncio.create_task(engine.start(), name="job-engine")
+
+    try:
+        last_status = None
+        while True:
+            await asyncio.sleep(2)
+            current_job = await db.get_job(job.id)
+            if not current_job:
+                print("Error: job disappeared from DB")
+                exit_code = 1
+                break
+            if current_job.status != last_status:
+                last_status = current_job.status
+                print(f"  Status: {current_job.status}")
+            if current_job.status in terminal_statuses:
+                if current_job.status == JobStatus.FAILED:
+                    print(f"\nJob failed: {current_job.error or 'unknown'}")
+                    exit_code = 1
+                elif current_job.status == JobStatus.NO_WORK_NEEDED:
+                    print("\nJob completed: no work needed")
+                else:
+                    print("\nJob completed successfully!")
+                break
     finally:
         await engine.stop()
         engine_task.cancel()
         if nats_client:
             await nats_client.close()
         await db.close()
+
+    return exit_code
 
 
 async def _show_status(config: Config) -> None:
@@ -207,6 +385,44 @@ async def _show_status(config: Config) -> None:
     await db.close()
 
 
+async def _show_job_status(config: Config, job_id: str) -> None:
+    """Show job status with tasks and agents."""
+    db = _create_db(config)
+    await db.connect()
+
+    job = await db.get_job(job_id)
+    if not job:
+        print(f"Job {job_id} not found.")
+        await db.close()
+        return
+
+    print(f"\nJob {job.id}")
+    print(f"  Status:     {job.status}")
+    print(f"  Created:    {job.created_at}")
+    print(f"  Updated:    {job.updated_at}")
+    if job.error:
+        print(f"  Error:      {job.error}")
+    print(f"  Spec:       {job.spec[:100]}{'...' if len(job.spec) > 100 else ''}")
+
+    tasks = await db.get_tasks(job_id)
+    if tasks:
+        print(f"\n  Tasks ({len(tasks)}):")
+        for t in tasks:
+            status_str = str(t.status)
+            pr_str = f" PR={t.pr_url}" if t.pr_url else ""
+            error_str = f" ERROR={t.error[:50]}" if t.error else ""
+            print(f"    {t.id[:8]} [{status_str:<12}] {t.agent_role:<20} {t.service:<15} {t.title[:40]}{pr_str}{error_str}")
+
+    agents = await db.get_agents_for_job(job_id)
+    if agents:
+        print(f"\n  Agents ({len(agents)}):")
+        for a in agents:
+            cost_str = f"${a.cost_usd:.4f}" if a.cost_usd else "$0"
+            print(f"    {a.id[:8]} [{a.status:<10}] {a.role or '-':<20} {a.model:<20} {cost_str}")
+
+    await db.close()
+
+
 async def _show_costs(config: Config, project: str = None) -> None:
     """Show cost summary."""
     db = _create_db(config)
@@ -224,11 +440,83 @@ async def _show_costs(config: Config, project: str = None) -> None:
     await db.close()
 
 
+async def _run_agent_worker(config: Config) -> int:
+    """K8s agent worker mode: pull work item, run LiteLLM loop, publish result."""
+    import os
+
+    from .agent_dispatch import AgentResultMessage, deserialize_work_item, serialize_result
+
+    work_item_path = os.getenv("AGENT_WORK_ITEM_PATH")
+    if not work_item_path:
+        print("Error: AGENT_WORK_ITEM_PATH not set")
+        return 1
+
+    work_item_data = Path(work_item_path).read_bytes()
+    work_item = deserialize_work_item(work_item_data)
+
+    logger.info("Agent worker starting: role=%s job=%s agent=%s", work_item.role, work_item.job_id, work_item.agent_id)
+
+    working_dir = os.getenv("AGENT_WORKING_DIR", work_item.working_dir)
+
+    # Build a minimal Job and Task for the agent loop
+    from .models import AgentRole, Task
+
+    job = Job(id=work_item.job_id, spec="(loaded from work item)")
+    task = Task(
+        job_id=work_item.job_id,
+        title="Worker task",
+        description=work_item.prompt,
+        service="_worker",
+        agent_role=work_item.role,
+    )
+
+    from .agent import run_agent
+
+    agent = await run_agent(job=job, task=task, config=config)
+
+    # Build result message
+    result_msg = AgentResultMessage(
+        job_id=work_item.job_id,
+        agent_id=work_item.agent_id,
+        role=work_item.role,
+        success=(agent.status == "done"),
+        return_code=0 if agent.status == "done" else 1,
+        log_file=agent.log_file or "",
+        stderr_tail=agent.error or "",
+        input_tokens=agent.input_tokens,
+        output_tokens=agent.output_tokens,
+        cache_read_tokens=agent.cache_read_tokens,
+        cache_creation_tokens=agent.cache_creation_tokens,
+        cost_usd=agent.cost_usd,
+        num_turns=agent.num_turns,
+        model=agent.model,
+    )
+
+    # Publish result via NATS if available
+    if config.nats_enabled:
+        try:
+            from .connectors.nats_publisher import publish_agent_status
+
+            await publish_agent_status(work_item.job_id, work_item.agent_id, work_item.role, agent.status)
+        except Exception:
+            logger.debug("Failed to publish NATS result", exc_info=True)
+
+    # Write result to stdout for K8s log collection
+    print(json.dumps({
+        "agent_id": result_msg.agent_id,
+        "success": result_msg.success,
+        "cost_usd": result_msg.cost_usd,
+        "num_turns": result_msg.num_turns,
+    }))
+
+    return 0 if result_msg.success else 1
+
+
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
         prog="minion",
-        description="Minion Suite — AI agent suite starting with code review",
+        description="Minion Suite — AI agent suite for code review and multi-agent job orchestration",
     )
     subparsers = parser.add_subparsers(dest="command")
 
@@ -237,11 +525,21 @@ def main():
     review_parser.add_argument("mr_url", help="MR/PR URL to review")
     review_parser.add_argument("--project", "-p", help="Project name from projects.yaml")
 
+    # minion job <spec>
+    job_parser = subparsers.add_parser("job", help="Submit a job specification")
+    job_parser.add_argument("spec", help="Specification text or path to .md file")
+
+    # minion agent-worker (K8s mode)
+    subparsers.add_parser("agent-worker", help="Run as K8s agent worker (reads from AGENT_WORK_ITEM_PATH)")
+
     # Global flags
-    parser.add_argument("--server", action="store_true", help="Run MCP server + review engine")
+    parser.add_argument("--server", action="store_true", help="Run MCP server + review engine + job engine + arbiter")
+    parser.add_argument("--trello-only", action="store_true", help="Run Trello poller + job engine only")
     parser.add_argument("--preflight", action="store_true", help="Run health checks")
     parser.add_argument("--status", action="store_true", help="Show recent review status")
+    parser.add_argument("--job-status", metavar="JOB_ID", help="Show job status + tasks + agents")
     parser.add_argument("--costs", action="store_true", help="Show cost summary")
+    parser.add_argument("--backfill-artifacts", action="store_true", help="Upload artifacts for completed jobs to S3")
     parser.add_argument("--project", "-p", dest="global_project", help="Project filter (for --costs)")
 
     args = parser.parse_args()
@@ -266,12 +564,24 @@ def main():
         asyncio.run(_show_status(config))
         return
 
+    if args.job_status:
+        asyncio.run(_show_job_status(config, args.job_status))
+        return
+
     if args.costs:
         asyncio.run(_show_costs(config, args.global_project))
         return
 
+    if args.backfill_artifacts:
+        asyncio.run(_backfill_artifacts(config))
+        return
+
     if args.server:
         asyncio.run(_run_server(config))
+        return
+
+    if args.trello_only:
+        asyncio.run(_run_trello_only(config))
         return
 
     if args.command == "review":
@@ -279,8 +589,42 @@ def main():
         sys.exit(exit_code)
         return
 
+    if args.command == "job":
+        spec = args.spec
+        # Check if it's a file path
+        spec_path = Path(spec)
+        if spec_path.exists() and spec_path.is_file():
+            spec = spec_path.read_text(encoding="utf-8")
+        exit_code = asyncio.run(_run_job(spec, config))
+        sys.exit(exit_code)
+        return
+
+    if args.command == "agent-worker":
+        exit_code = asyncio.run(_run_agent_worker(config))
+        sys.exit(exit_code)
+        return
+
     parser.print_help()
     sys.exit(1)
+
+
+async def _backfill_artifacts(config: Config):
+    """Upload artifacts for all completed jobs to S3."""
+    from .artifact_uploader import ArtifactUploader
+
+    db = _create_db(config)
+    await db.connect()
+
+    uploader = ArtifactUploader(db, config)
+    if not uploader.is_enabled():
+        print("S3 artifact upload not configured. Set S3_ARTIFACT_BUCKET to enable.")
+        return
+
+    print(f"Backfilling artifacts to s3://{config.s3_artifact_bucket}/{config.s3_artifact_prefix} ...")
+    await uploader.backfill()
+    print("Backfill complete.")
+
+    await db.close()
 
 
 if __name__ == "__main__":

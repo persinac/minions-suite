@@ -177,6 +177,68 @@ class ReviewEngine:
             logger.exception("Error handling NATS review request")
 
 
+async def process_review_as_task(
+    task,
+    job,
+    project: ProjectConfig,
+    config: Config,
+    db: AbstractDatabase,
+) -> None:
+    """Run a code review as part of a job workflow.
+
+    Called by JobEngine when a task reaches PR_OPEN and needs code review.
+    Uses the same LiteLLM review agent but updates task state machine
+    instead of flat review state.
+    """
+    from .agent import run_review
+    from .models import Review, Task
+
+    if not task.pr_url:
+        logger.warning("Task %s has no PR URL, cannot review", task.id)
+        return
+
+    # Parse MR ID from PR URL
+    mr_id = task.pr_url.rstrip("/").split("/")[-1]
+
+    # Create a Review record linked to this task
+    review = Review(
+        project=project.name,
+        mr_url=task.pr_url,
+        mr_id=mr_id,
+        model=project.model or config.model,
+    )
+    review = await db.create_review(review)
+
+    try:
+        provider = _create_provider_for_project(project, config)
+    except ValueError as e:
+        logger.error("Failed to create provider for task %s review: %s", task.id, e)
+        return
+
+    await db.update_review(review.id, status=ReviewStatus.IN_PROGRESS, started_at=_now())
+
+    agent = await run_review(review, project, provider, config, db)
+
+    if agent.status == "done":
+        await db.update_review(
+            review.id,
+            status=ReviewStatus.DONE,
+            verdict=review.verdict,
+            summary=review.summary,
+            comments_posted=review.comments_posted,
+            completed_at=_now(),
+        )
+        logger.info("Task %s review complete: verdict=%s", task.id, review.verdict)
+    else:
+        await db.update_review(
+            review.id,
+            status=ReviewStatus.FAILED,
+            error=agent.error,
+            completed_at=_now(),
+        )
+        logger.warning("Task %s review failed: %s", task.id, agent.error)
+
+
 def _create_provider_for_project(project: ProjectConfig, config: Config) -> GitProviderProtocol:
     """Create the appropriate git provider for a project."""
     provider_type = project.git_provider or config.git_provider
