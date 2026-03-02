@@ -20,11 +20,11 @@ if [ ! -d "$MIGRATIONS_DIR" ]; then
 fi
 
 # Construct DATABASE_URL from environment variables or Doppler secrets
-DB_USER="${DB_ADMIN:-$(doppler secrets get DB_ADMIN --plain --project database-migrations --config prd)}"
-DB_PASSWORD="${DB_PASSWORD:-$(doppler secrets get DB_PASSWORD --plain --project database-migrations --config prd)}"
-DB_HOST="${DB_HOST:-$(doppler secrets get DB_HOST --plain --project database-migrations --config prd)}"
-DB_PORT="${DB_PORT:-$(doppler secrets get DB_PORT --plain --project database-migrations --config prd)}"
-DB_NAME="${DB_NAME:-$(doppler secrets get DB_NAME --plain --project database-migrations --config prd)}"
+DB_USER="${DB_ADMIN:-$(doppler secrets get DB_ADMIN --plain --project mcp-minions --config prd)}"
+DB_PASSWORD="${DB_PASSWORD:-$(doppler secrets get DB_PASSWORD --plain --project mcp-minions --config prd)}"
+DB_HOST="${DB_HOST:-$(doppler secrets get DB_HOST --plain --project mcp-minions --config prd)}"
+DB_PORT="${DB_PORT:-$(doppler secrets get DB_PORT --plain --project mcp-minions --config prd)}"
+DB_NAME="${DB_NAME:-$(doppler secrets get DB_NAME --plain --project mcp-minions --config prd)}"
 
 # URL-encode user and password in case they contain special characters
 urlencode() {

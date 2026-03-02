@@ -22,11 +22,11 @@ if (-not (Test-Path $migrationsDir)) {
 }
 
 # Construct DATABASE_URL from Doppler secrets
-$dbUser     = doppler secrets get DB_ADMIN    --plain --project db-migrations --config prd
-$dbPassword = doppler secrets get DB_PASSWORD --plain --project db-migrations --config prd
-$dbHost     = doppler secrets get DB_HOST     --plain --project db-migrations --config prd
-$dbPort     = doppler secrets get DB_PORT     --plain --project db-migrations --config prd
-$dbName     = doppler secrets get DB_NAME     --plain --project db-migrations --config prd
+$dbUser     = doppler secrets get DB_ADMIN    --plain --project mcp-minions --config prd
+$dbPassword = doppler secrets get DB_PASSWORD --plain --project mcp-minions --config prd
+$dbHost     = doppler secrets get DB_HOST     --plain --project mcp-minions --config prd
+$dbPort     = doppler secrets get DB_PORT     --plain --project mcp-minions --config prd
+$dbName     = doppler secrets get DB_NAME     --plain --project mcp-minions --config prd
 
 # URL-encode user and password in case they contain special characters
 $dbUserEncoded     = [System.Uri]::EscapeDataString($dbUser)
