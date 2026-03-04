@@ -316,9 +316,12 @@ def run_preflight(config: Config | None = None) -> list[Check]:
     container = _in_container()
 
     # Core CLIs
+    secrets_cmd = os.getenv("SECRETS_CMD", "")
+    doppler_required = "doppler" in secrets_cmd and not container
+
     checks.append(check_cli("git", ["git", "--version"]))
     checks.append(check_cli("rg", ["rg", "--version"], required=False))
-    checks.append(check_cli("doppler", ["doppler", "--version"], required=not container))
+    checks.append(check_cli("doppler", ["doppler", "--version"], required=doppler_required))
 
     # Deploy monitor CLIs (optional)
     checks.append(check_cli("circleci", ["circleci", "version"], required=False))
@@ -331,8 +334,10 @@ def run_preflight(config: Config | None = None) -> list[Check]:
     checks.append(check_git_provider(config))
 
     # Auth checks
-    if shutil.which("doppler") and not container:
+    if shutil.which("doppler") and doppler_required:
         checks.append(check_doppler_auth())
+    elif shutil.which("doppler") and not doppler_required:
+        checks.append(Check("doppler auth", WARN, "doppler found but SECRETS_CMD does not use it", required=False))
     if shutil.which("circleci"):
         checks.append(check_circleci_auth())
     if shutil.which("aws"):
