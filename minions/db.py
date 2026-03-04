@@ -4,8 +4,6 @@ import json
 import logging
 from typing import List, Optional, Protocol, runtime_checkable
 
-import aiosqlite
-
 from .models import (
     Agent,
     AgentRole,
@@ -300,10 +298,14 @@ class SQLiteDatabase:
     """Async SQLite database for local development."""
 
     def __init__(self, db_path: str):
+        import aiosqlite
+
         self.db_path = db_path
         self._db: Optional[aiosqlite.Connection] = None
 
     async def connect(self) -> None:
+        import aiosqlite
+
         self._db = await aiosqlite.connect(self.db_path)
         self._db.row_factory = aiosqlite.Row
         await self._db.executescript(SCHEMA)

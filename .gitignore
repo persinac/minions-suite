@@ -7,6 +7,7 @@ dist/
 logs/
 .env
 .env.*
+*.env
 prompts/custom/
 .python-version
 .idea

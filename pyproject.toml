@@ -24,7 +24,7 @@ dependencies = [
 minion = "minions.cli:main"
 
 [tool.uv]
-python-preference = "only-managed"
+python-preference = "managed"
 
 [tool.ruff]
 line-length = 150
