@@ -9,5 +9,7 @@ logs/
 .env.*
 *.env
 prompts/custom/
+projects.local.yaml
+docker-compose.local.yml
 .python-version
 .idea

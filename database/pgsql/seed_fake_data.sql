@@ -8,7 +8,7 @@ BEGIN;
 -- Jobs — mix of review and development, various statuses
 -- ============================================================
 
-INSERT INTO minions.jobs (id, spec, status, job_type, mr_url, correlation_id, trello_card_id, error, created_at, updated_at) VALUES
+INSERT INTO minions.jobs (id, spec, status, job_type, mr_url, correlation_id, external_id, error, created_at, updated_at) VALUES
 
 -- Completed review jobs
 ('a1b2c3d4', 'Review MR for payments-api: Add Stripe webhook handler for subscription lifecycle events', 'done', 'review', 'https://gitlab.example.com/team/payments-api/-/merge_requests/142', 'corr-001', NULL, NULL,

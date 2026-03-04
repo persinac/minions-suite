@@ -19,22 +19,27 @@ if [ ! -d "$MIGRATIONS_DIR" ]; then
     exit 1
 fi
 
-# Construct DATABASE_URL from environment variables or Doppler secrets
-DB_USER="${DB_ADMIN:-$(doppler secrets get DB_ADMIN --plain --project mcp-minions --config prd)}"
-DB_PASSWORD="${DB_PASSWORD:-$(doppler secrets get DB_PASSWORD --plain --project mcp-minions --config prd)}"
-DB_HOST="${DB_HOST:-$(doppler secrets get DB_HOST --plain --project mcp-minions --config prd)}"
-DB_PORT="${DB_PORT:-$(doppler secrets get DB_PORT --plain --project mcp-minions --config prd)}"
-DB_NAME="${DB_NAME:-$(doppler secrets get DB_NAME --plain --project mcp-minions --config prd)}"
+# If DATABASE_URL is already set, use it directly.
+# Otherwise build it from individual DB_* env vars.
+if [ -z "${DATABASE_URL:-}" ]; then
+    for var in DB_ADMIN DB_PASSWORD DB_HOST DB_PORT DB_NAME; do
+        if [ -z "${!var:-}" ]; then
+            echo "Error: Neither DATABASE_URL nor $var is set."
+            echo "Export DATABASE_URL, or set DB_ADMIN/DB_PASSWORD/DB_HOST/DB_PORT/DB_NAME."
+            exit 1
+        fi
+    done
 
-# URL-encode user and password in case they contain special characters
-urlencode() {
-    python3 -c "import urllib.parse; print(urllib.parse.quote('$1', safe=''))"
-}
+    # URL-encode user and password in case they contain special characters
+    urlencode() {
+        python3 -c "import urllib.parse; print(urllib.parse.quote('$1', safe=''))"
+    }
 
-DB_USER_ENCODED=$(urlencode "$DB_USER")
-DB_PASSWORD_ENCODED=$(urlencode "$DB_PASSWORD")
+    DB_USER_ENCODED=$(urlencode "$DB_ADMIN")
+    DB_PASSWORD_ENCODED=$(urlencode "$DB_PASSWORD")
 
-DATABASE_URL="postgres://${DB_USER_ENCODED}:${DB_PASSWORD_ENCODED}@${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=disable"
+    DATABASE_URL="postgres://${DB_USER_ENCODED}:${DB_PASSWORD_ENCODED}@${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=disable"
+fi
 
 export DATABASE_URL
 

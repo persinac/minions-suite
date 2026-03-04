@@ -226,9 +226,9 @@ def create_server(db: AbstractDatabase, config: Config | None = None) -> FastMCP
     # =========================================================================
 
     @mcp.tool()
-    async def submit_spec(spec: str, trello_card_id: str | None = None) -> str:
+    async def submit_spec(spec: str, external_id: str | None = None) -> str:
         """Submit a new feature specification to start a job."""
-        job = Job(spec=spec, trello_card_id=trello_card_id)
+        job = Job(spec=spec, external_id=external_id)
         job = await db.create_job(job)
         return json.dumps({"job_id": job.id, "status": str(job.status)})
 
@@ -723,7 +723,7 @@ def create_server(db: AbstractDatabase, config: Config | None = None) -> FastMCP
                 card_id = card["id"]
                 card_url = card.get("shortUrl", card.get("url", ""))
 
-                original_card_id = job.trello_card_id or "unknown"
+                original_card_id = job.external_id or "unknown"
                 await client.post(
                     f"{trello_api}/cards/{card_id}/actions/comments",
                     params={**auth_params, "text": f"Phase {phase_number} decomposed from job `{job_id}` (original card: {original_card_id})"},
@@ -749,18 +749,18 @@ def create_server(db: AbstractDatabase, config: Config | None = None) -> FastMCP
         cfg = config or Config.from_env()
 
         # Archive the original Trello card if it exists
-        if job.trello_card_id and cfg.trello_api_key and cfg.trello_token:
+        if job.external_id and cfg.trello_api_key and cfg.trello_token:
             auth_params = {"key": cfg.trello_api_key, "token": cfg.trello_token}
             trello_api = "https://api.trello.com/1"
             try:
                 async with httpx.AsyncClient(timeout=30.0) as client:
                     await client.put(
-                        f"{trello_api}/cards/{job.trello_card_id}",
+                        f"{trello_api}/cards/{job.external_id}",
                         params={**auth_params, "closed": "true"},
                     )
-                    logger.info("Archived original Trello card %s", job.trello_card_id)
+                    logger.info("Archived original Trello card %s", job.external_id)
             except Exception as e:
-                logger.warning("Failed to archive Trello card %s: %s", job.trello_card_id, e)
+                logger.warning("Failed to archive Trello card %s: %s", job.external_id, e)
 
         try:
             if _nats_client:

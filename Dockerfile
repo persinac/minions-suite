@@ -84,7 +84,7 @@ ENV PATH="/app/.venv/bin:$PATH" \
     MCP_HOST=0.0.0.0 \
     MCP_PORT=8321
 
-EXPOSE 8321
+EXPOSE 8321 8322
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:${MCP_PORT}/sse')" || exit 1

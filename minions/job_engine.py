@@ -87,14 +87,14 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
 
     async def _trello_comment(self, job: Job, text: str):
         """Post a comment on the Trello card linked to a job, if any."""
-        if not job.trello_card_id:
+        if not job.external_id:
             return
         if not self.config.trello_api_key or not self.config.trello_token:
             return
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 await client.post(
-                    f"https://api.trello.com/1/cards/{job.trello_card_id}/actions/comments",
+                    f"https://api.trello.com/1/cards/{job.external_id}/actions/comments",
                     params={
                         "key": self.config.trello_api_key,
                         "token": self.config.trello_token,

@@ -48,3 +48,33 @@ tasks:
     desc: Open a shell in the running container
     cmds:
       - docker compose exec minion-suite bash
+
+  # ── Local stack (app + postgres + nats + dashboard) ─────────────────────────
+  local:up:
+    desc: Build and start full local stack (app + dashboard + postgres + nats)
+    cmds:
+      - docker compose -f docker-compose.local.yml up -d --build
+
+  local:down:
+    desc: Stop local Postgres + NATS
+    cmds:
+      - docker compose -f docker-compose.local.yml down
+
+  local:logs:
+    desc: Tail local Postgres + NATS logs
+    cmds:
+      - docker compose -f docker-compose.local.yml logs -f
+
+  local:reset:
+    desc: Destroy local volumes, restart fresh, and run migrations
+    cmds:
+      - docker compose -f docker-compose.local.yml down -v
+      - docker compose -f docker-compose.local.yml up -d --build
+      - echo "Waiting for Postgres to be healthy..."
+      - until docker compose -f docker-compose.local.yml exec postgres pg_isready -U minion -d minion > /dev/null 2>&1; do sleep 1; done
+      - task db:migrate
+
+  local:init:
+    desc: Initialize local DB schema and NATS stream
+    cmds:
+      - scripts/init-infra.sh --postgres-url "postgresql://minion:minion@localhost:5434/minion" --nats-url "nats://localhost:4222" --app-user minion_app --app-password localdev --skip-nats

@@ -158,13 +158,13 @@ class PostgresDatabase:
     # Jobs
     # ===================================================================
 
-    async def create_job(self, spec: str, trello_card_id: Optional[str] = None) -> Job:
-        job = Job(spec=spec, trello_card_id=trello_card_id)
+    async def create_job(self, spec: str, external_id: Optional[str] = None) -> Job:
+        job = Job(spec=spec, external_id=external_id)
         async with self._pool.connection() as conn:
             await conn.execute(
-                f"""INSERT INTO {JOB_SCHEMA}.jobs (id, spec, status, job_type, mr_url, created_at, updated_at, trello_card_id)
+                f"""INSERT INTO {JOB_SCHEMA}.jobs (id, spec, status, job_type, mr_url, created_at, updated_at, external_id)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
-                (job.id, job.spec, job.status, job.job_type, job.mr_url, job.created_at, job.updated_at, job.trello_card_id),
+                (job.id, job.spec, job.status, job.job_type, job.mr_url, job.created_at, job.updated_at, job.external_id),
             )
         logger.info("Created job %s", job.id)
         await self.record_event(job.id, "job_created", "db", f"status={job.status}")
@@ -231,9 +231,9 @@ class PostgresDatabase:
             rows = await cur.fetchall()
             return [_dict_to_job(r) for r in rows]
 
-    async def get_job_by_card(self, card_id: str) -> Optional[Job]:
+    async def get_job_by_external_id(self, external_id: str) -> Optional[Job]:
         async with self._pool.connection() as conn:
-            cur = await conn.execute(f"SELECT * FROM {JOB_SCHEMA}.jobs WHERE trello_card_id = %s", (card_id,))
+            cur = await conn.execute(f"SELECT * FROM {JOB_SCHEMA}.jobs WHERE external_id = %s", (external_id,))
             row = await cur.fetchone()
             if not row:
                 return None
@@ -712,7 +712,7 @@ def _dict_to_job(d: dict) -> Job:
         job_type=d.get("job_type") or "development",
         mr_url=d.get("mr_url"),
         error=d.get("error"),
-        trello_card_id=d.get("trello_card_id"),
+        external_id=d.get("external_id"),
         created_at=_ts(d["created_at"]) or "",
         updated_at=_ts(d["updated_at"]) or "",
     )

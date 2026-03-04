@@ -20,6 +20,14 @@ class ReviewProfile:
 
 
 @dataclass
+class IssuesConfig:
+    """Configuration for GitLab issues-driven job creation."""
+
+    enabled: bool = False
+    label: str = "minions"
+
+
+@dataclass
 class AgentProfile:
     """Composable agent profile: roles, languages, custom rules, and overrides."""
 
@@ -67,6 +75,7 @@ class ProjectConfig:
     engineer_profile: AgentProfile = field(default_factory=AgentProfile)
     deploy_profile: AgentProfile = field(default_factory=AgentProfile)
     services: dict[str, ServiceTarget] = field(default_factory=dict)
+    issues: IssuesConfig = field(default_factory=IssuesConfig)
 
 
 class ProjectRegistryError(Exception):
@@ -95,6 +104,16 @@ def _parse_agent_profile(raw: dict) -> AgentProfile:
         timeout=raw.get("timeout", 600),
         model=raw.get("model", ""),
         allowed_tools=raw.get("allowed_tools", []),
+    )
+
+
+def _parse_issues_config(raw: dict) -> IssuesConfig:
+    """Parse an issues section from YAML."""
+    if not raw:
+        return IssuesConfig()
+    return IssuesConfig(
+        enabled=bool(raw.get("enabled", False)),
+        label=raw.get("label", "minions"),
     )
 
 
@@ -163,6 +182,7 @@ def build_registry(config_path: str) -> dict[str, ProjectConfig]:
             engineer_profile=_parse_agent_profile(proj.get("engineer_profile", {})),
             deploy_profile=_parse_agent_profile(proj.get("deploy_profile", {})),
             services=_parse_services(proj.get("services", {})),
+            issues=_parse_issues_config(proj.get("issues", {})),
         )
 
     logger.info("Loaded %d projects from %s", len(registry), config_path)

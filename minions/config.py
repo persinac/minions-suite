@@ -84,6 +84,10 @@ class Config:
     max_revisions: int = 3
     dry_run: bool = False
 
+    # GitLab issues poller (optional)
+    gitlab_issues_enabled: bool = False
+    gitlab_issues_poll_interval: int = 120
+
     # Trello poller (optional)
     trello_api_key: str = ""
     trello_token: str = ""
@@ -140,6 +144,8 @@ class Config:
             max_concurrent_jobs=int(os.getenv("MAX_CONCURRENT_JOBS", "3")),
             max_revisions=int(os.getenv("MAX_REVISIONS", "3")),
             dry_run=os.getenv("DRY_RUN", "").lower() in ("1", "true", "yes"),
+            gitlab_issues_enabled=os.getenv("GITLAB_ISSUES_ENABLED", "").lower() in ("1", "true", "yes"),
+            gitlab_issues_poll_interval=int(os.getenv("GITLAB_ISSUES_POLL_INTERVAL", "120")),
             trello_api_key=os.getenv("TRELLO_API_KEY", ""),
             trello_token=os.getenv("TRELLO_TOKEN", ""),
             trello_board_id=os.getenv("TRELLO_BOARD_ID", ""),

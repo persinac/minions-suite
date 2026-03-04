@@ -131,7 +131,7 @@ class Job(BaseModel):
     job_type: str = Field(default="development", description="Job type: 'development' or 'review'")
     mr_url: Optional[str] = Field(default=None, description="MR/PR URL (for review jobs)")
     error: Optional[str] = None
-    trello_card_id: Optional[str] = None
+    external_id: Optional[str] = None
     created_at: str = Field(default_factory=_now)
     updated_at: str = Field(default_factory=_now)
 

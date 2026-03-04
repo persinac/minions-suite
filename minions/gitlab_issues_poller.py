@@ -66,8 +66,8 @@ class GitLabIssuesPoller:
         """Restore _active from DB on startup."""
         active_jobs = await self.db.get_active_jobs()
         for job in active_jobs:
-            if job.gitlab_issue_id and job.gitlab_issue_id not in self._active:
-                self._active[job.gitlab_issue_id] = {
+            if job.external_id and job.external_id not in self._active:
+                self._active[job.external_id] = {
                     "job_id": job.id,
                     "started_at": job.created_at,
                     "issue_title": f"(rehydrated job={job.id[:8]})",
@@ -106,7 +106,7 @@ class GitLabIssuesPoller:
                 if issue_key in self._active:
                     continue
                 # Check DB for idempotency
-                existing = await self.db.get_job_by_issue(issue_key)
+                existing = await self.db.get_job_by_external_id(issue_key)
                 if existing and existing.status not in TERMINAL_STATUSES:
                     self._active[issue_key] = {
                         "job_id": existing.id,
@@ -186,7 +186,7 @@ class GitLabIssuesPoller:
         except httpx.HTTPError as e:
             logger.error("Failed to update labels on issue %s: %s", issue_key, e)
 
-        job = await self.db.create_job(spec_text, gitlab_issue_id=issue_key)
+        job = await self.db.create_job(spec_text, external_id=issue_key)
 
         started_at = datetime.now(UTC).isoformat()
         self._active[issue_key] = {
@@ -293,5 +293,5 @@ def _format_elapsed(started_at: str) -> str:
         elif secs < 3600:
             return f"{secs // 60}m {secs % 60}s"
         return f"{secs // 3600}h {(secs % 3600) // 60}m"
-    except ValueError, TypeError:
+    except (ValueError, TypeError):
         return "?"

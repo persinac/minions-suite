@@ -105,8 +105,8 @@ class TrelloPoller:
         """Restore _active from DB on startup."""
         active_jobs = await self.db.get_active_jobs()
         for job in active_jobs:
-            if job.trello_card_id and job.trello_card_id not in self._active:
-                self._active[job.trello_card_id] = {
+            if job.external_id and job.external_id not in self._active:
+                self._active[job.external_id] = {
                     "job_id": job.id,
                     "started_at": job.created_at,
                     "card_name": f"(rehydrated job={job.id[:8]})",
@@ -170,7 +170,7 @@ class TrelloPoller:
             except httpx.HTTPError:
                 logger.debug("Failed to add minion label to card %s", card_id[:8], exc_info=True)
 
-        job = Job(spec=spec_text, trello_card_id=card_id)
+        job = Job(spec=spec_text, external_id=card_id)
         job = await self.db.create_job(job)
         started_at = datetime.now(timezone.utc).isoformat()
         self._active[card_id] = {

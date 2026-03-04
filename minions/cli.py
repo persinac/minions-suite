@@ -223,6 +223,13 @@ async def _run_server(config: Config) -> None:
     # Job engine handles both development and review jobs
     job_engine = JobEngine(db, config, k8s_launcher=k8s_launcher, nats_client=nats_client, artifact_uploader=artifact_uploader)
 
+    # Optional GitLab issues poller
+    gitlab_issues_poller = None
+    if config.gitlab_issues_enabled:
+        from .gitlab_issues_poller import GitLabIssuesPoller
+
+        gitlab_issues_poller = GitLabIssuesPoller(config, db, projects)
+
     # Optional arbiter — route MCP tool state mutations through NATS
     arbiter = None
     if config.arbiter_enabled and nats_client:
@@ -236,6 +243,8 @@ async def _run_server(config: Config) -> None:
     # Start all components
     tasks = []
     tasks.append(asyncio.create_task(job_engine.start(), name="job-engine"))
+    if gitlab_issues_poller:
+        tasks.append(asyncio.create_task(gitlab_issues_poller.start(), name="gitlab-issues-poller"))
     if arbiter:
         tasks.append(asyncio.create_task(arbiter.start(), name="arbiter"))
 
@@ -243,6 +252,8 @@ async def _run_server(config: Config) -> None:
         await mcp.run_async(transport="sse", host=config.mcp_host, port=config.mcp_port)
     finally:
         await job_engine.stop()
+        if gitlab_issues_poller:
+            await gitlab_issues_poller.stop()
         if arbiter:
             await arbiter.stop()
         for t in tasks:

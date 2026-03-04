@@ -1,0 +1,33 @@
+version: '3'
+
+tasks:
+  ensure-dbmate:
+    desc: "Install dbmate if not present"
+    status:
+      - command -v dbmate
+    cmds:
+      - brew install dbmate
+
+  migrate:
+    desc: "Run dbmate migrations (up)"
+    deps: [ensure-dbmate]
+    env:
+      DATABASE_URL: '{{.POSTGRES_MIGRATE_URL}}'
+    cmds:
+      - database/dbmate.sh pgsql up
+
+  migrate:down:
+    desc: "Roll back the last dbmate migration"
+    deps: [ensure-dbmate]
+    env:
+      DATABASE_URL: '{{.POSTGRES_MIGRATE_URL}}'
+    cmds:
+      - database/dbmate.sh pgsql down
+
+  migrate:status:
+    desc: "Show dbmate migration status"
+    deps: [ensure-dbmate]
+    env:
+      DATABASE_URL: '{{.POSTGRES_MIGRATE_URL}}'
+    cmds:
+      - database/dbmate.sh pgsql status

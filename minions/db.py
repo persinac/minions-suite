@@ -56,7 +56,7 @@ class AbstractDatabase(Protocol):
 
     # -- Jobs --
 
-    async def create_job(self, spec: str, trello_card_id: Optional[str] = None) -> Job: ...
+    async def create_job(self, spec: str, external_id: Optional[str] = None) -> Job: ...
 
     async def create_review_job(self, project: str, mr_url: str, mr_id: str, model: Optional[str] = None) -> tuple[Job, Task]: ...
 
@@ -66,7 +66,7 @@ class AbstractDatabase(Protocol):
 
     async def get_active_jobs(self) -> List[Job]: ...
 
-    async def get_job_by_card(self, card_id: str) -> Optional[Job]: ...
+    async def get_job_by_external_id(self, external_id: str) -> Optional[Job]: ...
 
     async def update_job_spec(self, job_id: str, spec: str) -> None: ...
 
@@ -200,7 +200,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     error TEXT,
-    trello_card_id TEXT
+    external_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS tasks (
@@ -398,11 +398,11 @@ class SQLiteDatabase:
     # Jobs
     # ===================================================================
 
-    async def create_job(self, spec: str, trello_card_id: Optional[str] = None) -> Job:
-        job = Job(spec=spec, trello_card_id=trello_card_id)
+    async def create_job(self, spec: str, external_id: Optional[str] = None) -> Job:
+        job = Job(spec=spec, external_id=external_id)
         await self._db.execute(
-            "INSERT INTO jobs (id, spec, status, job_type, mr_url, created_at, updated_at, trello_card_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (job.id, job.spec, job.status, job.job_type, job.mr_url, job.created_at, job.updated_at, job.trello_card_id),
+            "INSERT INTO jobs (id, spec, status, job_type, mr_url, created_at, updated_at, external_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (job.id, job.spec, job.status, job.job_type, job.mr_url, job.created_at, job.updated_at, job.external_id),
         )
         await self._db.commit()
         logger.info("Created job %s", job.id)
@@ -465,8 +465,8 @@ class SQLiteDatabase:
         rows = await cursor.fetchall()
         return [_row_to_job(r) for r in rows]
 
-    async def get_job_by_card(self, card_id: str) -> Optional[Job]:
-        cursor = await self._db.execute("SELECT * FROM jobs WHERE trello_card_id = ?", (card_id,))
+    async def get_job_by_external_id(self, external_id: str) -> Optional[Job]:
+        cursor = await self._db.execute("SELECT * FROM jobs WHERE external_id = ?", (external_id,))
         row = await cursor.fetchone()
         if not row:
             return None
@@ -854,7 +854,7 @@ def _row_to_job(row) -> Job:
         job_type=row["job_type"] if row["job_type"] else "development",
         mr_url=row["mr_url"],
         error=row["error"],
-        trello_card_id=row["trello_card_id"],
+        external_id=row["external_id"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
