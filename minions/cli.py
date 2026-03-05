@@ -71,7 +71,7 @@ def _find_project_for_url(url: str, projects: dict) -> str:
 async def _run_one_shot(url: str, project_name: str, config: Config) -> int:
     """Run a single review as a Job+Task and exit."""
     from .agents.runner import run_agent
-    from .job_engine import _create_provider_for_project
+    from .engine.review import _create_provider_for_project
     from .project_registry import build_registry
     from .providers.git import create_provider
 
@@ -169,7 +169,7 @@ async def _run_one_shot(url: str, project_name: str, config: Config) -> int:
 async def _run_server(config: Config) -> None:
     """Run the MCP server + job engine + arbiter."""
     from .connectors.nats_client import NatsClient
-    from .job_engine import JobEngine
+    from .engine import JobEngine
     from .preflight import print_preflight, run_preflight
     from .project_registry import build_registry
     from .server.mcp import create_server
@@ -232,8 +232,8 @@ async def _run_server(config: Config) -> None:
     # Optional arbiter — route MCP tool state mutations through NATS
     arbiter = None
     if config.arbiter_enabled and nats_client:
-        from .arbiter import Arbiter
         from .core.timeout_config import TimeoutConfig
+        from .engine.arbiter import Arbiter
         from .server.mcp import set_nats_client
 
         arbiter = Arbiter(db, TimeoutConfig(), nats_client)
@@ -264,7 +264,7 @@ async def _run_server(config: Config) -> None:
 
 async def _run_trello_only(config: Config) -> None:
     """Run only the Trello poller + job engine (for infrastructure compatibility)."""
-    from .job_engine import JobEngine
+    from .engine import JobEngine
     from .providers.trello import TrelloPoller
 
     if not config.trello_api_key or not config.trello_token or not config.trello_board_id:
@@ -307,8 +307,8 @@ async def _run_trello_only(config: Config) -> None:
     # Optional arbiter — route MCP tool state mutations through NATS
     arbiter = None
     if config.arbiter_enabled and nats_client:
-        from .arbiter import Arbiter
         from .core.timeout_config import TimeoutConfig
+        from .engine.arbiter import Arbiter
         from .server.mcp import set_nats_client
 
         arbiter = Arbiter(db, TimeoutConfig(), nats_client)
@@ -340,7 +340,7 @@ async def _run_trello_only(config: Config) -> None:
 async def _run_job(spec_text: str, config: Config) -> int:
     """Submit a job and run the engine until it completes."""
     from .core.models import JobStatus
-    from .job_engine import JobEngine
+    from .engine import JobEngine
 
     db = _create_db(config)
     await db.connect()

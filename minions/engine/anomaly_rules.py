@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
-from .db import AbstractDatabase
+from ..db import AbstractDatabase
 
 logger = logging.getLogger(__name__)
 
