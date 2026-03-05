@@ -43,7 +43,7 @@ class ArtifactUploader:
         if not self.is_enabled():
             return
 
-        from .models import JobStatus
+        from .core.models import JobStatus
 
         all_jobs = await self.db.get_all_jobs()
         terminal = {JobStatus.DONE, JobStatus.FAILED}
@@ -103,7 +103,7 @@ class ArtifactUploader:
 
     async def _export_job_data(self, job_id: str) -> dict:
         """Query all DB tables and build a JSON-serializable snapshot."""
-        from .models import _now
+        from .core.models import _now
 
         job = await self.db.get_job(job_id)
         tasks = await self.db.get_tasks(job_id)

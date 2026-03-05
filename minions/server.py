@@ -17,9 +17,9 @@ import httpx
 from fastmcp import FastMCP
 
 from .config import Config
+from .core.models import AgentRole, Job, JobStatus, Message, Subtask, SubtaskStatus, Task, TaskStatus, _now
+from .core.state_transitions import InvalidTransitionError, PreconditionError
 from .db import AbstractDatabase
-from .models import AgentRole, Job, JobStatus, Message, Subtask, SubtaskStatus, Task, TaskStatus, _now
-from .state_transitions import InvalidTransitionError, PreconditionError
 
 logger = logging.getLogger(__name__)
 

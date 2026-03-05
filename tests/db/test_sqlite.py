@@ -2,7 +2,7 @@
 
 import pytest
 
-from minions.models import (
+from minions.core.models import (
     Agent,
     AgentRole,
     JobStatus,
@@ -11,7 +11,7 @@ from minions.models import (
     SubtaskStatus,
     TaskStatus,
 )
-from minions.state_transitions import InvalidTransitionError, PreconditionError
+from minions.core.state_transitions import InvalidTransitionError, PreconditionError
 
 # -----------------------------------------------------------------------
 # Jobs

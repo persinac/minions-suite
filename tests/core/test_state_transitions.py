@@ -2,7 +2,7 @@
 
 import pytest
 
-from minions.state_transitions import (
+from minions.core.state_transitions import (
     JOB_TRANSITIONS,
     SUBTASK_TRANSITIONS,
     TASK_TRANSITIONS,
@@ -94,7 +94,7 @@ class TestJobTransitions:
 
     def test_all_states_covered(self):
         """Every JobStatus value should have an entry in JOB_TRANSITIONS."""
-        from minions.models import JobStatus
+        from minions.core.models import JobStatus
         for status in JobStatus:
             assert status.value in JOB_TRANSITIONS, f"Missing JOB_TRANSITIONS entry for {status}"
 
@@ -157,7 +157,7 @@ class TestTaskTransitions:
         validate_task_transition("t1", "pending", "in_progress", agent_role="code_reviewer")
 
     def test_all_task_statuses_covered(self):
-        from minions.models import TaskStatus
+        from minions.core.models import TaskStatus
         for status in TaskStatus:
             assert status.value in TASK_TRANSITIONS, f"Missing TASK_TRANSITIONS entry for {status}"
 
@@ -210,7 +210,7 @@ class TestSubtaskTransitions:
             validate_subtask_transition("s1", "pending", "completed")
 
     def test_all_subtask_statuses_covered(self):
-        from minions.models import SubtaskStatus
+        from minions.core.models import SubtaskStatus
         for status in SubtaskStatus:
             assert status.value in SUBTASK_TRANSITIONS, f"Missing SUBTASK_TRANSITIONS entry for {status}"
 

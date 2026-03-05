@@ -1,6 +1,6 @@
 """Tests for timeout and circuit breaker configuration."""
 
-from minions.timeout_config import RoleTimeoutConfig, TimeoutConfig
+from minions.core.timeout_config import RoleTimeoutConfig, TimeoutConfig
 
 
 class TestRoleTimeoutConfig:

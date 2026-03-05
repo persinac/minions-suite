@@ -23,9 +23,8 @@ import sys
 from pathlib import Path
 
 from .config import Config
+from .core.models import AgentRole, Job, JobStatus, TaskStatus
 from .db import SQLiteDatabase
-from .models import AgentRole, Job, JobStatus, TaskStatus
-
 
 logger = logging.getLogger("minions")
 
@@ -234,8 +233,8 @@ async def _run_server(config: Config) -> None:
     arbiter = None
     if config.arbiter_enabled and nats_client:
         from .arbiter import Arbiter
+        from .core.timeout_config import TimeoutConfig
         from .server import set_nats_client
-        from .timeout_config import TimeoutConfig
 
         arbiter = Arbiter(db, TimeoutConfig(), nats_client)
         set_nats_client(nats_client)
@@ -309,8 +308,8 @@ async def _run_trello_only(config: Config) -> None:
     arbiter = None
     if config.arbiter_enabled and nats_client:
         from .arbiter import Arbiter
+        from .core.timeout_config import TimeoutConfig
         from .server import set_nats_client
-        from .timeout_config import TimeoutConfig
 
         arbiter = Arbiter(db, TimeoutConfig(), nats_client)
         set_nats_client(nats_client)
@@ -340,8 +339,8 @@ async def _run_trello_only(config: Config) -> None:
 
 async def _run_job(spec_text: str, config: Config) -> int:
     """Submit a job and run the engine until it completes."""
+    from .core.models import JobStatus
     from .job_engine import JobEngine
-    from .models import JobStatus
 
     db = _create_db(config)
     await db.connect()
@@ -504,7 +503,7 @@ async def _run_agent_worker(config: Config) -> int:
     working_dir = os.getenv("AGENT_WORKING_DIR", work_item.working_dir)
 
     # Build a minimal Job and Task for the agent loop
-    from .models import AgentRole, Task
+    from .core.models import AgentRole, Task
 
     job = Job(id=work_item.job_id, spec="(loaded from work item)")
     task = Task(

@@ -6,7 +6,7 @@ Used by RenovateEngine to decide whether to auto-merge or escalate.
 
 import re
 
-from .models import RiskLevel
+from .core.models import RiskLevel
 
 # ---------------------------------------------------------------------------
 # Detection

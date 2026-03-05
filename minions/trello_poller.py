@@ -9,8 +9,8 @@ from typing import Any, Dict, Optional
 import httpx
 
 from .config import Config
+from .core.models import Job, JobStatus
 from .db import AbstractDatabase
-from .models import Job, JobStatus
 
 logger = logging.getLogger(__name__)
 

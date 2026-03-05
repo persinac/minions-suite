@@ -2,8 +2,8 @@
 
 import pytest
 
+from minions.core.models import AgentRole, Task
 from minions.db import SQLiteDatabase
-from minions.models import AgentRole, Task
 
 
 @pytest.fixture

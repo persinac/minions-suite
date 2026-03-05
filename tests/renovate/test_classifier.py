@@ -1,6 +1,6 @@
 """Tests for Renovate classifier — pure logic, no I/O."""
 
-from minions.models import RiskLevel
+from minions.core.models import RiskLevel
 from minions.renovate_classifier import (
     _compare_versions,
     classify_risk,

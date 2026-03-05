@@ -2,7 +2,7 @@
 
 import re
 
-from minions.models import (
+from minions.core.models import (
     Agent,
     AgentRole,
     GitProvider,

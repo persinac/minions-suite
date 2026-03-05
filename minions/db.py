@@ -4,7 +4,7 @@ import json
 import logging
 from typing import List, Optional, Protocol, runtime_checkable
 
-from .models import (
+from .core.models import (
     Agent,
     AgentRole,
     Job,
@@ -16,7 +16,7 @@ from .models import (
     TaskStatus,
     _now,
 )
-from .state_transitions import (
+from .core.state_transitions import (
     InvalidTransitionError,
     validate_job_transition,
     validate_subtask_transition,
@@ -411,7 +411,7 @@ class SQLiteDatabase:
 
     async def create_review_job(self, project: str, mr_url: str, mr_id: str, model: Optional[str] = None) -> tuple[Job, Task]:
         """Create a review-type job with a single CODE_REVIEWER task atomically."""
-        from .models import AgentRole
+        from .core.models import AgentRole
 
         job = Job(spec=mr_url, status=JobStatus.TASKS_CREATED, job_type="review", mr_url=mr_url)
         await self._db.execute(

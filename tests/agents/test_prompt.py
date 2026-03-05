@@ -2,7 +2,7 @@
 
 from unittest.mock import patch
 
-from minions.models import AgentRole, Job, Task
+from minions.core.models import AgentRole, Job, Task
 from minions.project_registry import ProjectConfig, ReviewProfile, ServiceTarget
 from minions.prompt import (
     _ROLE_TO_LANGUAGE,
