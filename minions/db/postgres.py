@@ -14,7 +14,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Json
 from psycopg_pool import AsyncConnectionPool
 
-from .core.models import (
+from ..core.models import (
     Agent,
     AgentRole,
     Job,
@@ -26,7 +26,7 @@ from .core.models import (
     TaskStatus,
     _now,
 )
-from .core.state_transitions import (
+from ..core.state_transitions import (
     InvalidTransitionError,
     validate_job_transition,
     validate_subtask_transition,

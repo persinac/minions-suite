@@ -32,7 +32,7 @@ logger = logging.getLogger("minions")
 def _create_db(config: Config):
     """Create the appropriate database instance."""
     if config.db_backend == "postgres":
-        from .db_postgres import PostgresDatabase
+        from .db.postgres import PostgresDatabase
 
         return PostgresDatabase(config.postgres_url, config.postgres_pool_min, config.postgres_pool_max)
     return SQLiteDatabase(config.db_path)
