@@ -172,8 +172,8 @@ async def _run_server(config: Config) -> None:
     from .job_engine import JobEngine
     from .preflight import print_preflight, run_preflight
     from .project_registry import build_registry
-    from .server import create_server
-    from .tool_audit_middleware import ToolAuditMiddleware
+    from .server.mcp import create_server
+    from .server.middleware import ToolAuditMiddleware
 
     # Run preflight checks before anything else
     checks = run_preflight(config)
@@ -234,7 +234,7 @@ async def _run_server(config: Config) -> None:
     if config.arbiter_enabled and nats_client:
         from .arbiter import Arbiter
         from .core.timeout_config import TimeoutConfig
-        from .server import set_nats_client
+        from .server.mcp import set_nats_client
 
         arbiter = Arbiter(db, TimeoutConfig(), nats_client)
         set_nats_client(nats_client)
@@ -297,7 +297,7 @@ async def _run_trello_only(config: Config) -> None:
         )
 
     from .artifact_uploader import ArtifactUploader
-    from .server import create_server
+    from .server.mcp import create_server
 
     artifact_uploader = ArtifactUploader(db, config)
     mcp = create_server(db, config)
@@ -309,7 +309,7 @@ async def _run_trello_only(config: Config) -> None:
     if config.arbiter_enabled and nats_client:
         from .arbiter import Arbiter
         from .core.timeout_config import TimeoutConfig
-        from .server import set_nats_client
+        from .server.mcp import set_nats_client
 
         arbiter = Arbiter(db, TimeoutConfig(), nats_client)
         set_nats_client(nats_client)
@@ -360,7 +360,7 @@ async def _run_job(spec_text: str, config: Config) -> int:
         await nats_client.connect(NatsConfig.from_env())
 
     from .artifact_uploader import ArtifactUploader
-    from .server import create_server
+    from .server.mcp import create_server
 
     artifact_uploader = ArtifactUploader(db, config)
     mcp = create_server(db, config)

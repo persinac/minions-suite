@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from minions.tool_audit_middleware import ToolAuditMiddleware
+from minions.server.middleware import ToolAuditMiddleware
 
 
 @pytest.fixture

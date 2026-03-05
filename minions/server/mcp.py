@@ -16,10 +16,10 @@ from pathlib import Path
 import httpx
 from fastmcp import FastMCP
 
-from .config import Config
-from .core.models import AgentRole, Job, JobStatus, Message, Subtask, SubtaskStatus, Task, TaskStatus, _now
-from .core.state_transitions import InvalidTransitionError, PreconditionError
-from .db import AbstractDatabase
+from ..config import Config
+from ..core.models import AgentRole, Job, JobStatus, Message, Subtask, SubtaskStatus, Task, TaskStatus, _now
+from ..core.state_transitions import InvalidTransitionError, PreconditionError
+from ..db import AbstractDatabase
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +104,7 @@ def create_server(db: AbstractDatabase, config: Config | None = None) -> FastMCP
     """Create and return the FastMCP server with review + job orchestration tools."""
     mcp = FastMCP("Minion Suite", instructions="AI agent suite — composable, vendor-agnostic agents. Code review + multi-agent job orchestration.")
 
-    from .tool_audit_middleware import ToolAuditMiddleware
+    from .middleware import ToolAuditMiddleware
 
     mcp.add_middleware(ToolAuditMiddleware(db=db))
 
