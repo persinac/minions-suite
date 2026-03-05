@@ -5,13 +5,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from minions.core.models import AgentRole, Job, Task
-from minions.mcp_tool_executor import (
+from minions.agents.tools.mcp_executor import (
     _LOCAL_TOOLS,
     _STATE_TOOL_INJECTIONS,
     McpToolExecutor,
     create_mcp_tool_executor,
 )
+from minions.core.models import AgentRole, Job, Task
 
 # -----------------------------------------------------------------------
 # State tool injection mapping

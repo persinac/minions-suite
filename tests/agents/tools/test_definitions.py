@@ -1,6 +1,6 @@
 """Tests for tool definitions and get_tools_for_role."""
 
-from minions.tools import (
+from minions.agents.tools.definitions import (
     DEPLOY_TOOL_DEFINITIONS,
     ENGINEER_TOOL_DEFINITIONS,
     REVIEW_TOOL_DEFINITIONS,
@@ -129,13 +129,13 @@ class TestGetToolsForRole:
         assert tools is ENGINEER_TOOL_DEFINITIONS
 
     def test_database_engineer(self):
-        from minions.tools import DB_ENGINEER_TOOL_DEFINITIONS
+        from minions.agents.tools.definitions import DB_ENGINEER_TOOL_DEFINITIONS
         tools = get_tools_for_role("database_engineer")
         assert tools is DB_ENGINEER_TOOL_DEFINITIONS
 
     def test_code_reviewer(self):
         tools = get_tools_for_role("code_reviewer")
-        from minions.tools import CODE_REVIEWER_TOOL_DEFINITIONS
+        from minions.agents.tools.definitions import CODE_REVIEWER_TOOL_DEFINITIONS
         assert tools is CODE_REVIEWER_TOOL_DEFINITIONS
 
     def test_deploy_monitor(self):

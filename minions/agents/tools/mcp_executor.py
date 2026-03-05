@@ -16,7 +16,7 @@ import logging
 import subprocess
 from pathlib import Path
 
-from .core.models import AgentRole, Job, Task
+from ...core.models import AgentRole, Job, Task
 
 logger = logging.getLogger(__name__)
 

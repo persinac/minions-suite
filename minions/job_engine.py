@@ -7,18 +7,18 @@ from typing import TYPE_CHECKING, Optional
 
 import httpx
 
-from .agent import run_agent
-from .agent_dispatch import AgentResultMessage, AgentWorkItem, deserialize_result, serialize_work_item
+from .agents.dispatch import AgentResultMessage, AgentWorkItem, deserialize_result, serialize_work_item
+from .agents.prompt import build_agent_prompt
+from .agents.runner import run_agent
+from .agents.tools.definitions import get_tools_for_role
+from .agents.tools.mcp_executor import create_mcp_tool_executor
 from .config import Config
 from .connectors.nats_publisher import publish_agent_status, publish_system_event
 from .core.models import Agent, AgentRole, Job, JobStatus, Task, TaskStatus, _now
 from .core.state_transitions import InvalidTransitionError
 from .core.timeout_config import TimeoutConfig
 from .db import AbstractDatabase
-from .mcp_tool_executor import create_mcp_tool_executor
 from .project_registry import ProjectConfig, ServiceTarget, build_registry
-from .prompt import build_agent_prompt
-from .tools import get_tools_for_role
 
 if TYPE_CHECKING:
     from .artifact_uploader import ArtifactUploader

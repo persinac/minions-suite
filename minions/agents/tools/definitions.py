@@ -11,7 +11,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from .git_provider import GitProviderProtocol, InlineComment
+from ...git_provider import GitProviderProtocol, InlineComment
 
 logger = logging.getLogger(__name__)
 

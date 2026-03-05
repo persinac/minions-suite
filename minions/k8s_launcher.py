@@ -13,7 +13,7 @@ from typing import Optional
 from kubernetes_asyncio import client as k8s_client
 from kubernetes_asyncio import config as k8s_config
 
-from .agent_dispatch import AgentWorkItem, serialize_work_item
+from .agents.dispatch import AgentWorkItem, serialize_work_item
 
 logger = logging.getLogger(__name__)
 

@@ -70,7 +70,7 @@ def _find_project_for_url(url: str, projects: dict) -> str:
 
 async def _run_one_shot(url: str, project_name: str, config: Config) -> int:
     """Run a single review as a Job+Task and exit."""
-    from .agent import run_agent
+    from .agents.runner import run_agent
     from .git_provider import create_provider
     from .job_engine import _create_provider_for_project
     from .project_registry import build_registry
@@ -488,7 +488,7 @@ async def _run_agent_worker(config: Config) -> int:
     """K8s agent worker mode: pull work item, run LiteLLM loop, publish result."""
     import os
 
-    from .agent_dispatch import AgentResultMessage, deserialize_work_item, serialize_result
+    from .agents.dispatch import AgentResultMessage, deserialize_work_item, serialize_result
 
     work_item_path = os.getenv("AGENT_WORK_ITEM_PATH")
     if not work_item_path:
@@ -514,7 +514,7 @@ async def _run_agent_worker(config: Config) -> int:
         agent_role=work_item.role,
     )
 
-    from .agent import run_agent
+    from .agents.runner import run_agent
 
     agent = await run_agent(job=job, task=task, config=config)
 

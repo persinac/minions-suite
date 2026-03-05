@@ -2,14 +2,14 @@
 
 from unittest.mock import patch
 
-from minions.core.models import AgentRole, Job, Task
-from minions.project_registry import ProjectConfig, ReviewProfile, ServiceTarget
-from minions.prompt import (
+from minions.agents.prompt import (
     _ROLE_TO_LANGUAGE,
     _ROLE_TO_PROMPT,
     build_agent_prompt,
     build_review_prompt,
 )
+from minions.core.models import AgentRole, Job, Task
+from minions.project_registry import ProjectConfig, ReviewProfile, ServiceTarget
 
 
 def _make_project(**overrides):
@@ -53,7 +53,7 @@ def _make_dev_task(**overrides):
 
 
 class TestBuildReviewPrompt:
-    @patch("minions.prompt._load")
+    @patch("minions.agents.prompt._load")
     def test_includes_base(self, mock_load):
         mock_load.return_value = "BASE CONTENT"
         project = _make_project(review_profile=ReviewProfile(roles=[], languages=[]))
@@ -61,7 +61,7 @@ class TestBuildReviewPrompt:
         result = build_review_prompt(task, project, ["foo.py"])
         assert "BASE CONTENT" in result
 
-    @patch("minions.prompt._load")
+    @patch("minions.agents.prompt._load")
     def test_includes_review_context(self, mock_load):
         mock_load.return_value = "mixin"
         project = _make_project()
@@ -71,7 +71,7 @@ class TestBuildReviewPrompt:
         assert "test-project" in result
         assert "foo.py" in result
 
-    @patch("minions.prompt._load")
+    @patch("minions.agents.prompt._load")
     def test_auto_infers_profile(self, mock_load):
         mock_load.return_value = "mixin"
         project = _make_project(review_profile=ReviewProfile())  # empty = auto-infer
@@ -80,7 +80,7 @@ class TestBuildReviewPrompt:
         # Should have called _load for inferred roles/languages
         assert mock_load.call_count >= 1
 
-    @patch("minions.prompt._load")
+    @patch("minions.agents.prompt._load")
     def test_sections_joined_with_separator(self, mock_load):
         mock_load.return_value = "SECTION"
         project = _make_project(review_profile=ReviewProfile(roles=["backend"], languages=["python"]))
@@ -88,7 +88,7 @@ class TestBuildReviewPrompt:
         result = build_review_prompt(task, project, [])
         assert "---" in result
 
-    @patch("minions.prompt._load")
+    @patch("minions.agents.prompt._load")
     def test_ignore_paths_shown(self, mock_load):
         mock_load.return_value = "mixin"
         project = _make_project(ignore_paths=["vendor/", "dist/"])
@@ -97,7 +97,7 @@ class TestBuildReviewPrompt:
         assert "Ignore paths" in result
         assert "vendor/" in result
 
-    @patch("minions.prompt._load")
+    @patch("minions.agents.prompt._load")
     def test_auto_approve_paths_shown(self, mock_load):
         mock_load.return_value = "mixin"
         project = _make_project(auto_approve_paths=["docs/"])
@@ -105,7 +105,7 @@ class TestBuildReviewPrompt:
         result = build_review_prompt(task, project, [])
         assert "Auto-approve" in result
 
-    @patch("minions.prompt._load")
+    @patch("minions.agents.prompt._load")
     def test_many_files_truncated(self, mock_load):
         mock_load.return_value = "mixin"
         project = _make_project()
@@ -121,7 +121,7 @@ class TestBuildReviewPrompt:
 
 
 class TestBuildAgentPrompt:
-    @patch("minions.prompt._load")
+    @patch("minions.agents.prompt._load")
     def test_includes_task_context(self, mock_load):
         mock_load.return_value = "agent base"
         job = Job(spec="Build widget")
@@ -132,7 +132,7 @@ class TestBuildAgentPrompt:
         assert task.id in result
         assert "Build widget" in result
 
-    @patch("minions.prompt._load")
+    @patch("minions.agents.prompt._load")
     def test_includes_service_info(self, mock_load):
         mock_load.return_value = "agent base"
         job = Job(spec="test")
@@ -142,7 +142,7 @@ class TestBuildAgentPrompt:
         assert "git@example.com:api.git" in result
         assert "pytest" in result
 
-    @patch("minions.prompt._load")
+    @patch("minions.agents.prompt._load")
     def test_includes_additional_context(self, mock_load):
         mock_load.return_value = "agent base"
         job = Job(spec="test")

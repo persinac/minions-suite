@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from minions.tools import ToolExecutor
+from minions.agents.tools.definitions import ToolExecutor
 
 
 class MockGitProvider:

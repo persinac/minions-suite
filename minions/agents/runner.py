@@ -12,12 +12,12 @@ from typing import Optional
 
 import litellm
 
-from .config import Config
-from .core.models import Agent, AgentRole, Job, Task, _now
-from .git_provider import GitProviderProtocol
-from .project_registry import ProjectConfig, ServiceTarget
+from ..config import Config
+from ..core.models import Agent, AgentRole, Job, Task, _now
+from ..git_provider import GitProviderProtocol
+from ..project_registry import ProjectConfig, ServiceTarget
 from .prompt import build_agent_prompt, build_prompt
-from .tools import REVIEW_TOOL_DEFINITIONS, ToolExecutor, get_tools_for_role
+from .tools.definitions import REVIEW_TOOL_DEFINITIONS, ToolExecutor, get_tools_for_role
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +86,7 @@ async def run_agent(
             user_message = None
 
         # Use role-specific timeout if available
-        from .core.timeout_config import TimeoutConfig
+        from ..core.timeout_config import TimeoutConfig
         timeout_cfg = TimeoutConfig()
         role_cfg = timeout_cfg.roles.get(task.agent_role)
         timeout = role_cfg.task_timeout_seconds if role_cfg else config.agent_timeout

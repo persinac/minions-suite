@@ -23,13 +23,13 @@ across both projects.
 
 import pytest
 
-from minions.mcp_tool_executor import _STATE_TOOL_INJECTIONS
-from minions.tools import (
+from minions.agents.tools.definitions import (
     DEPLOY_TOOL_DEFINITIONS,
     REVIEW_TOOL_DEFINITIONS,
     SPEC_TOOL_DEFINITIONS,
     get_tools_for_role,
 )
+from minions.agents.tools.mcp_executor import _STATE_TOOL_INJECTIONS
 
 
 def _tool_names(tools: list) -> set[str]:

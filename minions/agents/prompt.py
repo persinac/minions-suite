@@ -12,8 +12,8 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from .core.models import Job, Task
-from .project_registry import ProjectConfig, ReviewProfile, ServiceTarget, infer_profile
+from ..core.models import Job, Task
+from ..project_registry import ProjectConfig, ReviewProfile, ServiceTarget, infer_profile
 
 logger = logging.getLogger(__name__)
 
