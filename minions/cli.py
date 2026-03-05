@@ -221,7 +221,7 @@ async def _run_server(config: Config) -> None:
     artifact_uploader = ArtifactUploader(db, config)
 
     # Job engine handles both development and review jobs
-    job_engine = JobEngine(db, config, k8s_launcher=k8s_launcher, nats_client=nats_client, artifact_uploader=artifact_uploader)
+    job_engine = JobEngine(db, config, k8s_launcher=k8s_launcher, nats_client=nats_client, artifact_uploader=artifact_uploader, mcp_server=mcp)
 
     # Optional GitLab issues poller
     gitlab_issues_poller = None
@@ -298,9 +298,11 @@ async def _run_trello_only(config: Config) -> None:
         )
 
     from .artifact_uploader import ArtifactUploader
+    from .server import create_server
 
     artifact_uploader = ArtifactUploader(db, config)
-    job_engine = JobEngine(db, config, k8s_launcher=k8s_launcher, nats_client=nats_client, artifact_uploader=artifact_uploader)
+    mcp = create_server(db, config)
+    job_engine = JobEngine(db, config, k8s_launcher=k8s_launcher, nats_client=nats_client, artifact_uploader=artifact_uploader, mcp_server=mcp)
     poller = TrelloPoller(config, db)
 
     # Optional arbiter — route MCP tool state mutations through NATS
@@ -359,9 +361,11 @@ async def _run_job(spec_text: str, config: Config) -> int:
         await nats_client.connect(NatsConfig.from_env())
 
     from .artifact_uploader import ArtifactUploader
+    from .server import create_server
 
     artifact_uploader = ArtifactUploader(db, config)
-    engine = JobEngine(db, config, nats_client=nats_client, artifact_uploader=artifact_uploader)
+    mcp = create_server(db, config)
+    engine = JobEngine(db, config, nats_client=nats_client, artifact_uploader=artifact_uploader, mcp_server=mcp)
 
     terminal_statuses = {JobStatus.DONE, JobStatus.FAILED, JobStatus.NO_WORK_NEEDED}
     exit_code = 0

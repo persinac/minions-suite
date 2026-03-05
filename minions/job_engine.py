@@ -12,6 +12,7 @@ from .agent_dispatch import AgentResultMessage, AgentWorkItem, deserialize_resul
 from .config import Config
 from .connectors.nats_publisher import publish_agent_status, publish_system_event
 from .db import AbstractDatabase
+from .mcp_tool_executor import create_mcp_tool_executor
 from .models import Agent, AgentRole, Job, JobStatus, Task, TaskStatus, _now
 from .project_registry import ProjectConfig, ServiceTarget, build_registry
 from .prompt import build_agent_prompt
@@ -35,6 +36,7 @@ class JobEngine:
         k8s_launcher: "Optional[K8sJobLauncher]" = None,
         nats_client: "Optional[NatsClient]" = None,
         artifact_uploader: "Optional[ArtifactUploader]" = None,
+        mcp_server=None,
     ):
         self.db = db
         self.config = config
@@ -44,6 +46,7 @@ class JobEngine:
         self._k8s_launcher = k8s_launcher
         self._nats_client = nats_client
         self._artifact_uploader = artifact_uploader
+        self._mcp_server = mcp_server
 
     # Dry-run instructions appended to agent prompts when config.dry_run is True
     DRY_RUN_SUFFIX = """
@@ -527,6 +530,21 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
         context: Optional[str] = None,
     ):
         """Run an agent in-process using the LiteLLM tool-use loop."""
+        # Create the appropriate tool executor for non-reviewer roles
+        working_dir = "."
+        if service and service.repo_path:
+            working_dir = service.repo_path
+        elif project and project.repo_path:
+            working_dir = project.repo_path
+
+        tool_executor = create_mcp_tool_executor(
+            mcp_server=self._mcp_server,
+            job=job,
+            task=task,
+            agent_id=agent.id,
+            working_dir=working_dir,
+        )
+
         result_agent = await run_agent(
             job=job,
             task=task,
@@ -534,6 +552,7 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
             service=service,
             config=self.config,
             db=self.db,
+            tool_executor=tool_executor,
             context=context,
         )
 
@@ -1010,7 +1029,30 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
             await self._dispatch_k8s(job, agent, AgentRole.CODE_REVIEWER, prompt, working_dir, service=service)
             return
 
-        result_agent = await self._run_in_process(job, reviewer_task, agent, project, service, context)
+        # Create git provider and MR info so the reviewer gets a working ToolExecutor
+        provider = None
+        mr_info = {}
+        if project and task.pr_url:
+            try:
+                provider = _create_provider_for_project(project, self.config)
+                changed_files = await provider.get_changed_files(project.project_id, task.mr_id or str(task.pr_number or ""))
+                mr_info = {"project_id": project.project_id, "changed_files": changed_files}
+            except Exception as e:
+                logger.warning("Failed to create provider/fetch MR info for task review %s: %s", task.id, e)
+                mr_info = {"project_id": project.project_id if project else "", "changed_files": []}
+
+        # Call run_agent directly with provider/mr_info for proper review executor setup
+        result_agent = await run_agent(
+            job=job,
+            task=reviewer_task,
+            project=project,
+            service=service,
+            config=self.config,
+            db=self.db,
+            provider=provider,
+            mr_info=mr_info if provider else None,
+            context=context,
+        )
 
         if result_agent.status != "done":
             # Reset original task from in_review back to pr_open for retry
