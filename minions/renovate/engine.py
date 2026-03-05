@@ -11,13 +11,13 @@ import asyncio
 import logging
 import time
 
-from .config import Config
-from .connectors.nats_client import NatsClient
-from .core.models import RenovateAction, RenovateReview, RenovateStatus, _now
-from .db import AbstractDatabase
-from .project_registry import ProjectConfig
-from .providers.git import GitProviderProtocol, create_provider
-from .renovate_classifier import classify_risk, is_renovate_mr, parse_version_bump, should_auto_merge
+from ..config import Config
+from ..connectors.nats_client import NatsClient
+from ..core.models import RenovateAction, RenovateReview, RenovateStatus, _now
+from ..db import AbstractDatabase
+from ..project_registry import ProjectConfig
+from ..providers.git import GitProviderProtocol, create_provider
+from .classifier import classify_risk, is_renovate_mr, parse_version_bump, should_auto_merge
 
 logger = logging.getLogger(__name__)
 
@@ -297,7 +297,7 @@ class RenovateEngine:
 
     async def process_single_mr(self, mr_url: str, project_name: str) -> RenovateReview | None:
         """Process a single MR URL. Returns the resulting review record."""
-        from .cli import _parse_mr_url
+        from ..cli import _parse_mr_url
 
         project = self.projects.get(project_name)
         if not project:
