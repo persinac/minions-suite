@@ -15,8 +15,8 @@ from .config import Config
 from .connectors.nats_client import NatsClient
 from .core.models import RenovateAction, RenovateReview, RenovateStatus, _now
 from .db import AbstractDatabase
-from .git_provider import GitProviderProtocol, create_provider
 from .project_registry import ProjectConfig
+from .providers.git import GitProviderProtocol, create_provider
 from .renovate_classifier import classify_risk, is_renovate_mr, parse_version_bump, should_auto_merge
 
 logger = logging.getLogger(__name__)

@@ -14,8 +14,8 @@ import litellm
 
 from ..config import Config
 from ..core.models import Agent, AgentRole, Job, Task, _now
-from ..git_provider import GitProviderProtocol
 from ..project_registry import ProjectConfig, ServiceTarget
+from ..providers.git import GitProviderProtocol
 from .prompt import build_agent_prompt, build_prompt
 from .tools.definitions import REVIEW_TOOL_DEFINITIONS, ToolExecutor, get_tools_for_role
 

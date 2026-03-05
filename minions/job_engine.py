@@ -23,7 +23,7 @@ from .project_registry import ProjectConfig, ServiceTarget, build_registry
 if TYPE_CHECKING:
     from .artifact_uploader import ArtifactUploader
     from .connectors.nats_client import NatsClient
-    from .k8s_launcher import K8sJobLauncher
+    from .providers.k8s import K8sJobLauncher
 
 logger = logging.getLogger(__name__)
 
@@ -654,7 +654,7 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
 
     async def _run_review_in_process(self, job: Job, task: Task):
         """Run a single review task in-process using the unified agent loop."""
-        from .git_provider import create_provider
+        from .providers.git import create_provider
 
         # Resolve project config
         project = self.registry.get(task.service)
@@ -1270,7 +1270,7 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
 
 def _create_provider_for_project(project, config):
     """Create the appropriate git provider for a project."""
-    from .git_provider import create_provider
+    from .providers.git import create_provider
 
     provider_type = project.git_provider or config.git_provider
 

@@ -2,7 +2,7 @@
 
 import pytest
 
-from minions.git_provider import (
+from minions.providers.git import (
     GitHubProvider,
     GitLabProvider,
     GitProviderProtocol,

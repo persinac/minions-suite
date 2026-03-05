@@ -71,9 +71,9 @@ def _find_project_for_url(url: str, projects: dict) -> str:
 async def _run_one_shot(url: str, project_name: str, config: Config) -> int:
     """Run a single review as a Job+Task and exit."""
     from .agents.runner import run_agent
-    from .git_provider import create_provider
     from .job_engine import _create_provider_for_project
     from .project_registry import build_registry
+    from .providers.git import create_provider
 
     db = _create_db(config)
     await db.connect()
@@ -200,7 +200,7 @@ async def _run_server(config: Config) -> None:
     # Optional K8s launcher
     k8s_launcher = None
     if config.k8s_dispatch:
-        from .k8s_launcher import K8sJobLauncher
+        from .providers.k8s import K8sJobLauncher
 
         k8s_launcher = K8sJobLauncher(
             namespace=config.k8s_namespace,
@@ -225,7 +225,7 @@ async def _run_server(config: Config) -> None:
     # Optional GitLab issues poller
     gitlab_issues_poller = None
     if config.gitlab_issues_enabled:
-        from .gitlab_issues_poller import GitLabIssuesPoller
+        from .providers.gitlab_issues import GitLabIssuesPoller
 
         gitlab_issues_poller = GitLabIssuesPoller(config, db, projects)
 
@@ -265,7 +265,7 @@ async def _run_server(config: Config) -> None:
 async def _run_trello_only(config: Config) -> None:
     """Run only the Trello poller + job engine (for infrastructure compatibility)."""
     from .job_engine import JobEngine
-    from .trello_poller import TrelloPoller
+    from .providers.trello import TrelloPoller
 
     if not config.trello_api_key or not config.trello_token or not config.trello_board_id:
         print("Error: TRELLO_API_KEY, TRELLO_TOKEN, and TRELLO_BOARD_ID must be set")
@@ -286,7 +286,7 @@ async def _run_trello_only(config: Config) -> None:
     # Optional K8s launcher
     k8s_launcher = None
     if config.k8s_dispatch:
-        from .k8s_launcher import K8sJobLauncher
+        from .providers.k8s import K8sJobLauncher
 
         k8s_launcher = K8sJobLauncher(
             namespace=config.k8s_namespace,

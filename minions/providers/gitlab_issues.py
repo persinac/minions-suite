@@ -8,10 +8,10 @@ from urllib.parse import quote
 
 import httpx
 
-from .config import Config
-from .core.models import Job, JobStatus
-from .db import AbstractDatabase
-from .project_registry import ProjectConfig
+from ..config import Config
+from ..core.models import Job, JobStatus
+from ..db import AbstractDatabase
+from ..project_registry import ProjectConfig
 
 logger = logging.getLogger(__name__)
 
