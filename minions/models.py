@@ -70,6 +70,13 @@ class AgentRole(StrEnum):
     ORCHESTRATOR = "arbiter"
 
 
+class RiskLevel(StrEnum):
+    PATCH = "patch"
+    MINOR = "minor"
+    MAJOR = "major"
+    UNKNOWN = "unknown"
+
+
 class TaskReviewStatus(StrEnum):
     """Review status within a task lifecycle (distinct from ReviewStatus used for standalone reviews)."""
 

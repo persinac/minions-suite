@@ -337,6 +337,11 @@ _SUBTASK_TOOLS = [
     _fn("get_subtasks", "Get all subtasks for the current task."),
 ]
 
+_SEND_MESSAGE_TOOL = _fn("send_message", "Send a message to another agent.", {
+    "to_role": {"type": "string", "description": "Target agent role (or null for broadcast)."},
+    "content": {"type": "string", "description": "Message content."},
+})
+
 _UPDATE_TASK_STATUS_TOOL = _fn("update_task_status", "Update the status of the current task.", {
     "status": {"type": "string", "description": "New task status."},
     "error": {"type": "string", "description": "Error message (if failing)."},
@@ -354,10 +359,7 @@ SPEC_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "agent_role": {"type": "string", "description": "Agent role to handle this task."},
     }),
     _fn("mark_tasks_created", "Signal that all tasks have been created for this spec."),
-    _fn("send_message", "Send a message to another agent.", {
-        "to_role": {"type": "string", "description": "Target agent role (or null for broadcast)."},
-        "content": {"type": "string", "description": "Message content."},
-    }),
+    _SEND_MESSAGE_TOOL,
     _HEARTBEAT_TOOL,
 ]
 
@@ -405,6 +407,45 @@ ENGINEER_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     _HEARTBEAT_TOOL,
 ]
 
+# Database engineer tools (no subtask decomposition, no PR workflow)
+DB_ENGINEER_TOOL_DEFINITIONS: list[dict[str, Any]] = [
+    _fn("read_file", "Read a file from the repository.", {
+        "path": {"type": "string", "description": "File path relative to repo root."},
+        "start_line": {"type": "integer", "description": "Start line (1-indexed, optional)."},
+        "end_line": {"type": "integer", "description": "End line (inclusive, optional)."},
+    }),
+    _fn("write_file", "Write content to a file.", {
+        "path": {"type": "string", "description": "File path relative to repo root."},
+        "content": {"type": "string", "description": "File content to write."},
+    }),
+    _fn("run_command", "Run a shell command in the working directory.", {
+        "command": {"type": "string", "description": "Shell command to execute."},
+        "timeout": {"type": "integer", "description": "Timeout in seconds (default 60)."},
+    }),
+    _fn("search_code", "Search the repository for a regex pattern.", {
+        "pattern": {"type": "string", "description": "Regex pattern to search."},
+        "glob": {"type": "string", "description": "File glob filter (optional)."},
+    }),
+    _fn("create_branch", "Create and checkout a new git branch.", {
+        "branch_name": {"type": "string", "description": "Branch name to create."},
+    }),
+    _fn("commit", "Stage and commit changes.", {
+        "message": {"type": "string", "description": "Commit message."},
+        "files": {"type": "array", "items": {"type": "string"}, "description": "Files to stage (empty = all)."},
+    }),
+    _fn("push", "Push the current branch to remote.", {
+        "branch_name": {"type": "string", "description": "Branch name to push."},
+    }),
+    _fn("report_pr", "Report that a PR has been created for the current task.", {
+        "pr_url": {"type": "string", "description": "URL of the created PR."},
+        "pr_number": {"type": "integer", "description": "PR number."},
+        "branch_name": {"type": "string", "description": "Branch name."},
+    }),
+    _SEND_MESSAGE_TOOL,
+    _UPDATE_TASK_STATUS_TOOL,
+    _HEARTBEAT_TOOL,
+]
+
 # Deploy monitor tools
 DEPLOY_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     _fn("check_ci_status", "Check the CI/CD pipeline status.", {
@@ -414,6 +455,22 @@ DEPLOY_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "status": {"type": "string", "description": "Deploy status: deploying, deployed, failed."},
         "detail": {"type": "string", "description": "Status details."},
     }),
+    *_SUBTASK_TOOLS,
+    _SEND_MESSAGE_TOOL,
+    _UPDATE_TASK_STATUS_TOOL,
+    _HEARTBEAT_TOOL,
+]
+
+
+# Code reviewer tools for job orchestration (extends REVIEW_TOOL_DEFINITIONS with state tools)
+CODE_REVIEWER_TOOL_DEFINITIONS: list[dict[str, Any]] = [
+    *REVIEW_TOOL_DEFINITIONS,
+    _fn("report_review_complete", "Report that a PR review is complete.", {
+        "verdict": {"type": "string", "enum": ["approved", "changes_requested"], "description": "Review verdict."},
+        "feedback": {"type": "string", "description": "Review feedback summary."},
+    }),
+    _SEND_MESSAGE_TOOL,
+    _fn("get_messages", "Get messages sent to this agent."),
     _UPDATE_TASK_STATUS_TOOL,
     _HEARTBEAT_TOOL,
 ]
@@ -423,10 +480,12 @@ def get_tools_for_role(role: str) -> list[dict[str, Any]]:
     """Return the tool definitions appropriate for the given agent role."""
     if role in ("spec_analyst", "arbiter"):
         return SPEC_TOOL_DEFINITIONS
-    if role in ("backend_engineer", "frontend_engineer", "database_engineer"):
+    if role in ("backend_engineer", "frontend_engineer"):
         return ENGINEER_TOOL_DEFINITIONS
+    if role == "database_engineer":
+        return DB_ENGINEER_TOOL_DEFINITIONS
     if role == "code_reviewer":
-        return REVIEW_TOOL_DEFINITIONS
+        return CODE_REVIEWER_TOOL_DEFINITIONS
     if role == "deploy_monitor":
         return DEPLOY_TOOL_DEFINITIONS
     return ENGINEER_TOOL_DEFINITIONS

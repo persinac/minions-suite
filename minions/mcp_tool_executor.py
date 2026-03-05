@@ -46,6 +46,8 @@ _STATE_TOOL_INJECTIONS: dict[str, list[tuple[str, str]]] = {
     "start_subtask": [],
     "complete_subtask": [],
     "fail_subtask": [],
+    # Review completion
+    "report_review_complete": [("task_id", "task_id")],
     # Read-only state tools
     "get_messages": [("job_id", "job_id")],
     "get_job_status": [("job_id", "job_id")],

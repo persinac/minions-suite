@@ -45,6 +45,11 @@ tasks:
       - uv run ruff format .
       - uv run ruff check --fix .
 
+  test:
+    desc: Run unit tests
+    cmds:
+      - uv run pytest {{.CLI_ARGS}}
+
   lint:
     desc: Check formatting and lint without modifying files
     cmds:

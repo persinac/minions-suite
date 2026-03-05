@@ -20,6 +20,9 @@ dependencies = [
     "kubernetes-asyncio>=31.0.0",
 ]
 
+[project.optional-dependencies]
+test = ["pytest>=8.0", "pytest-asyncio>=0.24"]
+
 [project.scripts]
 minion = "minions.cli:main"
 
@@ -45,6 +48,10 @@ ignore = [
     "E501",   # line length (handled by formatter)
     "SIM108", # ternary operator (project convention: no ternaries)
 ]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["minions"]
