@@ -21,26 +21,70 @@ Requires **Python 3.14+**. Uses `uv` for dependency management and `task` (Taskf
 
 **Prompt composition:** `base.md` + role mixins (`roles/*.md`) + language mixins (`languages/*.md`) + custom rules (`custom/*.md`). Configured per-project in `projects.yaml`. Roles and languages can also be **auto-inferred** from changed file extensions/paths (e.g. `.py` → python, `/api/` → backend).
 
-## Key Modules
+## Package Structure
 
-- `cli.py` — Entry point: `minion review <url>`, `--server`, `--status`, `--costs`, `--preflight`
-- `config.py` — Config dataclass loaded from environment (`Config.from_env()`)
-- `agent.py` — Unified LiteLLM tool-use loop (`run_agent()` / `_agent_loop_generic()`); handles both review and development agents; max 30 turns, logs every turn to file
-- `tools.py` — Tool definitions (OpenAI function schema) + `ToolExecutor` dispatch
-- `server.py` — FastMCP server (port 8321) for external integrations
-- `job_engine.py` — JobEngine: polls for active jobs, dispatches agents (in-process or K8s), manages state transitions for both review and development jobs
-- `prompt.py` — Composable prompt assembly from markdown mixins + auto-inference
-- `git_provider.py` — `GitProviderProtocol` + GitLab (REST API v4) / GitHub (`gh` CLI) implementations
-- `project_registry.py` — Multi-project config from `projects.yaml`
-- `models.py` — Pydantic models: `Job`, `Task`, `Agent`, `Subtask`, `Message`; enums: `JobStatus`, `TaskStatus`, `AgentRole`, `GitProvider`
-- `db.py` / `db_postgres.py` — `AbstractDatabase` protocol; SQLite (dev) and PostgreSQL (prod) implementations
-- `preflight.py` — Health checks for CLI tools, API keys, git provider credentials, DB, NATS
-- `connectors/nats_client.py` — Persistent NATS connection; subjects: `jobs.review.{requested,started,completed,failed}.<project>`, `jobs.<id>.status`, `agents.*`
+```
+minions/
+├── cli.py                          # Entry point: minion review/--server/--status/--costs/--preflight
+├── config.py                       # Config dataclass loaded from environment (Config.from_env())
+├── project_registry.py             # Multi-project config from projects.yaml
+├── preflight.py                    # Health checks for CLI tools, API keys, providers, DB, NATS
+├── dashboard.py                    # Web UI (single file)
+├── artifact_uploader.py            # S3 artifact uploads
+│
+├── core/                           # Domain model — zero external deps
+│   ├── models.py                   # Pydantic models (Job, Task, Agent, Subtask, Message) + enums
+│   ├── state_transitions.py        # Transition validation, InvalidTransitionError
+│   └── timeout_config.py           # RoleTimeoutConfig, TimeoutConfig
+│
+├── db/                             # Persistence layer
+│   ├── abstract.py                 # AbstractDatabase protocol
+│   ├── sqlite.py                   # SQLite implementation (dev, aiosqlite)
+│   └── postgres.py                 # PostgreSQL implementation (prod, psycopg3)
+│
+├── engine/                         # Job orchestration
+│   ├── job_engine.py               # Core JobEngine: poll loop, K8s dispatch, startup recovery
+│   ├── review.py                   # Review job handlers (launch, run in-process, check completion)
+│   ├── dev.py                      # Dev handlers (spec analyst, arbiter, engineers, revisions)
+│   ├── deploy.py                   # Deploy monitor launch, deployment checks
+│   ├── arbiter.py                  # Arbiter coordination service (NATS request/reply)
+│   └── anomaly_rules.py            # Anomaly detection rules for arbiter monitor loop
+│
+├── agents/                         # Agent execution
+│   ├── runner.py                   # run_agent(), _agent_loop_generic() — unified LiteLLM tool-use loop
+│   ├── dispatch.py                 # AgentWorkItem, serialization (K8s handoff)
+│   ├── prompt.py                   # build_prompt(), build_agent_prompt(), profile inference
+│   └── tools/                      # Tool schemas + executors
+│       ├── definitions.py          # OpenAI function schemas per role + get_tools_for_role()
+│       ├── review_executor.py      # ToolExecutor (git provider dispatch for reviewers)
+│       └── mcp_executor.py         # McpToolExecutor (MCP server routing for orchestration agents)
+│
+├── providers/                      # External service integrations
+│   ├── git.py                      # GitProviderProtocol + GitLab/GitHub implementations
+│   ├── trello.py                   # TrelloPoller
+│   ├── gitlab_issues.py            # GitLabIssuesPoller
+│   └── k8s.py                      # K8sJobLauncher
+│
+├── server/                         # MCP server
+│   ├── mcp.py                      # FastMCP tool registrations (port 8321)
+│   └── middleware.py               # ToolAuditMiddleware
+│
+├── renovate/                       # Renovate auto-merge (self-contained feature)
+│   ├── classifier.py               # Risk classification, version parsing
+│   └── engine.py                   # RenovateEngine polling loop
+│
+└── connectors/                     # NATS message bus
+    └── nats_client.py              # Persistent NATS connection + publisher/subscriber
+```
 
 ## Agent Tools
 
-The LLM agent has access to these tools (defined in `tools.py`):
-`get_mr_diff`, `get_changed_files`, `read_file` (with optional line range), `search_code` (ripgrep regex, 50 results max), `list_files` (glob), `get_mr_comments`, `post_inline_comment`, `submit_review`
+Each agent role has its own tool set (defined in `agents/tools/definitions.py`):
+- **CODE_REVIEWER**: `get_mr_diff`, `get_changed_files`, `read_file`, `search_code`, `list_files`, `get_mr_comments`, `post_inline_comment`, `submit_review`, `report_review_complete`
+- **Engineers** (backend/frontend): subtask tools + state tools + local tools (read/write/git/shell)
+- **DATABASE_ENGINEER**: same as engineers but without subtask tools
+- **DEPLOY_MONITOR**: subtask tools + send_message + state tools
+- **SPEC_ANALYST / ARBITER**: spec submission + task creation + messaging tools
 
 ## Git Provider Notes
 
@@ -118,7 +162,9 @@ task docker:up
 task docker:down
 ```
 
-There are no automated tests yet.
+## Tests
+
+372 unit tests via `pytest` + `pytest-asyncio`. Run with `task test` or `uv run pytest`. Tests use in-memory SQLite, no external services.
 
 ## Secrets
 

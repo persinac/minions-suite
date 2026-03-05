@@ -1,7 +1,7 @@
 # Plan: Restructure `minions/` package into namespaced sub-packages
 
-**Status:** Planned
-**Prerequisite:** Unit tests must exist before any moves begin
+**Status:** Complete (all 8 phases done)
+**Prerequisite:** Unit tests must exist before any moves begin — ✅ 372 tests
 
 ## Problem
 
