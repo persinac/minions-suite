@@ -4,6 +4,19 @@
 
 Two CRDs model the job orchestration domain: `MinionJob` (parent) and `MinionTask` (child). The state machine transition rules are enforced by the controller, not the CRD schema.
 
+### Notes
+
+Any time change
+call reconciliation 
+
+when deploy CRD, k8s will start watching
+if state changes, the k8s recon engine will do things
+
+nuances:
+- ensure that all objects exist, else k8s won't know what to do with it
+
+
+
 ---
 
 ## MinionJob CRD
