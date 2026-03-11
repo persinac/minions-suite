@@ -1,10 +1,11 @@
 """Tests for tool definitions and get_tools_for_role."""
 
 from minions.agents.tools.definitions import (
+    ARBITER_TOOL_DEFINITIONS,
     DEPLOY_TOOL_DEFINITIONS,
     ENGINEER_TOOL_DEFINITIONS,
     REVIEW_TOOL_DEFINITIONS,
-    SPEC_TOOL_DEFINITIONS,
+    SPEC_ANALYST_TOOL_DEFINITIONS,
     get_tools_for_role,
 )
 
@@ -24,8 +25,13 @@ class TestToolDefinitionStructure:
             params = tool["function"]["parameters"]
             assert params["type"] == "object"
 
-    def test_spec_tools_valid_schema(self):
-        for tool in SPEC_TOOL_DEFINITIONS:
+    def test_spec_analyst_tools_valid_schema(self):
+        for tool in SPEC_ANALYST_TOOL_DEFINITIONS:
+            assert tool["type"] == "function"
+            assert "name" in tool["function"]
+
+    def test_arbiter_tools_valid_schema(self):
+        for tool in ARBITER_TOOL_DEFINITIONS:
             assert tool["type"] == "function"
             assert "name" in tool["function"]
 
@@ -51,9 +57,25 @@ class TestReviewTools:
         assert len(REVIEW_TOOL_DEFINITIONS) == 8
 
 
-class TestSpecTools:
+class TestSpecAnalystTools:
     def test_expected_tools(self):
-        names = _tool_names(SPEC_TOOL_DEFINITIONS)
+        names = _tool_names(SPEC_ANALYST_TOOL_DEFINITIONS)
+        assert "submit_refined_spec" in names
+        assert "send_message" in names
+        assert "send_heartbeat" in names
+
+    def test_no_arbiter_tools(self):
+        names = _tool_names(SPEC_ANALYST_TOOL_DEFINITIONS)
+        assert "create_task" not in names
+        assert "mark_tasks_created" not in names
+
+    def test_count(self):
+        assert len(SPEC_ANALYST_TOOL_DEFINITIONS) == 3
+
+
+class TestArbiterTools:
+    def test_expected_tools(self):
+        names = _tool_names(ARBITER_TOOL_DEFINITIONS)
         assert "submit_refined_spec" in names
         assert "create_task" in names
         assert "mark_tasks_created" in names
@@ -61,7 +83,7 @@ class TestSpecTools:
         assert "send_heartbeat" in names
 
     def test_count(self):
-        assert len(SPEC_TOOL_DEFINITIONS) == 5
+        assert len(ARBITER_TOOL_DEFINITIONS) == 5
 
 
 class TestEngineerTools:
@@ -114,11 +136,20 @@ class TestDeployTools:
 class TestGetToolsForRole:
     def test_spec_analyst(self):
         tools = get_tools_for_role("spec_analyst")
-        assert tools is SPEC_TOOL_DEFINITIONS
+        assert tools is SPEC_ANALYST_TOOL_DEFINITIONS
 
     def test_arbiter(self):
         tools = get_tools_for_role("arbiter")
-        assert tools is SPEC_TOOL_DEFINITIONS
+        assert tools is ARBITER_TOOL_DEFINITIONS
+
+    def test_spec_analyst_and_arbiter_are_different(self):
+        spec_tools = get_tools_for_role("spec_analyst")
+        arbiter_tools = get_tools_for_role("arbiter")
+        assert spec_tools is not arbiter_tools
+        spec_names = _tool_names(spec_tools)
+        arbiter_names = _tool_names(arbiter_tools)
+        assert "create_task" not in spec_names
+        assert "create_task" in arbiter_names
 
     def test_backend_engineer(self):
         tools = get_tools_for_role("backend_engineer")
@@ -148,7 +179,7 @@ class TestGetToolsForRole:
 
     def test_no_tool_name_collisions_within_role(self):
         """Each role's tool list should have unique tool names."""
-        for role in ["spec_analyst", "backend_engineer", "database_engineer", "code_reviewer", "deploy_monitor"]:
+        for role in ["spec_analyst", "arbiter", "backend_engineer", "database_engineer", "code_reviewer", "deploy_monitor"]:
             tools = get_tools_for_role(role)
             names = [t["function"]["name"] for t in tools]
             assert len(names) == len(set(names)), f"Duplicate tool names for role {role}"

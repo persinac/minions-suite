@@ -14,6 +14,69 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+SUBTASK_TERMINAL = {"completed", "failed"}
+
+
+async def _all_subtasks_terminal(engine: "JobEngine", task_id: str) -> bool:
+    """Return True if the task has subtasks and all are in a terminal state."""
+    subtasks = await engine.db.get_subtasks(task_id)
+    if not subtasks:
+        return True  # No subtasks — nothing to gate on
+    return all(s.status in SUBTASK_TERMINAL for s in subtasks)
+
+
+async def _try_complete_task(engine: "JobEngine", task: Task, label: str) -> None:
+    """Advance a task after its agent finishes successfully.
+
+    Rules:
+    1. All subtasks must be in a terminal state (completed/failed).
+    2. Engineer tasks must have a PR (pr_url set) — go to PR_OPEN for review.
+    3. If either condition is unmet and retries remain, retry the task.
+
+    Called when an agent finishes successfully but the task is still in_progress.
+    """
+    engineer_roles = {AgentRole.BACKEND_ENGINEER, AgentRole.FRONTEND_ENGINEER}
+    subtasks_done = await _all_subtasks_terminal(engine, task.id)
+
+    # Re-read task to get latest pr_url (agent may have set it during execution)
+    current = await engine.db.get_task(task.id)
+    if current:
+        task = current
+
+    needs_pr = task.agent_role in engineer_roles
+    has_pr = bool(task.pr_url)
+
+    if subtasks_done and needs_pr and has_pr:
+        # Engineer with a PR — move to PR_OPEN for code review
+        try:
+            await engine.db.update_task(task.id, status=TaskStatus.PR_OPEN, agent_role="")
+            logger.info("%s: task %s -> PR_OPEN (ready for review)", label, task.id)
+        except InvalidTransitionError as e:
+            logger.warning("%s: rejected task transition for %s: %s", label, task.id, e)
+    elif subtasks_done and not needs_pr:
+        # Non-engineer (database_engineer, etc.) — mark done directly
+        try:
+            await engine.db.update_task(task.id, status=TaskStatus.DONE, agent_role="")
+            logger.info("%s: task %s -> DONE (all subtasks terminal)", label, task.id)
+        except InvalidTransitionError as e:
+            logger.warning("%s: rejected task transition for %s: %s", label, task.id, e)
+    else:
+        # Either subtasks incomplete or engineer didn't create a PR — retry
+        reason = "agent finished with incomplete subtasks" if not subtasks_done else "agent finished without creating a PR"
+        if task.attempt < task.max_attempts:
+            try:
+                await engine.db.update_task(task.id, status=TaskStatus.FAILED, agent_role="", error=reason)
+                await engine.db.update_task(task.id, status=TaskStatus.PENDING, agent_role="", attempt=task.attempt + 1)
+                logger.info("%s: task %s — %s, retrying (attempt %d)", label, task.id, reason, task.attempt + 1)
+            except InvalidTransitionError as e:
+                logger.warning("%s: could not retry task %s: %s", label, task.id, e)
+        else:
+            try:
+                await engine.db.update_task(task.id, status=TaskStatus.FAILED, agent_role="", error=f"{reason}, max attempts reached")
+                logger.warning("%s: task %s — %s and no retries left, marking FAILED", label, task.id, reason)
+            except InvalidTransitionError as e:
+                logger.warning("%s: could not fail task %s: %s", label, task.id, e)
+
 
 async def launch_spec_analyst(engine: "JobEngine", job: Job):
     """Launch the spec analyst agent to refine the raw spec."""
@@ -47,6 +110,12 @@ async def launch_spec_analyst(engine: "JobEngine", job: Job):
     result_agent = await engine._run_in_process(job, task, agent, None, None)
 
     if result_agent.status == "done":
+        # Mark the spec analyst task as done
+        try:
+            await engine.db.update_task(task.id, status=TaskStatus.DONE, agent_role="")
+            logger.info("Spec analyst completed, task %s -> DONE", task.id)
+        except InvalidTransitionError as e:
+            logger.warning("Rejected task transition for %s: %s", task.id, e)
         # If arbiter not enabled, check if spec analyst advanced the job
         if not engine.config.arbiter_enabled:
             updated_job = await engine.db.get_job(job.id)
@@ -54,6 +123,7 @@ async def launch_spec_analyst(engine: "JobEngine", job: Job):
                 logger.warning("Spec analyst completed but didn't submit refined spec for job %s, advancing with raw spec", job.id)
                 await engine.db.update_job_status(job.id, JobStatus.SPEC_READY)
     else:
+        await engine.db.update_task(task.id, status=TaskStatus.FAILED, agent_role="", error=f"Spec analyst failed: {result_agent.error or 'unknown'}")
         await engine.db.update_job_status(job.id, JobStatus.FAILED, error=f"Spec analyst failed: {result_agent.error or 'unknown'}")
         await engine._on_job_terminal(job.id)
 
@@ -84,14 +154,31 @@ async def launch_arbiter(engine: "JobEngine", job: Job):
     await engine._nats_agent_status(job.id, agent.id, "arbiter", "launched")
     await engine._trello_comment(job, f"Arbiter started (agent={agent.id[:8]})")
 
+    # Build context with available services so the arbiter knows valid service names
+    available_services = []
+    for project in engine.registry.values():
+        if project.services:
+            for svc_name, svc in project.services.items():
+                lang_str = f" ({svc.language})" if svc.language else ""
+                available_services.append(f"- `{svc_name}`{lang_str} — project: {project.name}")
+    services_context = None
+    if available_services:
+        services_context = "## Available Services\n\nWhen creating tasks, use one of these service names:\n" + "\n".join(available_services)
+
     if engine._k8s_enabled:
-        prompt = engine._maybe_dry_run(build_agent_prompt(job, task, None, None))
+        prompt = engine._maybe_dry_run(build_agent_prompt(job, task, None, None, services_context))
         await engine._dispatch_k8s(job, agent, AgentRole.ARBITER, prompt, engine._default_working_dir())
         return
 
-    result_agent = await engine._run_in_process(job, task, agent, None, None)
+    result_agent = await engine._run_in_process(job, task, agent, None, None, context=services_context)
 
     if result_agent.status == "done":
+        # Mark the arbiter task as done
+        try:
+            await engine.db.update_task(task.id, status=TaskStatus.DONE, agent_role="")
+            logger.info("Arbiter completed, task %s -> DONE", task.id)
+        except InvalidTransitionError as e:
+            logger.warning("Rejected task transition for %s: %s", task.id, e)
         if not engine.config.arbiter_enabled:
             updated_job = await engine.db.get_job(job.id)
             if updated_job and updated_job.status == JobStatus.SPEC_READY:
@@ -104,13 +191,27 @@ async def launch_arbiter(engine: "JobEngine", job: Job):
                     await engine.db.update_job_status(job.id, JobStatus.FAILED, error="Arbiter created no tasks")
                     await engine._on_job_terminal(job.id)
     else:
+        await engine.db.update_task(task.id, status=TaskStatus.FAILED, agent_role="", error=f"Arbiter failed: {result_agent.error or 'unknown'}")
         await engine.db.update_job_status(job.id, JobStatus.FAILED, error=f"Arbiter failed: {result_agent.error or 'unknown'}")
         await engine._on_job_terminal(job.id)
 
 
 async def launch_engineers(engine: "JobEngine", job: Job):
-    """Launch engineering agents in parallel for pending tasks."""
+    """Launch engineering agents, sequential per service, parallel across services.
+
+    Tasks targeting the same service run one at a time to avoid rate limits
+    and conflicting changes. Tasks for different services run in parallel.
+    """
+    # Gate: don't launch engineers while the arbiter is still running
+    if await engine._has_running_agent(job.id, AgentRole.ARBITER):
+        logger.debug("Job %s: arbiter still running, deferring engineer launch", job.id)
+        return
+
     engineer_roles = {AgentRole.BACKEND_ENGINEER, AgentRole.FRONTEND_ENGINEER, AgentRole.DATABASE_ENGINEER}
+
+    # Check which services already have a running engineer
+    in_progress_tasks = await engine.db.get_tasks_by_status(job.id, TaskStatus.IN_PROGRESS)
+    busy_services = {t.service for t in in_progress_tasks if t.agent_role in engineer_roles}
 
     pending_tasks = await engine.db.get_tasks_by_status(job.id, TaskStatus.PENDING)
     pending_tasks = [t for t in pending_tasks if t.agent_role in engineer_roles]
@@ -118,8 +219,7 @@ async def launch_engineers(engine: "JobEngine", job: Job):
     fresh_tasks = [t for t in pending_tasks if t.attempt <= 1]
     retry_tasks = [t for t in pending_tasks if t.attempt > 1]
 
-    # Also pick up tasks needing revisions
-    in_progress_tasks = await engine.db.get_tasks_by_status(job.id, TaskStatus.IN_PROGRESS)
+    # Pick up tasks needing revisions
     revision_tasks = [t for t in in_progress_tasks if t.review_status == "changes_requested" and t.agent_role in engineer_roles]
 
     all_tasks = fresh_tasks + retry_tasks + revision_tasks
@@ -135,11 +235,22 @@ async def launch_engineers(engine: "JobEngine", job: Job):
 
     await engine.db.update_job_status(job.id, JobStatus.DEV_IN_PROGRESS)
 
+    # Launch one task per service (first pending wins, rest wait for next poll)
+    launched_services = set()
     for t in fresh_tasks:
+        if t.service in busy_services or t.service in launched_services:
+            continue
+        launched_services.add(t.service)
         engine._spawn(run_engineer(engine, job, t, is_revision=False), name=f"eng-{t.id[:8]}")
     for t in retry_tasks:
+        if t.service in busy_services or t.service in launched_services:
+            continue
+        launched_services.add(t.service)
         engine._spawn(run_engineer(engine, job, t, is_retry=True), name=f"eng-retry-{t.id[:8]}")
     for t in revision_tasks:
+        if t.service in busy_services or t.service in launched_services:
+            continue
+        launched_services.add(t.service)
         engine._spawn(run_engineer(engine, job, t, is_revision=True), name=f"eng-rev-{t.id[:8]}")
 
 
@@ -148,7 +259,7 @@ async def run_engineer(engine: "JobEngine", job: Job, task: Task, is_revision: b
     project, service = engine._resolve_service(task.service)
     if not service:
         logger.error("Unknown service %s for task %s", task.service, task.id)
-        await engine.db.update_task(task.id, status=TaskStatus.FAILED, error=f"Unknown service: {task.service}")
+        await engine.db.update_task(task.id, status=TaskStatus.FAILED, agent_role="", error=f"Unknown service: {task.service}")
         return
 
     context = None
@@ -209,18 +320,23 @@ async def run_engineer(engine: "JobEngine", job: Job, task: Task, is_revision: b
     result_agent = await engine._run_in_process(job, task, agent, project, service, context)
 
     if result_agent.status == "done":
-        # After a successful revision, ensure the task moves back to PR_OPEN for re-review
         if is_revision:
+            # After a successful revision, move task back to PR_OPEN for re-review
             current_task = await engine.db.get_task(task.id)
             if current_task and current_task.status not in (TaskStatus.PR_OPEN, TaskStatus.MERGED, TaskStatus.DONE):
                 try:
-                    await engine.db.update_task(task.id, status=TaskStatus.PR_OPEN, review_status="revision_complete")
+                    await engine.db.update_task(task.id, status=TaskStatus.PR_OPEN, agent_role="", review_status="revision_complete")
                     logger.info("Revision agent completed, task %s -> PR_OPEN for re-review", task.id)
                 except InvalidTransitionError as e:
                     logger.warning("Rejected task transition for %s: %s", task.id, e)
+        else:
+            # Fresh/retry task — mark done only if all subtasks are complete
+            current_task = await engine.db.get_task(task.id)
+            if current_task and current_task.status == TaskStatus.IN_PROGRESS:
+                await _try_complete_task(engine, current_task, "run_engineer")
     else:
         try:
-            await engine.db.update_task(task.id, status=TaskStatus.FAILED, error=(result_agent.error or "unknown")[:200])
+            await engine.db.update_task(task.id, status=TaskStatus.FAILED, agent_role="", error=(result_agent.error or "unknown")[:200])
         except InvalidTransitionError:
             logger.warning("Could not mark task %s as failed", task.id)
 
@@ -310,14 +426,18 @@ async def run_task_review(engine: "JobEngine", job: Job, task: Task):
     if result_agent.status != "done":
         # Reset original task from in_review back to pr_open for retry
         try:
-            await engine.db.update_task(task.id, status=TaskStatus.PR_OPEN)
+            await engine.db.update_task(task.id, status=TaskStatus.PR_OPEN, agent_role="")
             logger.info("Reviewer failed, task %s reset to PR_OPEN for retry", task.id)
         except InvalidTransitionError:
             logger.warning("Could not reset task %s to PR_OPEN after reviewer failure", task.id)
 
 
 async def manage_dev_tasks(engine: "JobEngine", job: Job):
-    """Per-task lifecycle manager: review launches, revision cycles, job advancement."""
+    """Per-task lifecycle manager: review launches, revision cycles, job advancement.
+
+    Enforces sequential execution per service — only one engineer runs per
+    service at a time. Different services can run in parallel.
+    """
     engineer_roles = {AgentRole.BACKEND_ENGINEER, AgentRole.FRONTEND_ENGINEER, AgentRole.DATABASE_ENGINEER}
     tasks = await engine.db.get_tasks(job.id)
     dev_tasks = [t for t in tasks if t.agent_role in engineer_roles]
@@ -325,20 +445,27 @@ async def manage_dev_tasks(engine: "JobEngine", job: Job):
     if not dev_tasks:
         return
 
+    # Track which services already have a running engineer
+    busy_services = {t.service for t in dev_tasks if t.status == TaskStatus.IN_PROGRESS}
+    launched_services = set()
+
     terminal_statuses = {TaskStatus.MERGED, TaskStatus.DONE, TaskStatus.FAILED}
 
     for task in dev_tasks:
         if task.status == TaskStatus.PR_OPEN:
             # PR just opened — transition to in_review and spawn reviewer
             try:
-                await engine.db.update_task(task.id, status=TaskStatus.IN_REVIEW)
+                await engine.db.update_task(task.id, status=TaskStatus.IN_REVIEW, agent_role="")
             except InvalidTransitionError as e:
                 logger.warning("Could not transition task %s to in_review: %s", task.id, e)
                 continue
             engine._spawn(run_task_review(engine, job, task), name=f"review-{task.id[:8]}")
 
         elif task.status == TaskStatus.PENDING:
-            # Task recovered by startup cleanup or arbiter retry — re-launch
+            # Only launch if no other task for this service is running
+            if task.service in busy_services or task.service in launched_services:
+                continue
+            launched_services.add(task.service)
             is_retry = task.attempt > 1
             engine._spawn(
                 run_engineer(engine, job, task, is_retry=is_retry),
@@ -351,7 +478,7 @@ async def manage_dev_tasks(engine: "JobEngine", job: Job):
                 logger.warning("Task %s hit max revisions (%d), failing", task.id, engine.config.max_revisions)
                 try:
                     await engine.db.update_task(
-                        task.id, status=TaskStatus.FAILED, error=f"Max revisions ({engine.config.max_revisions}) exceeded"
+                        task.id, status=TaskStatus.FAILED, agent_role="", error=f"Max revisions ({engine.config.max_revisions}) exceeded"
                     )
                 except InvalidTransitionError:
                     pass
@@ -371,31 +498,34 @@ async def manage_dev_tasks(engine: "JobEngine", job: Job):
         elif task.status in (TaskStatus.IN_PROGRESS, TaskStatus.IN_REVIEW):
             # Check if the agent is actually dead (orphaned task)
             latest_agent = await engine.db.get_agent_for_task(task.id)
-            if latest_agent and latest_agent.status in ("failed", "completed"):
-                if task.status == TaskStatus.IN_REVIEW:
+            if latest_agent and latest_agent.status in ("failed", "done"):
+                if latest_agent.status == "done":
+                    # Agent succeeded but task wasn't updated — check subtasks first
+                    await _try_complete_task(engine, task, "orphan recovery")
+                elif task.status == TaskStatus.IN_REVIEW:
                     try:
-                        await engine.db.update_task(task.id, status=TaskStatus.PR_OPEN)
+                        await engine.db.update_task(task.id, status=TaskStatus.PR_OPEN, agent_role="")
                         logger.info("Orphan recovery: task %s reset from in_review to pr_open", task.id)
                     except InvalidTransitionError as e:
                         logger.warning("Orphan recovery: could not reset task %s to pr_open: %s", task.id, e)
                 else:
                     if task.attempt < task.max_attempts:
                         try:
-                            await engine.db.update_task(task.id, status=TaskStatus.FAILED, error="agent died without completing")
-                            await engine.db.update_task(task.id, status=TaskStatus.PENDING, attempt=task.attempt + 1)
+                            await engine.db.update_task(task.id, status=TaskStatus.FAILED, agent_role="", error="agent died without completing")
+                            await engine.db.update_task(task.id, status=TaskStatus.PENDING, agent_role="", attempt=task.attempt + 1)
                             logger.info("Orphan recovery: task %s reset to pending (attempt %d)", task.id, task.attempt + 1)
                         except InvalidTransitionError as e:
                             logger.warning("Orphan recovery: could not reset task %s: %s", task.id, e)
                     else:
                         try:
-                            await engine.db.update_task(task.id, status=TaskStatus.FAILED, error="max attempts reached after agent death")
+                            await engine.db.update_task(task.id, status=TaskStatus.FAILED, agent_role="", error="max attempts reached after agent death")
                         except InvalidTransitionError:
                             pass
 
         elif task.status == TaskStatus.FAILED and task.attempt < task.max_attempts:
             # Failed task with retries remaining — auto-retry
             try:
-                await engine.db.update_task(task.id, status=TaskStatus.PENDING, attempt=task.attempt + 1, error=None)
+                await engine.db.update_task(task.id, status=TaskStatus.PENDING, agent_role="", attempt=task.attempt + 1, error=None)
                 logger.info("Auto-retry: task %s reset to pending (attempt %d/%d)", task.id, task.attempt + 1, task.max_attempts)
                 await engine.db.record_event(
                     job.id, "task_auto_retry", "engine", f"task={task.id} attempt={task.attempt + 1}/{task.max_attempts}"

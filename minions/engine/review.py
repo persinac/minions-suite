@@ -52,12 +52,12 @@ async def run_review_in_process(engine: "JobEngine", job: Job, task: Task):
         provider = _create_provider_for_project(project, engine.config)
     except ValueError as e:
         logger.error("Failed to create provider for task %s: %s", task.id, e)
-        await engine.db.update_task(task.id, status=TaskStatus.FAILED, error=str(e)[:200])
+        await engine.db.update_task(task.id, status=TaskStatus.FAILED, agent_role="", error=str(e)[:200])
         return
 
     # Transition task to IN_PROGRESS
     try:
-        await engine.db.update_task(task.id, status=TaskStatus.IN_PROGRESS)
+        await engine.db.update_task(task.id, status=TaskStatus.IN_PROGRESS, agent_role="")
     except InvalidTransitionError as e:
         logger.warning("Could not advance task %s to in_progress: %s", task.id, e)
         return
@@ -100,6 +100,7 @@ async def run_review_in_process(engine: "JobEngine", job: Job, task: Task):
             await engine.db.update_task(
                 task.id,
                 status=TaskStatus.DONE,
+                agent_role="",
                 verdict=verdict,
                 comments_posted=comments_posted,
             )
@@ -114,7 +115,7 @@ async def run_review_in_process(engine: "JobEngine", job: Job, task: Task):
     else:
         error = result_agent.error or "unknown"
         try:
-            await engine.db.update_task(task.id, status=TaskStatus.FAILED, error=error[:200])
+            await engine.db.update_task(task.id, status=TaskStatus.FAILED, agent_role="", error=error[:200])
         except InvalidTransitionError:
             logger.warning("Could not mark review task %s as failed", task.id)
         await engine._nats_agent_status(job.id, agent.id, "code_reviewer", "failed")

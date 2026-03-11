@@ -422,7 +422,9 @@ class SQLiteDatabase:
             current = await self.get_task(task_id)
             if current:
                 job_id = current.job_id
-                role_for_validation = requesting_role or current.agent_role
+                # None = no caller specified, fall back to task's role.
+                # Empty string = engine/system caller, skip role restrictions.
+                role_for_validation = current.agent_role if requesting_role is None else requesting_role
                 try:
                     validate_task_transition(task_id, current.status, kwargs["status"], agent_role=role_for_validation)
                     merged = current.model_dump()

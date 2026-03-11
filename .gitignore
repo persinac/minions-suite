@@ -13,3 +13,4 @@ projects.local.yaml
 docker-compose.local.yml
 .python-version
 .idea
+dnc

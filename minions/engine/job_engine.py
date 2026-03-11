@@ -125,12 +125,28 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
         return self.config.k8s_dispatch and self._k8s_launcher is not None
 
     def _resolve_service(self, service_name: str) -> tuple[Optional[ProjectConfig], Optional[ServiceTarget]]:
-        """Look up a service target across all registered projects."""
+        """Look up a service target across all registered projects.
+
+        Falls back to the sole service if only one exists across all projects
+        (handles LLM hallucinating service names like '_spec').
+        """
         for project in self.registry.values():
             if project.services:
                 svc = project.services.get(service_name)
                 if svc:
                     return project, svc
+
+        # Fallback: if there's exactly one service total, use it
+        all_services = []
+        for project in self.registry.values():
+            if project.services:
+                for svc in project.services.values():
+                    all_services.append((project, svc))
+        if len(all_services) == 1:
+            project, svc = all_services[0]
+            logger.warning("Service '%s' not found, falling back to sole service '%s'", service_name, svc.name)
+            return project, svc
+
         return None, None
 
     def _default_working_dir(self) -> str:
@@ -240,7 +256,7 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
                 await self._on_job_terminal(job.id)
             elif agent.task_id:
                 try:
-                    await self.db.update_task(agent.task_id, status=TaskStatus.FAILED, error=error_text[:200])
+                    await self.db.update_task(agent.task_id, status=TaskStatus.FAILED, agent_role="", error=error_text[:200])
                 except InvalidTransitionError:
                     logger.warning("Could not mark task %s as failed", agent.task_id)
 
@@ -432,8 +448,8 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
                 terminal = {TaskStatus.MERGED, TaskStatus.DONE, TaskStatus.FAILED}
                 if task.status not in terminal and task.attempt < task.max_attempts:
                     try:
-                        await self.db.update_task(task.id, status=TaskStatus.FAILED, error="agent orphaned by restart")
-                        await self.db.update_task(task.id, status=TaskStatus.PENDING, attempt=task.attempt + 1)
+                        await self.db.update_task(task.id, status=TaskStatus.FAILED, agent_role="", error="agent orphaned by restart")
+                        await self.db.update_task(task.id, status=TaskStatus.PENDING, agent_role="", attempt=task.attempt + 1)
                         recovered_count += 1
                         logger.info("Startup cleanup: recovered task %s (attempt %d/%d)", task.id, task.attempt + 1, task.max_attempts)
                     except InvalidTransitionError as e:
@@ -553,6 +569,7 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
             db=self.db,
             tool_executor=tool_executor,
             context=context,
+            agent=agent,
         )
 
         if result_agent.status == "done":

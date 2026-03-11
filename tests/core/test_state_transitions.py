@@ -156,6 +156,21 @@ class TestTaskTransitions:
         validate_task_transition("t1", "pending", "in_progress", agent_role="backend_engineer")
         validate_task_transition("t1", "pending", "in_progress", agent_role="code_reviewer")
 
+    def test_empty_role_bypasses_restriction(self):
+        """Engine (empty role) can make any structurally valid transition."""
+        # in_progress -> done is restricted to code_reviewer/deploy_monitor/database_engineer
+        # but empty string should bypass the restriction
+        validate_task_transition("t1", "in_progress", "done", agent_role="")
+
+    def test_empty_role_bypasses_failed_to_pending(self):
+        """Engine can reset failed tasks to pending (normally arbiter-only)."""
+        validate_task_transition("t1", "failed", "pending", agent_role="")
+
+    def test_empty_role_still_validates_structure(self):
+        """Empty role bypasses role restrictions but not structural validity."""
+        with pytest.raises(InvalidTransitionError):
+            validate_task_transition("t1", "done", "in_progress", agent_role="")
+
     def test_all_task_statuses_covered(self):
         from minions.core.models import TaskStatus
         for status in TaskStatus:

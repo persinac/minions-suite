@@ -308,7 +308,7 @@ class Arbiter:
         # so the next engine poll re-launches a reviewer
         if task.status == "in_review":
             try:
-                await self.db.update_task(task_id, status=TaskStatus.PR_OPEN)
+                await self.db.update_task(task_id, status=TaskStatus.PR_OPEN, agent_role="")
                 logger.info("Task %s reset from in_review to pr_open for review retry", task_id)
             except InvalidTransitionError:
                 logger.debug("Could not reset task %s from in_review to pr_open", task_id)
@@ -319,7 +319,7 @@ class Arbiter:
         if task.attempt >= task.max_attempts:
             logger.warning("Task %s exhausted %d attempts, marking failed", task_id, task.max_attempts)
             try:
-                await self.db.update_task(task_id, status=TaskStatus.FAILED, error=f"Exhausted {task.max_attempts} attempts: {reason}")
+                await self.db.update_task(task_id, status=TaskStatus.FAILED, agent_role="", error=f"Exhausted {task.max_attempts} attempts: {reason}")
             except InvalidTransitionError:
                 pass
             return
@@ -327,14 +327,14 @@ class Arbiter:
         # First mark the task as failed (required before pending transition)
         try:
             if task.status != "failed":
-                await self.db.update_task(task_id, status=TaskStatus.FAILED, error=reason)
+                await self.db.update_task(task_id, status=TaskStatus.FAILED, agent_role="", error=reason)
         except InvalidTransitionError:
             logger.debug("Could not fail task %s for retry (already transitioned)", task_id)
             return
 
         # Reset to pending with incremented attempt
         try:
-            await self.db.update_task(task_id, status=TaskStatus.PENDING, attempt=task.attempt + 1, error=None)
+            await self.db.update_task(task_id, status=TaskStatus.PENDING, agent_role="", attempt=task.attempt + 1, error=None)
         except InvalidTransitionError:
             logger.debug("Could not reset task %s to pending for retry", task_id)
             return

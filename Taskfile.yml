@@ -25,14 +25,14 @@ tasks:
     cmds:
       - uv python pin 3.14
       - uv lock
-      - uv sync
+      - uv sync --dev --extra test
 
   setup:init:
     desc: First-time setup — install Python, sync deps, run preflight
     cmds:
       - uv python install 3.14
       - uv python pin 3.14
-      - uv sync
+      - uv sync --dev --extra test
       - uv run python -m minions --preflight
 
   # =============================================================================

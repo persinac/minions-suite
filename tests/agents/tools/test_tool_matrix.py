@@ -24,9 +24,10 @@ across both projects.
 import pytest
 
 from minions.agents.tools.definitions import (
+    ARBITER_TOOL_DEFINITIONS,
     DEPLOY_TOOL_DEFINITIONS,
     REVIEW_TOOL_DEFINITIONS,
-    SPEC_TOOL_DEFINITIONS,
+    SPEC_ANALYST_TOOL_DEFINITIONS,
     get_tools_for_role,
 )
 from minions.agents.tools.mcp_executor import _STATE_TOOL_INJECTIONS
@@ -452,11 +453,7 @@ class TestUniversalTools:
 
 
 class TestSpecArbiterSeparation:
-    """The matrix gives spec_analyst and arbiter different tools.
-
-    Currently minions-suite gives both SPEC_TOOL_DEFINITIONS.
-    These tests document the expected divergence so we catch it.
-    """
+    """Spec analyst and arbiter have separate tool sets."""
 
     def test_spec_analyst_has_tools_arbiter_lacks(self):
         spec_only = TOOL_MATRIX["spec_analyst"] - TOOL_MATRIX["arbiter"]
@@ -469,23 +466,26 @@ class TestSpecArbiterSeparation:
         expected_arb_only = {"create_task", "mark_tasks_created"}
         assert arb_only == expected_arb_only
 
-    def test_current_implementation_shares_tools(self):
-        """Document that spec_analyst and arbiter currently share the same tool list."""
+    def test_implementation_separates_tools(self):
+        """Spec analyst and arbiter have different tool lists."""
         spec_tools = get_tools_for_role("spec_analyst")
         arb_tools = get_tools_for_role("arbiter")
-        assert spec_tools is arb_tools, (
-            "Expected spec_analyst and arbiter to share SPEC_TOOL_DEFINITIONS. "
-            "If they've been separated, update this test."
-        )
+        assert spec_tools is not arb_tools
+        assert spec_tools is SPEC_ANALYST_TOOL_DEFINITIONS
+        assert arb_tools is ARBITER_TOOL_DEFINITIONS
 
-    def test_shared_tools_is_superset_of_both(self):
-        """The shared SPEC_TOOL_DEFINITIONS should be a superset of both roles' needs."""
-        shared = _tool_names(SPEC_TOOL_DEFINITIONS)
-        assert "submit_refined_spec" in shared
-        assert "create_task" in shared
-        assert "mark_tasks_created" in shared
-        assert "send_message" in shared
-        assert "send_heartbeat" in shared
+    def test_spec_analyst_cannot_create_tasks(self):
+        """Spec analyst should NOT have create_task or mark_tasks_created."""
+        names = _tool_names(SPEC_ANALYST_TOOL_DEFINITIONS)
+        assert "create_task" not in names
+        assert "mark_tasks_created" not in names
+        assert "submit_refined_spec" in names
+
+    def test_arbiter_can_create_tasks(self):
+        """Arbiter should have create_task and mark_tasks_created."""
+        names = _tool_names(ARBITER_TOOL_DEFINITIONS)
+        assert "create_task" in names
+        assert "mark_tasks_created" in names
 
 
 # ---------------------------------------------------------------------------

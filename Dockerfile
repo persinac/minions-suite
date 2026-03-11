@@ -10,7 +10,7 @@ WORKDIR /app
 # Only pyproject + lockfile — builder output is just the venv,
 # so it stays cached until dependencies change.
 COPY pyproject.toml uv.lock* ./
-RUN uv sync --frozen --no-dev --python-preference only-system
+RUN uv sync --frozen --no-dev --extra test --python-preference only-system
 
 # ============================================================
 # Stage 2: Runtime image

@@ -39,3 +39,25 @@ projects:
   #   review_profile:
   #     roles: [data_engineer, devops]
   #     languages: [python, sql, shell]
+
+  export-delivery-tracker:
+    project_id: garner-health/export-delivery-tracker
+    gitlab_url: https://gitlab.com
+    review_profile:
+      roles: [backend]
+      languages: [python]
+    issues:
+      enabled: true
+      label: minions
+    services:
+      api:
+        project_id: garner-health/export-delivery-tracker
+        git_provider: gitlab
+        gitlab_url: https://gitlab.com
+        clone_url: git@gitlab.com:garner-health/export-delivery-tracker.git
+        ci_type: gitlab_ci
+        deploy_target: none
+        language: python
+        test_command: pytest
+        lint_command: ruff check .
+        default_branch: main

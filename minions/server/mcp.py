@@ -60,7 +60,7 @@ def _resolve_role(raw: str) -> AgentRole:
         return AgentRole.DEPLOY_MONITOR
     if "orchestrat" in normalized or "arbiter" in normalized:
         return AgentRole.ARBITER
-    if normalized == "engineer":
+    if normalized in ("engineer", "developer", "dev"):
         return AgentRole.BACKEND_ENGINEER
 
     raise ValueError(f"'{raw}' is not a valid role. Valid roles: {VALID_ROLES_STR}")
@@ -254,7 +254,20 @@ def create_server(db: AbstractDatabase, config: Config | None = None) -> FastMCP
         service: str,
         agent_role: str,
     ) -> str:
-        """Create a development task for a specific service within a job."""
+        """Create a development task for a specific service within a job.
+
+        The 'service' parameter MUST be a valid service name from the project's
+        services configuration (e.g. 'api', 'frontend'). Do NOT use internal
+        names like '_spec' or '_arbiter'.
+        """
+        # Reject reserved/internal service names
+        RESERVED_SERVICES = {"_spec", "_arbiter", "_worker"}
+        if service.strip().lower() in RESERVED_SERVICES:
+            logger.warning("create_task: rejected reserved service name '%s' for title='%s'", service, title)
+            return json.dumps({
+                "error": f"'{service}' is a reserved internal service name. Use a real service name from Available Services (e.g. 'api')."
+            })
+
         resolved_role = _resolve_role(agent_role)
         # Hard guard: database service must always use database_engineer
         if service.strip().lower() == "database" and resolved_role != AgentRole.DATABASE_ENGINEER:

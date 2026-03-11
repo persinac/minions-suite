@@ -7,6 +7,7 @@ Usage:
     minion --server                               # MCP server + review engine + job engine + arbiter
     minion --dashboard                            # Web dashboard (read-only job viewer)
     minion --trello-only                          # Trello poller mode
+    minion --gitlab-issues-only                   # GitLab issues poller mode
     minion --preflight                            # Health checks
     minion --status                               # Recent reviews
     minion --job-status <JOB_ID>                  # Show job status + tasks
@@ -337,6 +338,31 @@ async def _run_trello_only(config: Config) -> None:
         await db.close()
 
 
+async def _run_gitlab_issues_only(config: Config) -> None:
+    """Run only the GitLab issues poller (no job engine — server handles execution)."""
+    from .project_registry import build_registry
+    from .providers.gitlab_issues import GitLabIssuesPoller
+
+    if not config.gitlab_token:
+        print("Error: GITLAB_TOKEN must be set")
+        sys.exit(1)
+
+    db = _create_db(config)
+    await db.connect()
+
+    projects = build_registry(config.projects_file)
+    poller = GitLabIssuesPoller(config, db, projects)
+
+    poller_task = asyncio.create_task(poller.start(), name="gitlab-issues-poller")
+
+    try:
+        await asyncio.Event().wait()
+    finally:
+        await poller.stop()
+        poller_task.cancel()
+        await db.close()
+
+
 async def _run_job(spec_text: str, config: Config) -> int:
     """Submit a job and run the engine until it completes."""
     from .core.models import JobStatus
@@ -580,6 +606,7 @@ def main():
     parser.add_argument("--server", action="store_true", help="Run MCP server + review engine + job engine + arbiter")
     parser.add_argument("--dashboard", action="store_true", help="Run web dashboard (read-only job viewer)")
     parser.add_argument("--trello-only", action="store_true", help="Run Trello poller + job engine only")
+    parser.add_argument("--gitlab-issues-only", action="store_true", help="Run GitLab issues poller + job engine only")
     parser.add_argument("--preflight", action="store_true", help="Run health checks")
     parser.add_argument("--status", action="store_true", help="Show recent review status")
     parser.add_argument("--job-status", metavar="JOB_ID", help="Show job status + tasks + agents")
@@ -633,6 +660,10 @@ def main():
 
     if args.trello_only:
         asyncio.run(_run_trello_only(config))
+        return
+
+    if args.gitlab_issues_only:
+        asyncio.run(_run_gitlab_issues_only(config))
         return
 
     if args.command == "review":

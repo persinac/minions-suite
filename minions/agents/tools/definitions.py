@@ -347,8 +347,17 @@ _UPDATE_TASK_STATUS_TOOL = _fn("update_task_status", "Update the status of the c
     "error": {"type": "string", "description": "Error message (if failing)."},
 })
 
-# Spec analyst tools
-SPEC_TOOL_DEFINITIONS: list[dict[str, Any]] = [
+# Spec analyst tools (only refines spec, does NOT create tasks)
+SPEC_ANALYST_TOOL_DEFINITIONS: list[dict[str, Any]] = [
+    _fn("submit_refined_spec", "Submit the refined and analyzed specification.", {
+        "spec": {"type": "string", "description": "The refined specification text."},
+    }),
+    _SEND_MESSAGE_TOOL,
+    _HEARTBEAT_TOOL,
+]
+
+# Arbiter tools (creates tasks and coordinates)
+ARBITER_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     _fn("submit_refined_spec", "Submit the refined and analyzed specification.", {
         "spec": {"type": "string", "description": "The refined specification text."},
     }),
@@ -478,8 +487,10 @@ CODE_REVIEWER_TOOL_DEFINITIONS: list[dict[str, Any]] = [
 
 def get_tools_for_role(role: str) -> list[dict[str, Any]]:
     """Return the tool definitions appropriate for the given agent role."""
-    if role in ("spec_analyst", "arbiter"):
-        return SPEC_TOOL_DEFINITIONS
+    if role == "spec_analyst":
+        return SPEC_ANALYST_TOOL_DEFINITIONS
+    if role == "arbiter":
+        return ARBITER_TOOL_DEFINITIONS
     if role in ("backend_engineer", "frontend_engineer"):
         return ENGINEER_TOOL_DEFINITIONS
     if role == "database_engineer":

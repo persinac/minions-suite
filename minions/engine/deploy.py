@@ -27,7 +27,7 @@ async def launch_deploy_monitor(engine: "JobEngine", job: Job):
         _, service = engine._resolve_service(t.service)
         if service and service.deploy_target == "none":
             logger.info("Task %s (%s) has no deploy target, marking done", t.id, t.service)
-            await engine.db.update_task(t.id, status=TaskStatus.DONE)
+            await engine.db.update_task(t.id, status=TaskStatus.DONE, agent_role="")
             merged_tasks.remove(t)
 
     if not merged_tasks:
@@ -42,7 +42,7 @@ async def launch_deploy_monitor(engine: "JobEngine", job: Job):
     await engine.db.update_job_status(job.id, JobStatus.DEPLOYING)
 
     for t in merged_tasks:
-        await engine.db.update_task(t.id, status=TaskStatus.DEPLOYING)
+        await engine.db.update_task(t.id, status=TaskStatus.DEPLOYING, agent_role="")
 
     deploy_task = Task(
         job_id=job.id,
@@ -75,12 +75,12 @@ async def launch_deploy_monitor(engine: "JobEngine", job: Job):
 
     if result_agent.status == "done":
         try:
-            await engine.db.update_task(deploy_task.id, status=TaskStatus.DONE)
+            await engine.db.update_task(deploy_task.id, status=TaskStatus.DONE, agent_role="")
         except InvalidTransitionError:
             logger.warning("Could not mark deploy task %s as done", deploy_task.id)
     else:
         try:
-            await engine.db.update_task(deploy_task.id, status=TaskStatus.FAILED, error=(result_agent.error or "unknown")[:200])
+            await engine.db.update_task(deploy_task.id, status=TaskStatus.FAILED, agent_role="", error=(result_agent.error or "unknown")[:200])
         except InvalidTransitionError:
             logger.warning("Could not mark deploy task %s as failed", deploy_task.id)
 

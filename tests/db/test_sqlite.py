@@ -184,6 +184,40 @@ class TestTaskCrud:
         with pytest.raises(InvalidTransitionError):
             await db.update_task(task.id, status="done", agent_role="backend_engineer")
 
+    async def test_update_task_engine_bypass_with_empty_role(self, db, sample_job, make_task):
+        """Engine (agent_role='') bypasses role restrictions on task transitions."""
+        task = make_task(sample_job.id, agent_role=AgentRole.BACKEND_ENGINEER)
+        await db.create_task(task)
+        await db.update_task(task.id, status="in_progress")
+        # Backend engineer can't do in_progress -> done, but engine (empty role) can
+        updated = await db.update_task(task.id, status="done", agent_role="")
+        assert updated.status == TaskStatus.DONE
+
+    async def test_update_task_no_role_falls_back_to_task_role(self, db, sample_job, make_task):
+        """When no agent_role is passed, the task's own role is used for validation."""
+        task = make_task(sample_job.id, agent_role=AgentRole.BACKEND_ENGINEER)
+        await db.create_task(task)
+        await db.update_task(task.id, status="in_progress")
+        # No agent_role passed → falls back to task's role (backend_engineer), which is blocked
+        with pytest.raises(InvalidTransitionError):
+            await db.update_task(task.id, status="done")
+
+    async def test_update_task_engine_bypass_spec_analyst(self, db, sample_job, make_task):
+        """Engine can mark spec_analyst tasks as done."""
+        task = make_task(sample_job.id, agent_role=AgentRole.SPEC_ANALYST, service="_spec")
+        await db.create_task(task)
+        await db.update_task(task.id, status="in_progress")
+        updated = await db.update_task(task.id, status="done", agent_role="")
+        assert updated.status == TaskStatus.DONE
+
+    async def test_update_task_engine_bypass_arbiter(self, db, sample_job, make_task):
+        """Engine can mark arbiter tasks as done."""
+        task = make_task(sample_job.id, agent_role=AgentRole.ARBITER, service="_arbiter")
+        await db.create_task(task)
+        await db.update_task(task.id, status="in_progress")
+        updated = await db.update_task(task.id, status="done", agent_role="")
+        assert updated.status == TaskStatus.DONE
+
 
 # -----------------------------------------------------------------------
 # Agents

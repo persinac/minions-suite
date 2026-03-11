@@ -33,6 +33,7 @@ async def run_agent(
     context: Optional[str] = None,
     provider: Optional[GitProviderProtocol] = None,
     mr_info: Optional[dict] = None,
+    agent: Optional[Agent] = None,
 ) -> Agent:
     """Execute an agent for a job task using the LiteLLM tool-use loop.
 
@@ -41,6 +42,8 @@ async def run_agent(
     verdict and comments_posted from the result.
 
     For all other roles: uses build_agent_prompt() and get_tools_for_role().
+
+    If agent is provided, reuse it instead of creating a new one.
     """
     if config is None:
         config = Config.from_env()
@@ -49,20 +52,20 @@ async def run_agent(
     if project and project.model:
         model = project.model
 
-    agent = Agent(
-        job_id=job.id,
-        role=task.agent_role,
-        task_id=task.id,
-        model=model,
-    )
+    if agent is None:
+        agent = Agent(
+            job_id=job.id,
+            role=task.agent_role,
+            task_id=task.id,
+            model=model,
+        )
+        if db:
+            agent = await db.create_agent(agent)
 
     log_dir = Path(config.agent_log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"job-{job.id}-task-{task.id}-{agent.id}.log"
     agent.log_file = str(log_path)
-
-    if db:
-        agent = await db.create_agent(agent)
 
     try:
         is_reviewer = task.agent_role == AgentRole.CODE_REVIEWER
@@ -91,6 +94,10 @@ async def run_agent(
         role_cfg = timeout_cfg.roles.get(task.agent_role)
         timeout = role_cfg.task_timeout_seconds if role_cfg else config.agent_timeout
 
+        # Engineers get more turns for complex multi-subtask work
+        engineer_roles = {AgentRole.BACKEND_ENGINEER, AgentRole.FRONTEND_ENGINEER, AgentRole.DATABASE_ENGINEER}
+        max_turns = 100 if task.agent_role in engineer_roles else 30
+
         result = await _agent_loop_generic(
             model=model,
             system_prompt=system_prompt,
@@ -99,6 +106,7 @@ async def run_agent(
             timeout=timeout,
             log_path=log_path,
             user_message=user_message,
+            max_turns=max_turns,
         )
 
         agent.input_tokens = result["input_tokens"]
@@ -150,6 +158,7 @@ async def _agent_loop_generic(
     timeout: int,
     log_path: Path,
     user_message: Optional[str] = None,
+    max_turns: int = 30,
 ) -> dict:
     """Generic tool-use loop for all agents (job orchestration + code review).
 
@@ -165,7 +174,6 @@ async def _agent_loop_generic(
     num_turns = 0
     verdict = None
     summary = ""
-    max_turns = 30
     start_time = time.time()
 
     with open(log_path, "w", encoding="utf-8") as log:
