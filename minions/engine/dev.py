@@ -457,7 +457,20 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
 
     # Handle successful review — check verdict
     verdict = getattr(result_agent, "_review_verdict", None)
-    if verdict == "approve":
+    approved = verdict == "approve" or (verdict is None)
+
+    if approved:
+        # Auto-merge if project is configured for it
+        if project and project.auto_merge and provider and mr_id:
+            try:
+                merge_result = await provider.merge_mr(project.project_id, mr_id)
+                if merge_result.get("merged"):
+                    logger.info("Auto-merged MR %s for task %s", mr_id, task.id)
+                else:
+                    logger.warning("Auto-merge failed for task %s: %s", task.id, merge_result.get("error", "unknown"))
+            except Exception as e:
+                logger.warning("Auto-merge error for task %s: %s", task.id, e)
+
         try:
             await engine.db.update_task(task.id, status=TaskStatus.MERGED, agent_role="")
             logger.info("Review approved, task %s -> MERGED", task.id)
@@ -470,13 +483,6 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
             logger.info("Review requested changes, task %s -> IN_PROGRESS for revision", task.id)
         except InvalidTransitionError as e:
             logger.warning("Could not transition task %s for revision: %s", task.id, e)
-    else:
-        # No clear verdict (comment-only or unknown) — treat as approved
-        try:
-            await engine.db.update_task(task.id, status=TaskStatus.MERGED, agent_role="")
-            logger.info("Review complete (verdict=%s), task %s -> MERGED", verdict, task.id)
-        except InvalidTransitionError as e:
-            logger.warning("Could not transition task %s to MERGED: %s", task.id, e)
 
 
 async def manage_dev_tasks(engine: JobEngine, job: Job):

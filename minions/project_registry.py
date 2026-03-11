@@ -75,6 +75,7 @@ class ProjectConfig:
     deploy_profile: AgentProfile = field(default_factory=AgentProfile)
     services: dict[str, ServiceTarget] = field(default_factory=dict)
     issues: IssuesConfig = field(default_factory=IssuesConfig)
+    auto_merge: bool = False  # If True, merge MR after reviewer approves
 
 
 class ProjectRegistryError(Exception):
@@ -182,6 +183,7 @@ def build_registry(config_path: str) -> dict[str, ProjectConfig]:
             deploy_profile=_parse_agent_profile(proj.get("deploy_profile", {})),
             services=_parse_services(proj.get("services", {})),
             issues=_parse_issues_config(proj.get("issues", {})),
+            auto_merge=proj.get("auto_merge", False),
         )
 
     logger.info("Loaded %d projects from %s", len(registry), config_path)

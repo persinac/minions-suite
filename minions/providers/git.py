@@ -55,6 +55,8 @@ class GitProviderProtocol(Protocol):
 
     async def submit_review(self, project_id: str, mr_id: str, verdict: str, body: str) -> dict: ...
 
+    async def merge_mr(self, project_id: str, mr_id: str) -> dict: ...
+
 
 class GitLabProvider:
     """GitLab MR operations via REST API v4."""
@@ -215,6 +217,19 @@ class GitLabProvider:
 
             return result
 
+    async def merge_mr(self, project_id: str, mr_id: str) -> dict:
+        encoded = self._encode_project(project_id)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.put(
+                self._api(f"/projects/{encoded}/merge_requests/{mr_id}/merge"),
+                headers=self._headers,
+                json={"should_remove_source_branch": True},
+            )
+            if resp.status_code == 200:
+                return {"merged": True}
+            logger.warning("GitLab merge returned %d: %s", resp.status_code, resp.text[:200])
+            return {"merged": False, "error": resp.text[:200]}
+
 
 class GitHubProvider:
     """GitHub PR operations via gh CLI."""
@@ -355,6 +370,14 @@ class GitHubProvider:
                 ]
             )
         return {"verdict": verdict, "posted": True}
+
+    async def merge_mr(self, project_id: str, mr_id: str) -> dict:
+        try:
+            self._run_gh(["pr", "merge", mr_id, "--repo", project_id, "--squash", "--delete-branch"])
+            return {"merged": True}
+        except RuntimeError as e:
+            logger.warning("GitHub merge failed: %s", e)
+            return {"merged": False, "error": str(e)[:200]}
 
 
 def create_provider(provider_type: str, **kwargs) -> GitProviderProtocol:

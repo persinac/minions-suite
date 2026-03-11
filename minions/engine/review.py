@@ -27,6 +27,12 @@ async def launch_review_tasks(engine: JobEngine, job: Job):
     await engine.db.update_job_status(job.id, JobStatus.REVIEW_IN_PROGRESS)
 
     for task in review_tasks:
+        # Claim task before spawning to prevent duplicate agents on next poll
+        try:
+            await engine.db.update_task(task.id, status=TaskStatus.IN_PROGRESS, agent_role="")
+        except InvalidTransitionError as e:
+            logger.warning("Could not claim review task %s: %s", task.id, e)
+            continue
         engine._spawn(run_review_in_process(engine, job, task), name=f"review-{task.id[:8]}")
 
 
@@ -55,12 +61,7 @@ async def run_review_in_process(engine: JobEngine, job: Job, task: Task):
         await engine.db.update_task(task.id, status=TaskStatus.FAILED, agent_role="", error=str(e)[:200])
         return
 
-    # Transition task to IN_PROGRESS
-    try:
-        await engine.db.update_task(task.id, status=TaskStatus.IN_PROGRESS, agent_role="")
-    except InvalidTransitionError as e:
-        logger.warning("Could not advance task %s to in_progress: %s", task.id, e)
-        return
+    # Task already claimed as IN_PROGRESS by launch_review_tasks()
 
     # Fetch MR metadata
     mr_info = {}
