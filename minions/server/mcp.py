@@ -101,6 +101,59 @@ async def _propose_transition(entity_type: str, entity_id: str, to_status: str, 
     return response
 
 
+async def _label_mr(config: Config | None, job_id: str, service: str, pr_url: str, pr_number: int | None) -> None:
+    """Add a minions-job-<id> label to the MR so webhooks can skip it."""
+    import re
+
+    from ..project_registry import build_registry
+    from ..providers.git import create_provider
+
+    if not config or not pr_url:
+        return
+
+    mr_id = str(pr_number or "")
+    if not mr_id:
+        match = re.search(r"/merge_requests/(\d+)", pr_url)
+        if not match:
+            match = re.search(r"/pull/(\d+)", pr_url)
+        if match:
+            mr_id = match.group(1)
+    if not mr_id:
+        return
+
+    try:
+        registry = build_registry(config.projects_file)
+        project = registry.get(service)
+
+        provider_type = (project.git_provider if project else None) or config.git_provider
+        project_id = project.project_id if project else ""
+
+        # Fall back to extracting project_id from the URL
+        if not project_id:
+            match = re.search(r"gitlab\.com/(.+?)/-/merge_requests/", pr_url)
+            if match:
+                project_id = match.group(1)
+
+        if not project_id:
+            return
+
+        if provider_type == "gitlab":
+            provider = create_provider("gitlab", gitlab_url=(project.gitlab_url if project else "") or config.gitlab_url, token=config.gitlab_token)
+        elif provider_type == "github":
+            provider = create_provider("github", token=config.github_token)
+        else:
+            return
+
+        labels = [f"minions-job-{job_id[:8]}"]
+        result = await provider.add_mr_labels(project_id, mr_id, labels)
+        if result.get("labels_added"):
+            logger.info("Labeled MR %s with %s", pr_url, labels)
+        else:
+            logger.warning("Failed to label MR %s: %s", pr_url, result.get("error", "unknown"))
+    except Exception as e:
+        logger.warning("Could not label MR %s: %s", pr_url, e)
+
+
 def create_server(db: AbstractDatabase, config: Config | None = None) -> FastMCP:
     """Create and return the FastMCP server with review + job orchestration tools."""
     mcp = FastMCP("Minion Suite", instructions="AI agent suite — composable, vendor-agnostic agents. Code review + multi-agent job orchestration.")
@@ -391,6 +444,9 @@ def create_server(db: AbstractDatabase, config: Config | None = None) -> FastMCP
 
             if task.job_id:
                 await db.record_event(task.job_id, "pr_opened", str(task.agent_role), f"task={task_id} pr={pr_url}")
+
+                # Label the MR so webhooks can ignore minions-created MRs
+                await _label_mr(config, task.job_id, task.service, pr_url, pr_number)
 
             return json.dumps({"task_id": task_id, "status": "pr_open", "pr_url": pr_url})
         except InvalidTransitionError as e:

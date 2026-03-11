@@ -46,6 +46,7 @@ class JobEngine:
         self._nats_client = nats_client
         self._artifact_uploader = artifact_uploader
         self._mcp_server = mcp_server
+        self._advance_errors: dict[str, int] = {}  # job_id -> consecutive error count
 
     # Dry-run instructions appended to agent prompts when config.dry_run is True
     DRY_RUN_SUFFIX = """
@@ -495,10 +496,17 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
         for job in jobs:
             try:
                 await self._advance(job)
-            except Exception:
-                logger.exception("Error advancing job %s", job.id)
-                await self.db.update_job_status(job.id, JobStatus.FAILED, error="Engine error during advance")
-                await self._on_job_terminal(job.id)
+                self._advance_errors.pop(job.id, None)
+            except Exception as exc:
+                count = self._advance_errors.get(job.id, 0) + 1
+                self._advance_errors[job.id] = count
+                if count >= 10:
+                    logger.exception("Job %s failed after %d consecutive advance errors", job.id, count)
+                    await self.db.update_job_status(job.id, JobStatus.FAILED, error=f"Engine error: {count} consecutive advance failures")
+                    await self._on_job_terminal(job.id)
+                    self._advance_errors.pop(job.id, None)
+                else:
+                    logger.warning("Error advancing job %s (attempt %d/10): %s — will retry next poll", job.id, count, exc)
 
     async def _advance(self, job: Job):
         """Advance a job to the next state if conditions are met."""
@@ -556,6 +564,8 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
             task=task,
             agent_id=agent.id,
             working_dir=working_dir,
+            config=self.config,
+            project=project,
         )
 
         result_agent = await run_agent(

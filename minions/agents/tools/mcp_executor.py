@@ -85,6 +85,8 @@ class McpToolExecutor:
         agent_id: str,
         agent_role: str,
         working_dir: str = ".",
+        config=None,
+        project=None,
     ):
         self.mcp_server = mcp_server
         self.job_id = job_id
@@ -92,6 +94,8 @@ class McpToolExecutor:
         self.agent_id = agent_id
         self.agent_role = agent_role
         self.working_dir = working_dir
+        self.config = config
+        self.project = project
         # Cache resolved MCP tool functions
         self._tool_cache: dict[str, object] = {}
 
@@ -303,6 +307,48 @@ class McpToolExecutor:
         base = args.get("base", "main")
         if not title:
             return json.dumps({"error": "title is required"})
+
+        labels = [f"minions-job-{self.job_id[:8]}"]
+        provider_type = (self.project.git_provider if self.project else None) or (self.config.git_provider if self.config else "")
+
+        # GitLab: use REST API to create MR with labels
+        if provider_type == "gitlab" and self.config and self.project:
+            from ...providers.git import create_provider
+
+            # Get current branch name
+            proc = await asyncio.create_subprocess_exec(
+                "git",
+                "rev-parse",
+                "--abbrev-ref",
+                "HEAD",
+                cwd=self.working_dir,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await proc.communicate()
+            source_branch = stdout.decode().strip()
+
+            try:
+                provider = create_provider(
+                    "gitlab",
+                    gitlab_url=self.project.gitlab_url or self.config.gitlab_url,
+                    token=self.config.gitlab_token,
+                )
+                result = await provider.create_mr(
+                    self.project.project_id,
+                    source_branch=source_branch,
+                    target_branch=base,
+                    title=title,
+                    description=body,
+                    labels=labels,
+                )
+                if result.get("created"):
+                    return json.dumps({"pr_url": result["mr_url"], "mr_id": result["mr_id"], "created": True})
+                return json.dumps({"error": result.get("error", "GitLab MR creation failed")})
+            except Exception as e:
+                logger.warning("GitLab create_mr failed, falling back to git push: %s", e)
+
+        # GitHub: use gh CLI + add labels after
         proc = await asyncio.create_subprocess_exec(
             "gh",
             "pr",
@@ -313,6 +359,8 @@ class McpToolExecutor:
             body,
             "--base",
             base,
+            "--label",
+            ",".join(labels),
             cwd=self.working_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -354,6 +402,8 @@ def create_mcp_tool_executor(
     task: Task,
     agent_id: str,
     working_dir: str = ".",
+    config=None,
+    project=None,
 ):
     """Create the appropriate tool executor for the given task's agent role.
 
@@ -370,4 +420,6 @@ def create_mcp_tool_executor(
         agent_id=agent_id,
         agent_role=str(task.agent_role),
         working_dir=working_dir,
+        config=config,
+        project=project,
     )

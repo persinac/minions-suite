@@ -2,6 +2,7 @@
 
 import json
 import logging
+from datetime import UTC
 from typing import TYPE_CHECKING
 
 from ..agents.prompt import build_agent_prompt
@@ -23,6 +24,49 @@ async def _all_subtasks_terminal(engine: JobEngine, task_id: str) -> bool:
     if not subtasks:
         return True  # No subtasks — nothing to gate on
     return all(s.status in SUBTASK_TERMINAL for s in subtasks)
+
+
+async def _label_minions_mr(engine: JobEngine, task: Task) -> None:
+    """Add a minions-job-<id> label to the MR so webhooks can skip it."""
+    import re
+
+    from ..providers.git import create_provider
+
+    mr_url = task.pr_url or task.mr_url
+    if not mr_url:
+        return
+
+    mr_id = task.mr_id or str(task.pr_number or "")
+    if not mr_id:
+        match = re.search(r"/merge_requests/(\d+)", mr_url)
+        if not match:
+            match = re.search(r"/pull/(\d+)", mr_url)
+        if match:
+            mr_id = match.group(1)
+    if not mr_id:
+        return
+
+    project = engine.registry.get(task.service)
+    if not project:
+        return
+
+    try:
+        provider_type = project.git_provider or engine.config.git_provider
+        if provider_type == "gitlab":
+            provider = create_provider("gitlab", gitlab_url=project.gitlab_url or engine.config.gitlab_url, token=engine.config.gitlab_token)
+        elif provider_type == "github":
+            provider = create_provider("github", token=engine.config.github_token)
+        else:
+            return
+
+        labels = [f"minions-job-{task.job_id[:8]}"]
+        result = await provider.add_mr_labels(project.project_id, mr_id, labels)
+        if result.get("labels_added"):
+            logger.info("Labeled MR %s with %s", mr_url, labels)
+        else:
+            logger.warning("Failed to label MR %s: %s", mr_url, result.get("error", "unknown"))
+    except Exception as e:
+        logger.warning("Could not label MR %s: %s", mr_url, e)
 
 
 async def _try_complete_task(engine: JobEngine, task: Task, label: str) -> None:
@@ -53,6 +97,10 @@ async def _try_complete_task(engine: JobEngine, task: Task, label: str) -> None:
             logger.info("%s: task %s -> PR_OPEN (ready for review)", label, task.id)
         except InvalidTransitionError as e:
             logger.warning("%s: rejected task transition for %s: %s", label, task.id, e)
+            return
+
+        # Label the MR so webhooks can ignore minions-created MRs
+        await _label_minions_mr(engine, task)
     elif subtasks_done and not needs_pr:
         # Non-engineer (database_engineer, etc.) — mark done directly
         try:
@@ -557,14 +605,58 @@ async def manage_dev_tasks(engine: JobEngine, job: Job):
             engine._spawn(run_engineer(engine, job, task, is_revision=True), name=f"eng-rev-{task.id[:8]}")
 
         elif task.status == TaskStatus.IN_REVIEW:
-            # IN_REVIEW tasks are handled by a spawned reviewer coroutine
-            # (run_task_review handles verdict and transitions).
-            # Don't interfere — the reviewer manages this task's lifecycle.
-            pass
+            # IN_REVIEW tasks are handled by a spawned reviewer coroutine.
+            # But detect stuck reviewers — if the latest agent is starting/failed, recover.
+            latest_agent = await engine.db.get_agent_for_task(task.id)
+            if latest_agent and latest_agent.status == "starting":
+                from datetime import datetime
+
+                started = latest_agent.started_at
+                if isinstance(started, str):
+                    started = datetime.fromisoformat(started)
+                if started and started.tzinfo is None:
+                    started = started.replace(tzinfo=UTC)
+                age = (datetime.now(UTC) - started).total_seconds() if started else 0
+                if age > 120:
+                    logger.warning("Reviewer agent %s stuck in 'starting' for %ds — marking failed", latest_agent.id, int(age))
+                    await engine.db.update_agent(
+                        latest_agent.id, status="failed", finished_at=datetime.now(UTC).isoformat(), error="stuck in starting state"
+                    )
+                    latest_agent = await engine.db.get_agent_for_task(task.id)
+
+            if latest_agent and latest_agent.status == "failed":
+                # Reviewer died — bounce task back to PR_OPEN so it gets re-reviewed
+                try:
+                    await engine.db.update_task(task.id, status=TaskStatus.PR_OPEN, agent_role="")
+                    logger.info("Recovered stuck IN_REVIEW task %s back to PR_OPEN", task.id)
+                except InvalidTransitionError as e:
+                    logger.warning("Could not recover IN_REVIEW task %s: %s", task.id, e)
 
         elif task.status == TaskStatus.IN_PROGRESS:
             # Check if the agent is actually dead (orphaned task)
             latest_agent = await engine.db.get_agent_for_task(task.id)
+
+            # Detect stuck 'starting' agents — if started > 2 min ago, it's orphaned
+            if latest_agent and latest_agent.status == "starting":
+                from datetime import datetime
+
+                started = latest_agent.started_at
+                if isinstance(started, str):
+                    started = datetime.fromisoformat(started)
+                if started and started.tzinfo is None:
+                    started = started.replace(tzinfo=UTC)
+                age = (datetime.now(UTC) - started).total_seconds() if started else 0
+                if age > 120:
+                    logger.warning("Agent %s stuck in 'starting' for %ds — marking failed", latest_agent.id, int(age))
+                    await engine.db.update_agent(
+                        latest_agent.id, status="failed", finished_at=datetime.now(UTC).isoformat(), error="stuck in starting state"
+                    )
+                    await engine.db.record_event(
+                        job.id, "agent_orphaned", "engine", f"agent={latest_agent.id} role={latest_agent.role} reason=stuck_starting"
+                    )
+                    # Let the next block handle task recovery
+                    latest_agent = await engine.db.get_agent_for_task(task.id)
+
             if latest_agent and latest_agent.status in ("failed", "done"):
                 if latest_agent.status == "done":
                     # Agent succeeded but task wasn't updated — check subtasks first

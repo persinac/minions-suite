@@ -57,6 +57,8 @@ class GitProviderProtocol(Protocol):
 
     async def merge_mr(self, project_id: str, mr_id: str) -> dict: ...
 
+    async def add_mr_labels(self, project_id: str, mr_id: str, labels: list[str]) -> dict: ...
+
 
 class GitLabProvider:
     """GitLab MR operations via REST API v4."""
@@ -230,6 +232,44 @@ class GitLabProvider:
             logger.warning("GitLab merge returned %d: %s", resp.status_code, resp.text[:200])
             return {"merged": False, "error": resp.text[:200]}
 
+    async def add_mr_labels(self, project_id: str, mr_id: str, labels: list[str]) -> dict:
+        encoded = self._encode_project(project_id)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.put(
+                self._api(f"/projects/{encoded}/merge_requests/{mr_id}"),
+                headers=self._headers,
+                json={"add_labels": ",".join(labels)},
+            )
+            if resp.status_code == 200:
+                return {"labels_added": labels}
+            logger.warning("GitLab add_mr_labels returned %d: %s", resp.status_code, resp.text[:200])
+            return {"labels_added": [], "error": resp.text[:200]}
+
+    async def create_mr(
+        self, project_id: str, source_branch: str, target_branch: str, title: str, description: str = "", labels: list[str] | None = None
+    ) -> dict:
+        """Create a merge request with optional labels."""
+        encoded = self._encode_project(project_id)
+        payload = {
+            "source_branch": source_branch,
+            "target_branch": target_branch,
+            "title": title,
+            "description": description,
+        }
+        if labels:
+            payload["labels"] = ",".join(labels)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                self._api(f"/projects/{encoded}/merge_requests"),
+                headers=self._headers,
+                json=payload,
+            )
+            if resp.status_code in (200, 201):
+                data = resp.json()
+                return {"mr_url": data["web_url"], "mr_id": str(data["iid"]), "created": True}
+            logger.warning("GitLab create_mr returned %d: %s", resp.status_code, resp.text[:200])
+            return {"created": False, "error": resp.text[:200]}
+
 
 class GitHubProvider:
     """GitHub PR operations via gh CLI."""
@@ -378,6 +418,14 @@ class GitHubProvider:
         except RuntimeError as e:
             logger.warning("GitHub merge failed: %s", e)
             return {"merged": False, "error": str(e)[:200]}
+
+    async def add_mr_labels(self, project_id: str, mr_id: str, labels: list[str]) -> dict:
+        try:
+            self._run_gh(["pr", "edit", mr_id, "--repo", project_id, "--add-label", ",".join(labels)])
+            return {"labels_added": labels}
+        except RuntimeError as e:
+            logger.warning("GitHub add_mr_labels failed: %s", e)
+            return {"labels_added": [], "error": str(e)[:200]}
 
 
 def create_provider(provider_type: str, **kwargs) -> GitProviderProtocol:

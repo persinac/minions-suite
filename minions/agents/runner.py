@@ -99,6 +99,11 @@ async def run_agent(
         # reviewers for large diffs with many files to read and comment on.
         max_turns = 100
 
+        # Mark agent as running so the engine knows it's alive
+        agent.status = "running"
+        if db:
+            await db.update_agent(agent.id, status="running")
+
         result = await _agent_loop_generic(
             model=model,
             system_prompt=system_prompt,
