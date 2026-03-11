@@ -809,7 +809,7 @@ def _row_to_subtask(row) -> Subtask:
     if d.get("result") and isinstance(d["result"], str):
         try:
             d["result"] = json.loads(d["result"])
-        except (json.JSONDecodeError, ValueError):
+        except json.JSONDecodeError, ValueError:
             d["result"] = {"output": d["result"]}
     if d.get("result") is not None and not isinstance(d["result"], dict):
         d["result"] = {"output": d["result"]}

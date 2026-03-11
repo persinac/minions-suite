@@ -16,8 +16,8 @@ def _default_role_configs() -> dict[str, RoleTimeoutConfig]:
     return {
         "spec_analyst": RoleTimeoutConfig(subtask_timeout_seconds=180, task_timeout_seconds=1200),
         "arbiter": RoleTimeoutConfig(subtask_timeout_seconds=180, task_timeout_seconds=1200),
-        "backend_engineer": RoleTimeoutConfig(subtask_timeout_seconds=600, task_timeout_seconds=1200),
-        "frontend_engineer": RoleTimeoutConfig(subtask_timeout_seconds=600, task_timeout_seconds=1200),
+        "backend_engineer": RoleTimeoutConfig(subtask_timeout_seconds=600, task_timeout_seconds=1800),
+        "frontend_engineer": RoleTimeoutConfig(subtask_timeout_seconds=600, task_timeout_seconds=1800),
         "database_engineer": RoleTimeoutConfig(subtask_timeout_seconds=600, task_timeout_seconds=600),
         "code_reviewer": RoleTimeoutConfig(subtask_timeout_seconds=180, task_timeout_seconds=600),
         "deploy_monitor": RoleTimeoutConfig(subtask_timeout_seconds=180, task_timeout_seconds=600),

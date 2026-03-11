@@ -50,6 +50,11 @@ select = [
 ignore = [
     "E501",   # line length (handled by formatter)
     "SIM108", # ternary operator (project convention: no ternaries)
+    "SIM102", # nested if (prefer explicit over combined conditions)
+    "SIM103", # return condition directly (prefer explicit if/return)
+    "SIM105", # contextlib.suppress (prefer explicit try/except)
+    "SIM110", # any() (prefer explicit for-loop)
+    "RUF005", # list concatenation (prefer + over unpacking)
 ]
 
 [tool.pytest.ini_options]

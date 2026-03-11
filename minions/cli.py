@@ -38,24 +38,33 @@ def _create_db(config: Config):
     return SQLiteDatabase(config.db_path)
 
 
-def _parse_mr_url(url: str) -> tuple[str, str]:
-    """Extract MR/PR ID from a URL.
+def _parse_mr_url(url: str) -> tuple[str, str, str]:
+    """Extract MR/PR ID, provider hint, and project path from a URL.
 
-    Returns (mr_id, provider_hint).
+    Returns (mr_id, provider_hint, project_path).
+    project_path is URL-encoded for GitLab API usage.
     """
-    # GitLab: .../merge_requests/42
+    from urllib.parse import quote_plus, urlparse
+
+    parsed = urlparse(url)
+    path = parsed.path.strip("/")
+
+    # GitLab: https://gitlab.com/group/repo/-/merge_requests/42
     match = re.search(r"/merge_requests/(\d+)", url)
     if match:
-        return match.group(1), "gitlab"
+        # Extract project path: everything before /-/merge_requests
+        project_path = re.sub(r"/-/merge_requests/\d+.*", "", path)
+        return match.group(1), "gitlab", quote_plus(project_path)
 
-    # GitHub: .../pull/42
+    # GitHub: https://github.com/owner/repo/pull/42
     match = re.search(r"/pull/(\d+)", url)
     if match:
-        return match.group(1), "github"
+        project_path = re.sub(r"/pull/\d+.*", "", path)
+        return match.group(1), "github", project_path
 
     # Fall back to last path segment
     mr_id = url.rstrip("/").split("/")[-1]
-    return mr_id, ""
+    return mr_id, "", ""
 
 
 def _find_project_for_url(url: str, projects: dict) -> str:
@@ -91,11 +100,11 @@ async def _run_one_shot(url: str, project_name: str, config: Config) -> int:
         # Ad-hoc review — create a temporary project config
         from .project_registry import ProjectConfig
 
-        mr_id, provider_hint = _parse_mr_url(url)
+        mr_id, provider_hint, project_path = _parse_mr_url(url)
         provider_type = provider_hint or config.git_provider
         project = ProjectConfig(
             name="_adhoc",
-            project_id="",
+            project_id=project_path,
             git_provider=provider_type,
             gitlab_url=config.gitlab_url,
             model=config.model,
@@ -108,7 +117,7 @@ async def _run_one_shot(url: str, project_name: str, config: Config) -> int:
             await db.close()
             return 1
 
-    mr_id, _ = _parse_mr_url(url)
+    mr_id, _, _ = _parse_mr_url(url)
     project = projects[project_name]
 
     # Create review job + task
@@ -131,8 +140,15 @@ async def _run_one_shot(url: str, project_name: str, config: Config) -> int:
     except Exception as e:
         logger.warning("Could not fetch changed files: %s", e)
 
-    # Mark task in-progress and run directly
-    await db.update_task(task.id, status=TaskStatus.IN_PROGRESS)
+    # Immediately claim the job so the engine doesn't race us
+    fresh_job = await db.get_job(job.id)
+    if fresh_job and fresh_job.status == JobStatus.TASKS_CREATED:
+        await db.update_job_status(job.id, JobStatus.REVIEW_IN_PROGRESS)
+    # Re-fetch task in case the engine already moved it to in_progress
+    task = await db.get_task(task.id) or task
+    if task.status != TaskStatus.IN_PROGRESS:
+        await db.update_task(task.id, status=TaskStatus.IN_PROGRESS)
+
     agent = await run_agent(
         job=job,
         task=task,
@@ -147,7 +163,6 @@ async def _run_one_shot(url: str, project_name: str, config: Config) -> int:
         verdict = getattr(agent, "_review_verdict", None)
         comments_posted = getattr(agent, "_review_comments_posted", 0)
         await db.update_task(task.id, status=TaskStatus.DONE, verdict=verdict, comments_posted=comments_posted)
-        await db.update_job_status(job.id, JobStatus.REVIEW_IN_PROGRESS)
         await db.update_job_status(job.id, JobStatus.DONE)
 
         print(f"\nReview complete: {verdict or 'done'}")
@@ -156,10 +171,55 @@ async def _run_one_shot(url: str, project_name: str, config: Config) -> int:
         print(f"  Log: {agent.log_file}")
     else:
         await db.update_task(task.id, status=TaskStatus.FAILED, error=agent.error)
-        await db.update_job_status(job.id, JobStatus.REVIEW_IN_PROGRESS)
         await db.update_job_status(job.id, JobStatus.FAILED, error=agent.error)
         print(f"\nReview failed: {agent.error}")
         return 1
+
+    await db.close()
+    return 0
+
+
+async def _queue_review(url: str, project_name: str, config: Config) -> int:
+    """Create a review job in the DB and exit — the engine picks it up."""
+    from .project_registry import build_registry
+
+    db = _create_db(config)
+    await db.connect()
+
+    try:
+        projects = build_registry(config.projects_file)
+    except Exception as e:
+        logger.error("Failed to load projects: %s", e)
+        projects = {}
+
+    if not project_name:
+        project_name = _find_project_for_url(url, projects)
+
+    if not project_name:
+        from .project_registry import ProjectConfig
+
+        mr_id, provider_hint, project_path = _parse_mr_url(url)
+        provider_type = provider_hint or config.git_provider
+        project = ProjectConfig(
+            name="_adhoc",
+            project_id=project_path,
+            git_provider=provider_type,
+            gitlab_url=config.gitlab_url,
+            model=config.model,
+        )
+        project_name = "_adhoc"
+        projects["_adhoc"] = project
+    else:
+        if project_name not in projects:
+            logger.error("Project '%s' not found in projects.yaml", project_name)
+            await db.close()
+            return 1
+
+    mr_id, _, _ = _parse_mr_url(url)
+
+    job, task = await db.create_review_job(project_name, url, mr_id, projects[project_name].model or config.model)
+    print(f"Queued review job {job.id} (task {task.id}) for {url}")
+    print("The engine will pick this up on its next poll cycle.")
 
     await db.close()
     return 0
@@ -491,7 +551,7 @@ async def _show_job_status(config: Config, job_id: str) -> None:
     await db.close()
 
 
-async def _show_costs(config: Config, project: str = None) -> None:
+async def _show_costs(config: Config, project: str | None = None) -> None:
     """Show cost summary."""
     db = _create_db(config)
     await db.connect()
@@ -523,8 +583,6 @@ async def _run_agent_worker(config: Config) -> int:
     work_item = deserialize_work_item(work_item_data)
 
     logger.info("Agent worker starting: role=%s job=%s agent=%s", work_item.role, work_item.job_id, work_item.agent_id)
-
-    working_dir = os.getenv("AGENT_WORKING_DIR", work_item.working_dir)
 
     # Build a minimal Job and Task for the agent loop
     from .core.models import Task
@@ -596,6 +654,7 @@ def main():
     review_parser = subparsers.add_parser("review", help="Review a merge/pull request")
     review_parser.add_argument("mr_url", help="MR/PR URL to review")
     review_parser.add_argument("--project", "-p", help="Project name from projects.yaml")
+    review_parser.add_argument("--async", dest="async_mode", action="store_true", help="Queue for engine pickup instead of running inline")
 
     # minion job <spec>
     job_parser = subparsers.add_parser("job", help="Submit a job specification")
@@ -669,7 +728,10 @@ def main():
         return
 
     if args.command == "review":
-        exit_code = asyncio.run(_run_one_shot(args.mr_url, args.project, config))
+        if args.async_mode:
+            exit_code = asyncio.run(_queue_review(args.mr_url, args.project, config))
+        else:
+            exit_code = asyncio.run(_run_one_shot(args.mr_url, args.project, config))
         sys.exit(exit_code)
         return
 

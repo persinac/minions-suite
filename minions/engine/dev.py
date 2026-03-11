@@ -293,15 +293,19 @@ async def run_engineer(engine: JobEngine, job: Job, task: Task, is_revision: boo
         context = f"## Revision Context (revision {task.revision_count})\n\n{review_feedback}"
 
     else:
-        # Fresh task — generate branch name and transition to in_progress
+        # Fresh task — generate branch name (task already claimed as IN_PROGRESS by manage_dev_tasks)
         short_job_id = job.id[:8]
         slug = task.title.lower().replace(" ", "-")[:30]
         branch_name = f"feat/job-{short_job_id}/{slug}"
-        try:
-            await engine.db.update_task(task.id, branch_name=branch_name, status=TaskStatus.IN_PROGRESS)
-        except InvalidTransitionError as e:
-            logger.warning("Rejected task transition for %s: %s", task.id, e)
-            return
+        current_task = await engine.db.get_task(task.id)
+        if current_task and current_task.status != TaskStatus.IN_PROGRESS:
+            try:
+                await engine.db.update_task(task.id, branch_name=branch_name, status=TaskStatus.IN_PROGRESS)
+            except InvalidTransitionError as e:
+                logger.warning("Rejected task transition for %s: %s", task.id, e)
+                return
+        else:
+            await engine.db.update_task(task.id, branch_name=branch_name)
 
     agent = Agent(job_id=job.id, role=task.agent_role, task_id=task.id, model=engine.config.model)
     agent = await engine.db.create_agent(agent)
@@ -370,6 +374,15 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
         indent=2,
     )
 
+    # Extract MR ID from the engineer task
+    mr_id = task.mr_id or str(task.pr_number or "")
+    if not mr_id and task.pr_url:
+        import re
+
+        match = re.search(r"/merge_requests/(\d+)", task.pr_url)
+        if match:
+            mr_id = match.group(1)
+
     # Create a reviewer task entry
     reviewer_task = Task(
         job_id=job.id,
@@ -378,6 +391,10 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
         service=task.service,
         agent_role=AgentRole.CODE_REVIEWER,
         status=TaskStatus.IN_PROGRESS,
+        mr_url=task.pr_url or "",
+        mr_id=mr_id,
+        pr_url=task.pr_url or "",
+        pr_number=task.pr_number,
     )
     reviewer_task = await engine.db.create_task(reviewer_task)
 
@@ -401,10 +418,10 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
     # Create git provider and MR info so the reviewer gets a working ToolExecutor
     provider = None
     mr_info = {}
-    if project and task.pr_url:
+    if project and mr_id:
         try:
             provider = _create_provider_for_project(project, engine.config)
-            changed_files = await provider.get_changed_files(project.project_id, task.mr_id or str(task.pr_number or ""))
+            changed_files = await provider.get_changed_files(project.project_id, mr_id)
             mr_info = {"project_id": project.project_id, "changed_files": changed_files}
         except Exception as e:
             logger.warning("Failed to create provider/fetch MR info for task review %s: %s", task.id, e)
@@ -422,6 +439,12 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
         mr_info=mr_info if provider else None,
         context=context,
     )
+
+    # Re-fetch task — it may have moved on if a concurrent reviewer already handled it
+    current_task = await engine.db.get_task(task.id)
+    if not current_task or current_task.status != TaskStatus.IN_REVIEW:
+        logger.info("Reviewer finished but task %s is now %s — skipping verdict", task.id, current_task.status if current_task else "gone")
+        return
 
     if result_agent.status != "done":
         # Reset original task from in_review back to pr_open for retry
@@ -490,6 +513,12 @@ async def manage_dev_tasks(engine: JobEngine, job: Job):
             if task.service in busy_services or task.service in launched_services:
                 continue
             launched_services.add(task.service)
+            # Claim the task immediately so the next poll doesn't spawn a duplicate
+            try:
+                await engine.db.update_task(task.id, status=TaskStatus.IN_PROGRESS, agent_role="")
+            except InvalidTransitionError as e:
+                logger.warning("Could not claim task %s: %s", task.id, e)
+                continue
             is_retry = task.attempt > 1
             engine._spawn(
                 run_engineer(engine, job, task, is_retry=is_retry),
@@ -498,6 +527,10 @@ async def manage_dev_tasks(engine: JobEngine, job: Job):
 
         elif task.status == TaskStatus.IN_PROGRESS and task.review_status == "changes_requested":
             # Reviewer requested changes — launch revision engineer
+            # Skip if there's already a running agent for this task
+            latest_agent = await engine.db.get_agent_for_task(task.id)
+            if latest_agent and latest_agent.status in ("starting", "running"):
+                continue
             if task.revision_count >= engine.config.max_revisions:
                 logger.warning("Task %s hit max revisions (%d), failing", task.id, engine.config.max_revisions)
                 try:
@@ -508,7 +541,7 @@ async def manage_dev_tasks(engine: JobEngine, job: Job):
                     pass
                 await engine.db.record_event(job.id, "task_max_revisions", "engine", f"task={task.id} revision_count={task.revision_count}")
                 continue
-            await engine.db.update_task(task.id, revision_count=task.revision_count + 1)
+            await engine.db.update_task(task.id, revision_count=task.revision_count + 1, review_status="revision_in_progress")
             await engine.db.record_event(
                 job.id,
                 "task_revision_requested",

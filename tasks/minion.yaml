@@ -6,7 +6,7 @@ vars:
   # AWS SM:  SECRETS_CMD="./scripts/aws-sm-run minion/prod --" task minion:server
   # None:    SECRETS_CMD="" task minion:server  (env vars already in shell)
   SECRETS_CMD:
-    sh: echo "${SECRETS_CMD:-doppler run --}"
+    sh: echo "${SECRETS_CMD:-}"
 
 tasks:
   preflight:
@@ -39,3 +39,8 @@ tasks:
     desc: Tail active agent logs
     cmds:
       - tail -f logs/agents/*.log
+
+  kill:
+    desc: Kill a job by ID
+    cmds:
+      - ./scripts/kill-job.sh {{.CLI_ARGS}}

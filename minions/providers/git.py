@@ -145,10 +145,11 @@ class GitLabProvider:
             payload = {
                 "body": comment.body,
                 "position": {
-                    "base_sha": "",  # Will be filled by _get_versions
+                    "base_sha": "",
                     "start_sha": "",
                     "head_sha": "",
                     "position_type": "text",
+                    "old_path": comment.file_path,
                     "new_path": comment.file_path,
                     "new_line": comment.line,
                 },
@@ -172,6 +173,19 @@ class GitLabProvider:
                 headers=self._headers,
                 json=payload,
             )
+
+            # If inline comment fails, fall back to a regular MR note
+            if resp.status_code == 400:
+                logger.warning("Inline comment failed (400), falling back to MR note: %s", resp.text[:200])
+                fallback_body = f"**{comment.file_path}:{comment.line}**\n\n{comment.body}"
+                fallback_resp = await client.post(
+                    self._api(f"/projects/{encoded}/merge_requests/{mr_id}/notes"),
+                    headers=self._headers,
+                    json={"body": fallback_body},
+                )
+                fallback_resp.raise_for_status()
+                return fallback_resp.json()
+
             resp.raise_for_status()
             return resp.json()
 

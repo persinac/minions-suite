@@ -4,6 +4,7 @@ Unified agent runner: handles both job orchestration agents and code review
 agents through the same `run_agent()` / `_agent_loop_generic()` pipeline.
 """
 
+import asyncio
 import json
 import logging
 import time
@@ -94,9 +95,9 @@ async def run_agent(
         role_cfg = timeout_cfg.roles.get(task.agent_role)
         timeout = role_cfg.task_timeout_seconds if role_cfg else config.agent_timeout
 
-        # Engineers get more turns for complex multi-subtask work
-        engineer_roles = {AgentRole.BACKEND_ENGINEER, AgentRole.FRONTEND_ENGINEER, AgentRole.DATABASE_ENGINEER}
-        max_turns = 100 if task.agent_role in engineer_roles else 30
+        # All agents get 100 turns — engineers for complex multi-subtask work,
+        # reviewers for large diffs with many files to read and comment on.
+        max_turns = 100
 
         result = await _agent_loop_generic(
             model=model,
@@ -178,6 +179,8 @@ async def _agent_loop_generic(
     verdict = None
     summary = ""
     start_time = time.time()
+    wind_down_sent = False
+    wind_down_turn = int(max_turns * 0.8)
 
     with open(log_path, "w", encoding="utf-8") as log:
         log.write(f"=== Agent Log ===\nModel: {model}\nStarted: {_now()}\n\n")
@@ -188,20 +191,48 @@ async def _agent_loop_generic(
                 logger.warning("Agent timeout after %ds", elapsed)
                 break
 
+            # Inject wind-down message at 80% of turns or 80% of timeout
+            if not wind_down_sent:
+                turns_near_limit = num_turns >= wind_down_turn
+                time_near_limit = elapsed >= timeout * 0.8
+                if turns_near_limit or time_near_limit:
+                    wind_down_sent = True
+                    remaining_turns = max_turns - num_turns
+                    remaining_time = int(timeout - elapsed)
+                    wind_down_msg = (
+                        f"⚠️ WIND DOWN: You have {remaining_turns} turns and ~{remaining_time}s remaining. "
+                        "Wrap up your current work now: commit what you have, push the branch, and create "
+                        "a merge request for review. Any remaining subtasks will be continued after the "
+                        "review cycle. Do NOT start new subtasks — focus on shipping what's done."
+                    )
+                    messages.append({"role": "user", "content": wind_down_msg})
+                    log.write(f"[SYSTEM] Wind-down injected at turn {num_turns}\n")
+
             num_turns += 1
             log.write(f"\n--- Turn {num_turns} ---\n")
 
-            try:
-                response = await litellm.acompletion(
-                    model=model,
-                    messages=messages,
-                    tools=tools,
-                    max_tokens=8192,
-                    timeout=120,
-                )
-            except Exception as e:
-                log.write(f"LLM call failed: {e}\n")
-                raise
+            max_retries = 5
+            for attempt in range(max_retries):
+                try:
+                    response = await litellm.acompletion(
+                        model=model,
+                        messages=messages,
+                        tools=tools,
+                        max_tokens=8192,
+                        timeout=120,
+                    )
+                    break
+                except litellm.exceptions.RateLimitError as e:
+                    if attempt == max_retries - 1:
+                        log.write(f"LLM rate limit exceeded after {max_retries} retries: {e}\n")
+                        raise
+                    wait = min(2**attempt * 5, 60)
+                    log.write(f"Rate limited (attempt {attempt + 1}/{max_retries}), waiting {wait}s...\n")
+                    logger.warning("Rate limited on turn %d, retrying in %ds (attempt %d/%d)", num_turns, wait, attempt + 1, max_retries)
+                    await asyncio.sleep(wait)
+                except Exception as e:
+                    log.write(f"LLM call failed: {e}\n")
+                    raise
 
             usage = response.usage
             if usage:

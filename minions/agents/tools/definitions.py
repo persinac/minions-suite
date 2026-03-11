@@ -94,12 +94,15 @@ REVIEW_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "post_inline_comment",
-            "description": "Leave a review comment on a specific file and line in the MR/PR. Every comment must explain WHAT is wrong and WHY.",
+            "description": "Leave a review comment on a specific file and line in the MR/PR. Every comment must explain WHAT is wrong and WHY. Always provide a line number from the diff; default to 1 if no specific line applies.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "file_path": {"type": "string", "description": "File path relative to repo root."},
-                    "line": {"type": "integer", "description": "Line number in the new version of the file."},
+                    "line": {
+                        "type": "integer",
+                        "description": "Line number in the new version of the file. Use the most relevant changed line from the diff. Default to 1 if no specific line applies.",
+                    },
                     "body": {"type": "string", "description": "The review comment text. Be specific and actionable."},
                     "severity": {
                         "type": "string",
@@ -267,7 +270,7 @@ class ToolExecutor:
 
     async def _post_inline_comment(self, args: dict) -> str:
         file_path = args.get("file_path", "")
-        line = args.get("line", 0)
+        line = args.get("line", 1) or 1
         body = args.get("body", "")
         severity = args.get("severity", "nit")
 
@@ -276,7 +279,7 @@ class ToolExecutor:
 
         prefixed_body = f"**[{severity.upper()}]** {body}"
         comment = InlineComment(file_path=file_path, line=line, body=prefixed_body)
-        result = await self.provider.post_inline_comment(self.project_id, self.mr_id, comment)
+        await self.provider.post_inline_comment(self.project_id, self.mr_id, comment)
         self.comments_posted += 1
         return json.dumps({"posted": True, "file": file_path, "line": line, "total_comments": self.comments_posted})
 
