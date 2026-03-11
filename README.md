@@ -2,7 +2,41 @@
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-Composable AI agent suite — vendor-agnostic (via [LiteLLM](https://github.com/BerriAI/litellm)), supporting GitLab, GitHub, and Bitbucket. Includes a **code reviewer**, a **multi-agent development orchestrator**, and a **GitLab issues poller** for autonomous job creation.
+Autonomous AI agent platform for software development — from issue to deployed code. Vendor-agnostic LLM support via [LiteLLM](https://github.com/BerriAI/litellm), multi-provider git integration (GitLab, GitHub), and optional Kubernetes dispatch for production workloads.
+
+## What It Does
+
+Minion Suite orchestrates specialized AI agents through the full development lifecycle:
+
+1. **Ingest** — A GitLab issue, Trello card, MCP request, or CLI command triggers a job
+2. **Plan** — A spec analyst refines requirements; an arbiter decomposes work into tasks per service
+3. **Build** — Backend, frontend, and database engineers execute tasks: write code, run tests, commit, push branches, open PRs
+4. **Review** — A code reviewer analyzes diffs, posts inline comments, and submits a verdict
+5. **Revise** — If the reviewer requests changes, the engineer automatically reworks and resubmits
+6. **Merge** — Approved PRs merge automatically (configurable per project)
+7. **Deploy** — A deploy monitor watches CI/CD pipelines and verifies successful rollout
+
+Each step is an independent agent with its own tools, operating within a state machine that handles retries, timeouts, and failure recovery.
+
+### Agent Roles
+
+| Role | What It Does |
+|------|-------------|
+| **Spec Analyst** | Refines raw feature requests into structured specs |
+| **Arbiter** | Decomposes specs into tasks, assigns to services, coordinates multi-agent execution |
+| **Backend Engineer** | Writes code, tests, commits, pushes branches, opens PRs |
+| **Frontend Engineer** | Same as backend, scoped to frontend services |
+| **Database Engineer** | Schema migrations, queries, data layer changes |
+| **Code Reviewer** | Analyzes diffs, posts inline comments, approves or requests changes |
+| **Deploy Monitor** | Watches CI/CD pipelines, verifies deployments |
+
+### Standalone Features
+
+- **Renovate Auto-Merge** — Classifies dependency bumps by risk (patch/minor/major), auto-merges low-risk updates with green CI, escalates the rest
+- **GitLab Issues Poller** — Watches for labeled issues (`minions`), creates development jobs automatically
+- **Trello Poller** — Converts cards from an "on-deck" list into jobs, syncs status back
+- **MCP Server** — Exposes all operations (review, job submission, task control, cost queries) as MCP tools on port 8321
+- **Web Dashboard** — Read-only UI showing active jobs, task progress, agent logs, and cost summaries
 
 ## Quickstart
 
@@ -23,13 +57,11 @@ cd minion-suite
 task setup:init
 ```
 
-### Quickstart
-
-View: [QUICKSTART.md](QUICKSTART.md)
+See [QUICKSTART.md](QUICKSTART.md) for detailed setup instructions.
 
 ### Local Docker Stack (Postgres + NATS)
 
-For local development, run only the infrastructure services (Postgres and NATS) in Docker and the app on the host:
+Run infrastructure in Docker, app on the host:
 
 ```bash
 # Start Postgres + NATS
@@ -45,86 +77,120 @@ task docker:local:init
 # Health checks
 SECRETS_CMD="" task minion:preflight
 
-# Start MCP server + job engine + GitLab issues poller
+# Start MCP server + job engine + pollers
 SECRETS_CMD="" task minion:server
 ```
 
 ### Full Docker Stack
 
-For production-like deployments with the app running in Docker alongside Postgres and NATS:
+Production-like deployment with everything in Docker:
 
 ```bash
-# Copy and fill in .env
-cp .env.example .env
-
-# Build and start all services
+cp .env.example .env    # Fill in secrets
 task docker:build
 task docker:up
 ```
 
-### Review a merge request
+## Usage
+
+### Review a Merge Request
 
 ```bash
-# One-shot review (ad-hoc — no project config needed)
+# One-shot review (ad-hoc)
 task minion:review -- https://gitlab.company.com/team/repo/-/merge_requests/42
 
-# Review with a registered project (uses project-specific review profile)
+# With a registered project (uses project-specific review profile)
 task minion:review -- --project payments-api https://gitlab.company.com/team/repo/-/merge_requests/42
 
-# GitHub works too
+# Async — queue for the engine to pick up
+task minion:review -- --async https://gitlab.company.com/team/repo/-/merge_requests/42
+
+# GitHub
 task minion:review -- https://github.com/org/repo/pull/99
 ```
 
-### Run as a service
+### Submit a Development Job
 
 ```bash
-# Start MCP server + job engine + pollers
+# Via CLI
+task minion:job -- "Add rate limiting to the /api/v2/export endpoint"
+
+# Via GitLab issue — add the 'minions' label to any issue
+# Via Trello — move a card to the 'minions-on-deck' list
+# Via MCP — call the submit_spec tool on port 8321
+```
+
+### Run as a Service
+
+```bash
+# Full stack: MCP server + job engine + pollers + arbiter
 task minion:server
 
-# Check recent reviews
+# Check job status
 task minion:status
-
-# Cost summary
-task minion:costs
 task minion:costs -- --project payments-api
 ```
 
 ## Architecture
 
 ```
-Webhook / CLI / GitLab Issue / Trello Card
-        |
-        v
-   JobEngine              <- polls DB for active jobs
-        |
-   +----+----+
-   |         |
-   v         v
- Review    Development
- Agent     Orchestrator   <- multi-agent: spec -> tasks -> engineer -> PR -> review -> merge
-   |         |
-   v         v
- Tools      Tools         <- get_diff, read_file, search_code, post_inline_comment, ...
-   |         |
-   v         v
- GitProvider              <- GitLab API / GitHub CLI (protocol-based)
-   |
-   v
- MR comments + verdict / PRs + merges
+GitLab Issue / Trello Card / CLI / MCP / Webhook
+                    |
+                    v
+               JobEngine              <- polls DB for active jobs
+                    |
+        +-----------+-----------+
+        |           |           |
+        v           v           v
+     Review     Development   Renovate
+     Agent      Orchestrator  Auto-Merge
+        |           |
+        v           v
+   Code Review   Spec Analyst -> Arbiter -> Engineers -> Reviewer -> Deploy Monitor
+        |           |
+        v           v
+   GitProvider   GitProvider + Shell + Filesystem
+        |           |
+        v           v
+   Inline        PRs, merges,
+   comments      deployments
 ```
 
-**Job types:**
+### Job Lifecycle
 
-- **Review jobs:** `TASKS_CREATED -> REVIEW_IN_PROGRESS -> DONE` (or `FAILED`)
-- **Development jobs:** `SPEC_RECEIVED -> SPEC_READY -> TASKS_CREATED -> DEV_IN_PROGRESS -> PR_OPEN -> REVIEW_IN_PROGRESS -> MERGED -> DEPLOYING -> DEPLOYED -> DONE`
+**Review jobs:**
 
-**GitLab Issues Poller:** Watches configured projects for issues with a trigger label (default: `minions`), creates development jobs automatically, and updates issue labels/comments as jobs progress.
+```
+TASKS_CREATED -> REVIEW_IN_PROGRESS -> DONE
+```
 
-**Arbiter:** Optional coordination service (requires NATS) that routes MCP tool state mutations for multi-agent conflict resolution.
+**Development jobs:**
+
+```
+SPEC_RECEIVED -> SPEC_READY -> TASKS_CREATED -> DEV_IN_PROGRESS -> PR_OPEN
+    -> REVIEW_IN_PROGRESS -> MERGED -> DEPLOYING -> DEPLOYED -> DONE
+```
+
+Engineers execute one per service (sequential), but multiple services run in parallel. If a reviewer requests changes, the engineer automatically picks up a revision cycle before re-requesting review.
+
+### Arbiter Coordination
+
+When enabled (requires NATS), the arbiter provides:
+
+- **State transition validation** — all status changes route through NATS request/reply
+- **Heartbeat monitoring** — detects stale agents, triggers retries
+- **Timeout enforcement** — per-role configurable limits
+- **Anomaly detection** — rules-based detection of stuck tasks with automatic remediation
+- **Circuit breaker** — temporary failure isolation under cascading errors
+
+### Deployment Options
+
+- **In-process** — agents run directly in the JobEngine process (development)
+- **Kubernetes** — agents dispatched as isolated K8s pods with per-role resource limits, service accounts, and TTL cleanup (production)
 
 ## Project Configuration
 
-Define projects in `projects.yaml` (or `projects.local.yaml` for local dev) with composable review profiles:
+Define projects in `projects.yaml` with composable profiles:
 
 ```yaml
 defaults:
@@ -135,25 +201,39 @@ projects:
   payments-api:
     project_id: team/payments-api
     gitlab_url: https://gitlab.company.com
+    auto_merge: false                        # Enterprise — review only, no auto-merge
     review_profile:
       roles: [backend, security]
       languages: [python, sql]
+    engineer_profile:
+      roles: [backend]
+      languages: [python]
+      timeout: 1800
     issues:
       enabled: true
       label: minions
+    services:
+      api:
+        language: python
+        framework: fastapi
+        deploy_target: apprunner
+        test_command: pytest
+      worker:
+        language: python
+        deploy_target: k8s
     ignore_paths: ["*.lock", "alembic/versions/"]
 
-  checkout-ui:
-    project_id: team/checkout-ui
-    gitlab_url: https://gitlab.company.com
+  homelab-infra:
+    project_id: alex/homelab
+    auto_merge: true                         # Personal — merge on approve
     review_profile:
-      roles: [frontend]
-      languages: [typescript]
+      roles: [devops]
+      languages: [python, shell]
 ```
 
-### Review Profiles
+### Prompt Composition
 
-Prompts are composed by layering markdown files:
+Review prompts are built by layering markdown files:
 
 | Layer | Directory | Purpose |
 |-------|-----------|---------|
@@ -162,30 +242,30 @@ Prompts are composed by layering markdown files:
 | Languages | `prompts/languages/` | Language rules: `python`, `typescript`, `go`, `sql`, `shell` |
 | Custom | `prompts/custom/` | Org/team-specific rules (gitignored) |
 
-If no profile is configured, the reviewer auto-infers roles and languages from the changed file paths.
+If no profile is configured, roles and languages are auto-inferred from changed file paths.
 
 ## Environment Variables
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `LITELLM_MODEL` | No | `gpt-4o` | LLM model string (any [LiteLLM-supported model](https://docs.litellm.ai/docs/providers)) |
+| `LITELLM_MODEL` | No | `gpt-4o` | LLM model string ([LiteLLM-supported](https://docs.litellm.ai/docs/providers)) |
 | `ANTHROPIC_API_KEY` | \* | - | Anthropic API key |
 | `OPENAI_API_KEY` | \* | - | OpenAI API key |
 | `GITLAB_TOKEN` | \*\* | - | GitLab personal access token |
 | `GITLAB_URL` | \*\* | - | GitLab instance URL |
 | `GH_TOKEN` | \*\* | - | GitHub token |
 | `DB_BACKEND` | No | `sqlite` | `sqlite` or `postgres` |
-| `POSTGRES_URL` | No | - | Postgres connection string (when `DB_BACKEND=postgres`) |
-| `NATS_ENABLED` | No | `false` | Enable NATS pub/sub for job events |
+| `POSTGRES_URL` | No | - | Postgres connection string |
+| `NATS_ENABLED` | No | `false` | Enable NATS pub/sub |
 | `NATS_SERVER_IP` | No | `localhost:4222` | NATS server address |
+| `ARBITER_ENABLED` | No | `false` | Enable arbiter coordination |
 | `GITLAB_ISSUES_ENABLED` | No | `false` | Enable GitLab issues poller |
-| `GITLAB_ISSUES_POLL_INTERVAL` | No | `120` | Issues poll interval in seconds |
-| `PROJECTS_FILE` | No | `projects.yaml` | Path to projects config YAML |
-| `SECRETS_CMD` | No | `doppler run --` | Secrets injection command prefix (set empty for no wrapper) |
+| `GITLAB_ISSUES_POLL_INTERVAL` | No | `120` | Issues poll interval (seconds) |
+| `PROJECTS_FILE` | No | `projects.yaml` | Path to projects config |
+| `SECRETS_CMD` | No | `` | Secrets injection command prefix |
 | `MAX_CONCURRENT_REVIEWS` | No | `3` | Max parallel reviews |
 | `MAX_CONCURRENT_JOBS` | No | `3` | Max parallel jobs |
-| `AGENT_TIMEOUT` | No | `600` | Agent timeout in seconds |
-| `ARBITER_ENABLED` | No | `false` | Enable arbiter coordination service |
+| `AGENT_TIMEOUT` | No | `600` | Default agent timeout (seconds) |
 | `LOG_LEVEL` | No | `INFO` | Logging level |
 
 \* At least one LLM API key is required.
@@ -193,43 +273,45 @@ If no profile is configured, the reviewer auto-infers roles and languages from t
 
 ### Secrets Runner
 
-Task commands use a configurable `SECRETS_CMD` env var (default: `doppler run --`). Set it before running any `task minion:*` command:
+Task commands support a configurable `SECRETS_CMD` prefix:
 
 ```bash
-# Doppler (default)
+# Doppler
 export SECRETS_CMD="doppler run --"
 
 # AWS Secrets Manager
 export SECRETS_CMD="./scripts/aws-sm-run minion/prod --"
 
-# No wrapper (env vars already in shell / .env file)
+# No wrapper (env vars already loaded / using .env file)
 export SECRETS_CMD=""
 ```
 
 ## Task Commands
 
 ```bash
-task setup:init          # First-time setup (Python 3.14 + deps + preflight)
-task setup:uv-all        # Re-sync after pyproject.toml changes
+# Setup
+task setup:init              # First-time setup (Python 3.14 + deps + preflight)
+task setup:uv-all            # Re-sync after pyproject.toml changes
 
-task minion:preflight    # Health checks
-task minion:review       # One-shot MR/PR review
-task minion:server       # MCP server + job engine + pollers + arbiter
-task minion:status       # Recent review history
-task minion:costs        # Cost summary
+# Operations
+task minion:review           # One-shot MR/PR review
+task minion:server           # Full stack: MCP + engine + pollers + arbiter
+task minion:preflight        # Health checks (APIs, DB, NATS, providers)
+task minion:status           # Recent job history
+task minion:costs            # Cost summary
+task minion:kill             # Kill a stuck job by ID
 
-task fmt                 # Format + fix lint (ruff)
-task lint                # Check formatting + lint (ruff)
+# Code quality
+task fmt                     # Format + fix lint (ruff)
+task lint                    # Check formatting + lint (ruff)
+task test                    # Run pytest (412 tests, in-memory SQLite)
 
-task docker:build        # Build Docker image
-task docker:up           # Start full Docker stack
-task docker:down         # Stop Docker stack
-
-task docker:local:up     # Start local Postgres + NATS (no app container)
-task docker:local:down   # Stop local Postgres + NATS
-task docker:local:init   # Initialize local DB schema + NATS stream
-task docker:local:reset  # Destroy volumes and restart fresh
-task docker:local:logs   # Tail local infra logs
+# Docker
+task docker:build            # Build Docker image
+task docker:up / docker:down # Full stack (app + postgres + nats)
+task docker:local:up         # Local infra only (postgres + nats)
+task docker:local:init       # Initialize DB schema + NATS stream
+task docker:local:reset      # Destroy volumes, start fresh
 ```
 
 ## NATS Subjects
@@ -240,10 +322,42 @@ When NATS is enabled, job lifecycle events are published:
 |---------|-------------|
 | `jobs.review.requested.<project>` | Review job created |
 | `jobs.review.started.<project>` | Review picked up by engine |
-| `jobs.review.completed.<project>` | Review done (includes verdict + cost) |
+| `jobs.review.completed.<project>` | Review done (verdict + cost) |
 | `jobs.review.failed.<project>` | Review agent errored |
 | `jobs.<id>.status` | Per-job status updates |
 | `agents.*` | Agent lifecycle events |
+| `arbiter.state.transition` | State transition requests |
+| `arbiter.heartbeat` | Agent liveness signals |
+| `renovate.*` | Renovate merge/escalate events |
+
+## MCP Server Tools
+
+The MCP server (port 8321) exposes tools for external clients:
+
+- **Review**: `request_review`, `get_review_status`, `get_review_history`, `cancel_review`
+- **Jobs**: `submit_spec`, `submit_refined_spec`, `get_job_status`
+- **Tasks**: `create_task`, `mark_tasks_created`, `update_task_status`, `report_pr`, `report_review_complete`, `report_deploy_status`
+- **Subtasks**: `submit_subtask_plan`, `start_subtask`, `complete_subtask`, `fail_subtask`
+- **Agents**: `send_heartbeat`, `send_message`, `get_messages`
+- **Visibility**: `get_cost_summary`, `get_agent_logs`, `list_agent_logs`
+- **Resources**: `job://{id}`, `job://active`, `agents://{job_id}`, `logs://{agent_id}`
+
+## Database
+
+- **SQLite** (default, dev) — `aiosqlite`, file-based
+- **PostgreSQL** (prod) — `psycopg3` async connection pool
+
+Schema: jobs, tasks, subtasks, agents, messages, events, tool calls, heartbeats, state transitions
+
+## Tests
+
+412 unit tests via `pytest` + `pytest-asyncio`. All use in-memory SQLite, no external services required.
+
+```bash
+task test
+# or
+uv run pytest
+```
 
 ## License
 
