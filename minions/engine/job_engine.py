@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 import httpx
 
@@ -32,9 +32,9 @@ class JobEngine:
         self,
         db: AbstractDatabase,
         config: Config,
-        k8s_launcher: "Optional[K8sJobLauncher]" = None,
-        nats_client: "Optional[NatsClient]" = None,
-        artifact_uploader: "Optional[ArtifactUploader]" = None,
+        k8s_launcher: K8sJobLauncher | None = None,
+        nats_client: NatsClient | None = None,
+        artifact_uploader: ArtifactUploader | None = None,
         mcp_server=None,
     ):
         self.db = db
@@ -124,7 +124,7 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
     def _k8s_enabled(self) -> bool:
         return self.config.k8s_dispatch and self._k8s_launcher is not None
 
-    def _resolve_service(self, service_name: str) -> tuple[Optional[ProjectConfig], Optional[ServiceTarget]]:
+    def _resolve_service(self, service_name: str) -> tuple[ProjectConfig | None, ServiceTarget | None]:
         """Look up a service target across all registered projects.
 
         Falls back to the sole service if only one exists across all projects
@@ -169,7 +169,7 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
         role: str,
         prompt: str,
         working_dir: str,
-        service: Optional[ServiceTarget] = None,
+        service: ServiceTarget | None = None,
     ) -> str:
         """Build an AgentWorkItem and launch a K8s Job. Returns the K8s Job name."""
         timeout_cfg = TimeoutConfig()
@@ -430,9 +430,7 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
                     orphaned_count += 1
                 elif k8s_status == "unknown":
                     await self.db.update_agent(agent.id, status="failed", finished_at=_now(), error="k8s job not found after restart")
-                    await self.db.record_event(
-                        agent.job_id, "agent_orphaned", "engine", f"agent={agent.id} role={agent.role} reason=k8s_job_missing"
-                    )
+                    await self.db.record_event(agent.job_id, "agent_orphaned", "engine", f"agent={agent.id} role={agent.role} reason=k8s_job_missing")
                     orphaned_count += 1
                 # else: running/pending — leave alone, K8s watcher will handle
             else:
@@ -540,9 +538,9 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
         job: Job,
         task: Task,
         agent: Agent,
-        project: Optional[ProjectConfig],
-        service: Optional[ServiceTarget],
-        context: Optional[str] = None,
+        project: ProjectConfig | None,
+        service: ServiceTarget | None,
+        context: str | None = None,
     ):
         """Run an agent in-process using the LiteLLM tool-use loop."""
         # Create the appropriate tool executor for non-reviewer roles
@@ -578,9 +576,7 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
             await self._trello_comment(job, f"{task.agent_role} completed (agent={agent.id[:8]}, ${result_agent.cost_usd:.4f})")
         else:
             error = result_agent.error or "agent failed"
-            await self.db.record_event(
-                job.id, "agent_failed", "engine", f"agent={agent.id} role={task.agent_role} error={error[:200]}"
-            )
+            await self.db.record_event(job.id, "agent_failed", "engine", f"agent={agent.id} role={task.agent_role} error={error[:200]}")
             await self._nats_agent_status(job.id, agent.id, str(task.agent_role), "failed")
             await self._trello_comment(job, f"{task.agent_role} failed (agent={agent.id[:8]}): {error[:150]}")
 

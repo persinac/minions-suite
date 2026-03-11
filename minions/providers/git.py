@@ -8,7 +8,7 @@ so tool definitions are provider-agnostic.
 import logging
 import subprocess
 from dataclasses import dataclass
-from typing import Optional, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 import httpx
 
@@ -229,11 +229,17 @@ class GitHubProvider:
     async def get_pr(self, project_id: str, mr_id: str) -> PRInfo:
         import json
 
-        raw = self._run_gh([
-            "pr", "view", mr_id,
-            "--repo", project_id,
-            "--json", "number,url,title,body,author,headRefName,baseRefName,state",
-        ])
+        raw = self._run_gh(
+            [
+                "pr",
+                "view",
+                mr_id,
+                "--repo",
+                project_id,
+                "--json",
+                "number,url,title,body,author,headRefName,baseRefName,state",
+            ]
+        )
         data = json.loads(raw)
         return PRInfo(
             id=str(data["number"]),
@@ -252,22 +258,34 @@ class GitHubProvider:
     async def get_changed_files(self, project_id: str, mr_id: str) -> list[str]:
         import json
 
-        raw = self._run_gh([
-            "pr", "view", mr_id,
-            "--repo", project_id,
-            "--json", "files",
-        ])
+        raw = self._run_gh(
+            [
+                "pr",
+                "view",
+                mr_id,
+                "--repo",
+                project_id,
+                "--json",
+                "files",
+            ]
+        )
         data = json.loads(raw)
         return [f["path"] for f in data.get("files", [])]
 
     async def get_comments(self, project_id: str, mr_id: str) -> list[dict]:
         import json
 
-        raw = self._run_gh([
-            "pr", "view", mr_id,
-            "--repo", project_id,
-            "--json", "comments",
-        ])
+        raw = self._run_gh(
+            [
+                "pr",
+                "view",
+                mr_id,
+                "--repo",
+                project_id,
+                "--json",
+                "comments",
+            ]
+        )
         data = json.loads(raw)
         return [
             {
@@ -282,28 +300,46 @@ class GitHubProvider:
         # GitHub doesn't support inline PR comments via gh CLI easily.
         # Fall back to a regular comment with file/line reference.
         body = f"**{comment.file_path}:{comment.line}**\n\n{comment.body}"
-        self._run_gh([
-            "pr", "comment", mr_id,
-            "--repo", project_id,
-            "--body", body,
-        ])
+        self._run_gh(
+            [
+                "pr",
+                "comment",
+                mr_id,
+                "--repo",
+                project_id,
+                "--body",
+                body,
+            ]
+        )
         return {"posted": True, "inline": False}
 
     async def submit_review(self, project_id: str, mr_id: str, verdict: str, body: str) -> dict:
         if verdict == "approve":
-            self._run_gh([
-                "pr", "review", mr_id,
-                "--repo", project_id,
-                "--approve",
-                "--body", body,
-            ])
+            self._run_gh(
+                [
+                    "pr",
+                    "review",
+                    mr_id,
+                    "--repo",
+                    project_id,
+                    "--approve",
+                    "--body",
+                    body,
+                ]
+            )
         else:
-            self._run_gh([
-                "pr", "review", mr_id,
-                "--repo", project_id,
-                "--request-changes",
-                "--body", body,
-            ])
+            self._run_gh(
+                [
+                    "pr",
+                    "review",
+                    mr_id,
+                    "--repo",
+                    project_id,
+                    "--request-changes",
+                    "--body",
+                    body,
+                ]
+            )
         return {"verdict": verdict, "posted": True}
 
 

@@ -49,8 +49,16 @@ class TestToolDefinitionStructure:
 class TestReviewTools:
     def test_expected_tools(self):
         names = _tool_names(REVIEW_TOOL_DEFINITIONS)
-        expected = {"get_mr_diff", "get_changed_files", "read_file", "search_code",
-                    "list_files", "get_mr_comments", "post_inline_comment", "submit_review"}
+        expected = {
+            "get_mr_diff",
+            "get_changed_files",
+            "read_file",
+            "search_code",
+            "list_files",
+            "get_mr_comments",
+            "post_inline_comment",
+            "submit_review",
+        }
         assert names == expected
 
     def test_count(self):
@@ -123,8 +131,15 @@ class TestDeployTools:
     def test_expected_tools(self):
         names = _tool_names(DEPLOY_TOOL_DEFINITIONS)
         expected = {
-            "check_ci_status", "report_deploy_status", "update_task_status", "send_heartbeat",
-            "submit_subtask_plan", "start_subtask", "complete_subtask", "fail_subtask", "get_subtasks",
+            "check_ci_status",
+            "report_deploy_status",
+            "update_task_status",
+            "send_heartbeat",
+            "submit_subtask_plan",
+            "start_subtask",
+            "complete_subtask",
+            "fail_subtask",
+            "get_subtasks",
             "send_message",
         }
         assert names == expected
@@ -161,12 +176,14 @@ class TestGetToolsForRole:
 
     def test_database_engineer(self):
         from minions.agents.tools.definitions import DB_ENGINEER_TOOL_DEFINITIONS
+
         tools = get_tools_for_role("database_engineer")
         assert tools is DB_ENGINEER_TOOL_DEFINITIONS
 
     def test_code_reviewer(self):
         tools = get_tools_for_role("code_reviewer")
         from minions.agents.tools.definitions import CODE_REVIEWER_TOOL_DEFINITIONS
+
         assert tools is CODE_REVIEWER_TOOL_DEFINITIONS
 
     def test_deploy_monitor(self):

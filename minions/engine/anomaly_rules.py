@@ -7,8 +7,7 @@ Anomaly instances describing detected problems and suggested remediation actions
 import logging
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 from ..db import AbstractDatabase
 
@@ -21,7 +20,7 @@ class Anomaly:
     severity: str  # "warning", "recoverable", "critical"
     entity_type: str  # "task", "job", "subtask"
     entity_id: str
-    job_id: Optional[str]
+    job_id: str | None
     description: str
     suggested_action: str  # "retry_agent", "fail_job", "advance_job", "alert_only"
 
@@ -41,9 +40,9 @@ async def check_stuck_tasks(db: AbstractDatabase, stuck_threshold_minutes: int =
             try:
                 updated = datetime.fromisoformat(task.updated_at)
                 if updated.tzinfo is None:
-                    updated = updated.replace(tzinfo=timezone.utc)
+                    updated = updated.replace(tzinfo=UTC)
                 elapsed_minutes = (now - updated.timestamp()) / 60.0
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 continue
 
             if elapsed_minutes < stuck_threshold_minutes:
@@ -60,11 +59,11 @@ async def check_stuck_tasks(db: AbstractDatabase, stuck_threshold_minutes: int =
                     try:
                         st_time = datetime.fromisoformat(check_time)
                         if st_time.tzinfo is None:
-                            st_time = st_time.replace(tzinfo=timezone.utc)
+                            st_time = st_time.replace(tzinfo=UTC)
                         if (now - st_time.timestamp()) / 60.0 < stuck_threshold_minutes:
                             has_recent_activity = True
                             break
-                    except (ValueError, TypeError):
+                    except ValueError, TypeError:
                         continue
 
             if has_recent_activity:

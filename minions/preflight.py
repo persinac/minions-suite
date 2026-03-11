@@ -62,17 +62,20 @@ def check_litellm() -> Check:
     """Check if LiteLLM is importable and a model key is configured."""
     try:
         import litellm
+
         version = getattr(litellm, "__version__", "unknown")
     except ImportError:
         return Check("litellm", FAIL, "not installed -- run: uv add litellm")
 
     # Check for at least one API key
-    has_key = any([
-        os.getenv("OPENAI_API_KEY"),
-        os.getenv("ANTHROPIC_API_KEY"),
-        os.getenv("AZURE_API_KEY"),
-        os.getenv("GEMINI_API_KEY"),
-    ])
+    has_key = any(
+        [
+            os.getenv("OPENAI_API_KEY"),
+            os.getenv("ANTHROPIC_API_KEY"),
+            os.getenv("AZURE_API_KEY"),
+            os.getenv("GEMINI_API_KEY"),
+        ]
+    )
     if has_key:
         return Check("litellm", PASS, f"v{version}, API key found")
     return Check("litellm", WARN, f"v{version}, no API key found in env (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)")
@@ -244,11 +247,11 @@ def check_postgres(config: Config) -> Check:
         import psycopg
 
         with psycopg.connect(config.postgres_url, connect_timeout=5) as conn, conn.cursor() as cur:
-                cur.execute("SELECT 1 FROM information_schema.schemata WHERE schema_name = 'minions'")
-                row = cur.fetchone()
-                if row:
-                    return Check("postgres", PASS, f"connected, minions schema found (backend={config.db_backend})")
-                return Check("postgres", WARN, "connected, but minions schema not found -- run dbmate up")
+            cur.execute("SELECT 1 FROM information_schema.schemata WHERE schema_name = 'minions'")
+            row = cur.fetchone()
+            if row:
+                return Check("postgres", PASS, f"connected, minions schema found (backend={config.db_backend})")
+            return Check("postgres", WARN, "connected, but minions schema not found -- run dbmate up")
     except ImportError:
         return Check("postgres", FAIL, "psycopg not installed -- run: uv add psycopg[binary]")
     except Exception as e:

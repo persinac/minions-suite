@@ -95,6 +95,7 @@ class TestJobTransitions:
     def test_all_states_covered(self):
         """Every JobStatus value should have an entry in JOB_TRANSITIONS."""
         from minions.core.models import JobStatus
+
         for status in JobStatus:
             assert status.value in JOB_TRANSITIONS, f"Missing JOB_TRANSITIONS entry for {status}"
 
@@ -173,6 +174,7 @@ class TestTaskTransitions:
 
     def test_all_task_statuses_covered(self):
         from minions.core.models import TaskStatus
+
         for status in TaskStatus:
             assert status.value in TASK_TRANSITIONS, f"Missing TASK_TRANSITIONS entry for {status}"
 
@@ -226,6 +228,7 @@ class TestSubtaskTransitions:
 
     def test_all_subtask_statuses_covered(self):
         from minions.core.models import SubtaskStatus
+
         for status in SubtaskStatus:
             assert status.value in SUBTASK_TRANSITIONS, f"Missing SUBTASK_TRANSITIONS entry for {status}"
 
@@ -244,11 +247,15 @@ class TestTaskPreconditions:
         assert "branch_name" in exc_info.value.missing_fields
 
     def test_pr_open_satisfied(self):
-        validate_task_preconditions("t1", "pr_open", {
-            "pr_url": "https://example.com/pr/1",
-            "pr_number": 1,
-            "branch_name": "feat/x",
-        })
+        validate_task_preconditions(
+            "t1",
+            "pr_open",
+            {
+                "pr_url": "https://example.com/pr/1",
+                "pr_number": 1,
+                "branch_name": "feat/x",
+            },
+        )
 
     def test_deploying_requires_branch(self):
         with pytest.raises(PreconditionError):

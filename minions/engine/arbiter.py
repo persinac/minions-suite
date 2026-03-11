@@ -6,8 +6,7 @@ import json
 import logging
 import time
 from collections import deque
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 from ..connectors.nats_client import NatsClient
 from ..core.models import SubtaskStatus, TaskStatus, _now
@@ -26,7 +25,7 @@ class Arbiter:
         self.db = db
         self.timeout_config = timeout_config
         self.nats_client = nats_client
-        self._monitor_task: Optional[asyncio.Task] = None
+        self._monitor_task: asyncio.Task | None = None
         self._running = False
 
         # Circuit breaker state (in-memory)
@@ -128,7 +127,7 @@ class Arbiter:
         await self.db.update_job_status(job_id, to_status, error=kwargs.get("error"))
         return {"approved": True, "entity_type": "job", "entity_id": job_id, "to_status": to_status}
 
-    async def _apply_task_transition(self, task_id: str, to_status: str, kwargs: dict, job_id: Optional[str] = None) -> dict:
+    async def _apply_task_transition(self, task_id: str, to_status: str, kwargs: dict, job_id: str | None = None) -> dict:
         """Apply a task state transition."""
         update_kwargs = {"status": to_status}
         for key in ("pr_number", "pr_url", "review_status", "deploy_status", "error", "agent_role"):
@@ -161,7 +160,7 @@ class Arbiter:
         """Handle a heartbeat message from an agent."""
         try:
             payload = json.loads(msg.data.decode("utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError):
+        except json.JSONDecodeError, UnicodeDecodeError:
             return
 
         agent_id = payload.get("agent_id", "")
@@ -231,9 +230,9 @@ class Arbiter:
             try:
                 started = datetime.fromisoformat(subtask.started_at)
                 if started.tzinfo is None:
-                    started = started.replace(tzinfo=timezone.utc)
+                    started = started.replace(tzinfo=UTC)
                 elapsed = now - started.timestamp()
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 continue
 
             # Look up task to get agent_role for timeout config

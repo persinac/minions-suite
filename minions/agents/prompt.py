@@ -10,17 +10,16 @@ Prompts are built by layering:
 
 import logging
 from pathlib import Path
-from typing import Optional
 
 from ..core.models import Job, Task
-from ..project_registry import ProjectConfig, ReviewProfile, ServiceTarget, infer_profile
+from ..project_registry import ProjectConfig, ServiceTarget, infer_profile
 
 logger = logging.getLogger(__name__)
 
 PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 
 
-def _load(relative_path: str) -> Optional[str]:
+def _load(relative_path: str) -> str | None:
     """Load a prompt file relative to the prompts directory."""
     path = PROMPTS_DIR / relative_path
     if not path.exists():
@@ -89,9 +88,7 @@ def _build_review_context(
 
     auto_approve_note = ""
     if project.auto_approve_paths:
-        auto_approve_note = (
-            f"\n- Auto-approve paths (approve quickly if ONLY these changed): {', '.join(project.auto_approve_paths)}"
-        )
+        auto_approve_note = f"\n- Auto-approve paths (approve quickly if ONLY these changed): {', '.join(project.auto_approve_paths)}"
 
     files_list = "\n".join(f"  - {f}" for f in changed_files[:50])
     if len(changed_files) > 50:
@@ -101,8 +98,8 @@ def _build_review_context(
 
 - Task ID: `{task.id}`
 - Project: `{project.name}` ({project.git_provider})
-- MR/PR: {task.mr_url or 'N/A'}
-- MR ID: {task.mr_id or 'N/A'}{ignore_note}{auto_approve_note}
+- MR/PR: {task.mr_url or "N/A"}
+- MR ID: {task.mr_id or "N/A"}{ignore_note}{auto_approve_note}
 
 ### Changed Files
 {files_list}"""
@@ -138,9 +135,9 @@ _ROLE_TO_LANGUAGE: dict[str, str] = {
 def build_agent_prompt(
     job: Job,
     task: Task,
-    project: Optional[ProjectConfig] = None,
-    service: Optional[ServiceTarget] = None,
-    context: Optional[str] = None,
+    project: ProjectConfig | None = None,
+    service: ServiceTarget | None = None,
+    context: str | None = None,
 ) -> str:
     """Assemble a prompt for a job orchestration agent.
 
@@ -186,8 +183,8 @@ def build_agent_prompt(
 def _build_task_context(
     job: Job,
     task: Task,
-    project: Optional[ProjectConfig] = None,
-    service: Optional[ServiceTarget] = None,
+    project: ProjectConfig | None = None,
+    service: ServiceTarget | None = None,
 ) -> str:
     """Build the runtime context section for an agent prompt."""
     lines = [

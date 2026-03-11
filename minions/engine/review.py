@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-async def launch_review_tasks(engine: "JobEngine", job: Job):
+async def launch_review_tasks(engine: JobEngine, job: Job):
     """Launch CODE_REVIEWER tasks for a review-type job."""
     pending_tasks = await engine.db.get_tasks_by_status(job.id, TaskStatus.PENDING)
     review_tasks = [t for t in pending_tasks if t.agent_role == AgentRole.CODE_REVIEWER]
@@ -30,7 +30,7 @@ async def launch_review_tasks(engine: "JobEngine", job: Job):
         engine._spawn(run_review_in_process(engine, job, task), name=f"review-{task.id[:8]}")
 
 
-async def run_review_in_process(engine: "JobEngine", job: Job, task: Task):
+async def run_review_in_process(engine: JobEngine, job: Job, task: Task):
     """Run a single review task in-process using the unified agent loop."""
 
     # Resolve project config
@@ -108,7 +108,9 @@ async def run_review_in_process(engine: "JobEngine", job: Job, task: Task):
             logger.warning("Could not mark review task %s as done: %s", task.id, e)
 
         await engine.db.record_event(
-            job.id, "review_complete", "engine",
+            job.id,
+            "review_complete",
+            "engine",
             f"task={task.id} verdict={verdict} comments={comments_posted}",
         )
         await engine._nats_agent_status(job.id, agent.id, "code_reviewer", "completed")
@@ -121,7 +123,7 @@ async def run_review_in_process(engine: "JobEngine", job: Job, task: Task):
         await engine._nats_agent_status(job.id, agent.id, "code_reviewer", "failed")
 
 
-async def check_review_tasks(engine: "JobEngine", job: Job):
+async def check_review_tasks(engine: JobEngine, job: Job):
     """Check if all review tasks are terminal and advance the job."""
     tasks = await engine.db.get_tasks(job.id)
     review_tasks = [t for t in tasks if t.agent_role == AgentRole.CODE_REVIEWER]

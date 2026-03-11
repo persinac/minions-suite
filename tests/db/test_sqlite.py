@@ -334,10 +334,7 @@ class TestSubtaskCrud:
     async def test_create_subtasks_batch(self, db, sample_job, make_task):
         task = make_task(sample_job.id)
         await db.create_task(task)
-        subtasks = [
-            Subtask(task_id=task.id, sequence_num=i, description=f"Step {i}")
-            for i in range(1, 4)
-        ]
+        subtasks = [Subtask(task_id=task.id, sequence_num=i, description=f"Step {i}") for i in range(1, 4)]
         created = await db.create_subtasks_batch(subtasks)
         assert len(created) == 3
 

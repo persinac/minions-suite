@@ -1,11 +1,8 @@
 """Tests for engine/dev.py — task lifecycle after agent completion."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
-from minions.core.models import Agent, AgentRole, Job, JobStatus, Subtask, SubtaskStatus, Task, TaskStatus
-
+from minions.core.models import Agent, AgentRole, Job, JobStatus, Subtask, Task, TaskStatus
 
 # ---------------------------------------------------------------------------
 # Helpers

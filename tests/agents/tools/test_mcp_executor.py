@@ -47,13 +47,24 @@ class TestStateToolInjections:
 
     def test_all_state_tools_in_map(self):
         expected_tools = {
-            "submit_refined_spec", "create_task", "mark_tasks_created", "mark_phases_created",
-            "create_phase_card", "create_trello_tech_debt",
-            "update_task_status", "report_pr", "report_deploy_status",
-            "submit_subtask_plan", "get_subtasks",
-            "start_subtask", "complete_subtask", "fail_subtask",
-            "send_message", "send_heartbeat",
-            "get_messages", "get_job_status",
+            "submit_refined_spec",
+            "create_task",
+            "mark_tasks_created",
+            "mark_phases_created",
+            "create_phase_card",
+            "create_trello_tech_debt",
+            "update_task_status",
+            "report_pr",
+            "report_deploy_status",
+            "submit_subtask_plan",
+            "get_subtasks",
+            "start_subtask",
+            "complete_subtask",
+            "fail_subtask",
+            "send_message",
+            "send_heartbeat",
+            "get_messages",
+            "get_job_status",
             "report_review_complete",
         }
         assert expected_tools == set(_STATE_TOOL_INJECTIONS.keys())
@@ -61,8 +72,7 @@ class TestStateToolInjections:
 
 class TestLocalTools:
     def test_expected_local_tools(self):
-        expected = {"read_file", "write_file", "run_command", "search_code",
-                    "create_branch", "commit", "push", "create_pr", "check_ci_status"}
+        expected = {"read_file", "write_file", "run_command", "search_code", "create_branch", "commit", "push", "create_pr", "check_ci_status"}
         assert expected == _LOCAL_TOOLS
 
 

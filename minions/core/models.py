@@ -1,9 +1,8 @@
 """Pydantic models and enums for job orchestration and agent management."""
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -96,31 +95,31 @@ def _short_id() -> str:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class Agent(BaseModel):
     """Tracks a single agent invocation (LLM call session)."""
 
     id: str = Field(default_factory=_short_id)
-    review_id: Optional[str] = None
+    review_id: str | None = None
     model: str
     status: str = "starting"
     started_at: str = Field(default_factory=_now)
-    finished_at: Optional[str] = None
+    finished_at: str | None = None
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_creation_tokens: int = 0
     cost_usd: float = 0.0
     num_turns: int = 0
-    log_file: Optional[str] = None
-    error: Optional[str] = None
+    log_file: str | None = None
+    error: str | None = None
     # Job orchestration fields (optional, used when agent is part of a job)
-    job_id: Optional[str] = None
-    role: Optional[AgentRole] = None
-    task_id: Optional[str] = None
-    k8s_job_name: Optional[str] = None
+    job_id: str | None = None
+    role: AgentRole | None = None
+    task_id: str | None = None
+    k8s_job_name: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -135,9 +134,9 @@ class Job(BaseModel):
     spec: str = Field(..., description="The feature specification text")
     status: JobStatus = JobStatus.SPEC_RECEIVED
     job_type: str = Field(default="development", description="Job type: 'development' or 'review'")
-    mr_url: Optional[str] = Field(default=None, description="MR/PR URL (for review jobs)")
-    error: Optional[str] = None
-    external_id: Optional[str] = None
+    mr_url: str | None = Field(default=None, description="MR/PR URL (for review jobs)")
+    error: str | None = None
+    external_id: str | None = None
     created_at: str = Field(default_factory=_now)
     updated_at: str = Field(default_factory=_now)
 
@@ -152,19 +151,19 @@ class Task(BaseModel):
     service: str = Field(..., description="Target service name")
     agent_role: AgentRole = Field(..., description="Which agent role handles this")
     status: TaskStatus = TaskStatus.PENDING
-    branch_name: Optional[str] = None
-    pr_number: Optional[int] = None
-    pr_url: Optional[str] = None
-    review_status: Optional[str] = None
-    deploy_status: Optional[str] = None
+    branch_name: str | None = None
+    pr_number: int | None = None
+    pr_url: str | None = None
+    review_status: str | None = None
+    deploy_status: str | None = None
     revision_count: int = 0
     attempt: int = 1
     max_attempts: int = 3
-    error: Optional[str] = None
+    error: str | None = None
     # Review task fields
-    mr_url: Optional[str] = Field(default=None, description="MR/PR URL (for review tasks)")
-    mr_id: Optional[str] = Field(default=None, description="MR/PR identifier (for review tasks)")
-    verdict: Optional[str] = Field(default=None, description="Review verdict: approve or request_changes")
+    mr_url: str | None = Field(default=None, description="MR/PR URL (for review tasks)")
+    mr_id: str | None = Field(default=None, description="MR/PR identifier (for review tasks)")
+    verdict: str | None = Field(default=None, description="Review verdict: approve or request_changes")
     comments_posted: int = Field(default=0, description="Number of inline comments posted")
     created_at: str = Field(default_factory=_now)
     updated_at: str = Field(default_factory=_now)
@@ -178,10 +177,10 @@ class Subtask(BaseModel):
     sequence_num: int = Field(..., description="Order within the parent task")
     description: str = Field(..., description="What this subtask does")
     status: SubtaskStatus = SubtaskStatus.PENDING
-    started_at: Optional[str] = None
-    completed_at: Optional[str] = None
-    result: Optional[dict] = None
-    error: Optional[str] = None
+    started_at: str | None = None
+    completed_at: str | None = None
+    result: dict | None = None
+    error: str | None = None
     created_at: str = Field(default_factory=_now)
 
 
@@ -191,6 +190,6 @@ class Message(BaseModel):
     id: str = Field(default_factory=_short_id)
     job_id: str
     from_role: AgentRole
-    to_role: Optional[AgentRole] = None
+    to_role: AgentRole | None = None
     content: str
     created_at: str = Field(default_factory=_now)

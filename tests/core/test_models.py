@@ -43,8 +43,7 @@ class TestEnums:
         assert set(SubtaskStatus) == {"pending", "running", "completed", "failed"}
 
     def test_agent_role_values(self):
-        expected = {"spec_analyst", "arbiter", "backend_engineer", "frontend_engineer",
-                    "database_engineer", "code_reviewer", "deploy_monitor"}
+        expected = {"spec_analyst", "arbiter", "backend_engineer", "frontend_engineer", "database_engineer", "code_reviewer", "deploy_monitor"}
         assert expected == {r.value for r in AgentRole}
 
     def test_orchestrator_is_arbiter_alias(self):
@@ -55,8 +54,7 @@ class TestEnums:
         assert set(RiskLevel) == {"patch", "minor", "major", "unknown"}
 
     def test_task_review_status_values(self):
-        expected = {"pending_review", "approved", "changes_requested",
-                    "revision_in_progress", "revision_complete"}
+        expected = {"pending_review", "approved", "changes_requested", "revision_in_progress", "revision_complete"}
         assert expected == {s.value for s in TaskReviewStatus}
 
     def test_str_enum_string_coercion(self):
@@ -141,7 +139,9 @@ class TestTask:
 
     def test_review_task_fields(self):
         t = Task(
-            job_id="j1", title="Review", service="api",
+            job_id="j1",
+            title="Review",
+            service="api",
             agent_role=AgentRole.CODE_REVIEWER,
             mr_url="https://example.com/mr/1",
             mr_id="1",

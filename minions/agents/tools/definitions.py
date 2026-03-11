@@ -318,55 +318,98 @@ def _fn(name: str, description: str, params: dict | None = None) -> dict[str, An
 _HEARTBEAT_TOOL = _fn("send_heartbeat", "Send a heartbeat to indicate the agent is still working.")
 
 _SUBTASK_TOOLS = [
-    _fn("submit_subtask_plan", "Submit a plan of subtasks for the current task.", {
-        "subtasks": {"type": "array", "items": {"type": "object", "properties": {
-            "description": {"type": "string"},
-        }}, "description": "List of subtask descriptions in order."},
-    }),
-    _fn("start_subtask", "Mark a subtask as started.", {
-        "subtask_id": {"type": "string", "description": "Subtask ID to start."},
-    }),
-    _fn("complete_subtask", "Mark a subtask as completed.", {
-        "subtask_id": {"type": "string", "description": "Subtask ID to complete."},
-        "result": {"type": "string", "description": "Summary of what was accomplished."},
-    }),
-    _fn("fail_subtask", "Mark a subtask as failed.", {
-        "subtask_id": {"type": "string", "description": "Subtask ID that failed."},
-        "error": {"type": "string", "description": "Error message."},
-    }),
+    _fn(
+        "submit_subtask_plan",
+        "Submit a plan of subtasks for the current task.",
+        {
+            "subtasks": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "description": {"type": "string"},
+                    },
+                },
+                "description": "List of subtask descriptions in order.",
+            },
+        },
+    ),
+    _fn(
+        "start_subtask",
+        "Mark a subtask as started.",
+        {
+            "subtask_id": {"type": "string", "description": "Subtask ID to start."},
+        },
+    ),
+    _fn(
+        "complete_subtask",
+        "Mark a subtask as completed.",
+        {
+            "subtask_id": {"type": "string", "description": "Subtask ID to complete."},
+            "result": {"type": "string", "description": "Summary of what was accomplished."},
+        },
+    ),
+    _fn(
+        "fail_subtask",
+        "Mark a subtask as failed.",
+        {
+            "subtask_id": {"type": "string", "description": "Subtask ID that failed."},
+            "error": {"type": "string", "description": "Error message."},
+        },
+    ),
     _fn("get_subtasks", "Get all subtasks for the current task."),
 ]
 
-_SEND_MESSAGE_TOOL = _fn("send_message", "Send a message to another agent.", {
-    "to_role": {"type": "string", "description": "Target agent role (or null for broadcast)."},
-    "content": {"type": "string", "description": "Message content."},
-})
+_SEND_MESSAGE_TOOL = _fn(
+    "send_message",
+    "Send a message to another agent.",
+    {
+        "to_role": {"type": "string", "description": "Target agent role (or null for broadcast)."},
+        "content": {"type": "string", "description": "Message content."},
+    },
+)
 
-_UPDATE_TASK_STATUS_TOOL = _fn("update_task_status", "Update the status of the current task.", {
-    "status": {"type": "string", "description": "New task status."},
-    "error": {"type": "string", "description": "Error message (if failing)."},
-})
+_UPDATE_TASK_STATUS_TOOL = _fn(
+    "update_task_status",
+    "Update the status of the current task.",
+    {
+        "status": {"type": "string", "description": "New task status."},
+        "error": {"type": "string", "description": "Error message (if failing)."},
+    },
+)
 
 # Spec analyst tools (only refines spec, does NOT create tasks)
 SPEC_ANALYST_TOOL_DEFINITIONS: list[dict[str, Any]] = [
-    _fn("submit_refined_spec", "Submit the refined and analyzed specification.", {
-        "spec": {"type": "string", "description": "The refined specification text."},
-    }),
+    _fn(
+        "submit_refined_spec",
+        "Submit the refined and analyzed specification.",
+        {
+            "spec": {"type": "string", "description": "The refined specification text."},
+        },
+    ),
     _SEND_MESSAGE_TOOL,
     _HEARTBEAT_TOOL,
 ]
 
 # Arbiter tools (creates tasks and coordinates)
 ARBITER_TOOL_DEFINITIONS: list[dict[str, Any]] = [
-    _fn("submit_refined_spec", "Submit the refined and analyzed specification.", {
-        "spec": {"type": "string", "description": "The refined specification text."},
-    }),
-    _fn("create_task", "Create a new task for the job.", {
-        "title": {"type": "string", "description": "Short task title."},
-        "description": {"type": "string", "description": "Detailed task description."},
-        "service": {"type": "string", "description": "Target service name."},
-        "agent_role": {"type": "string", "description": "Agent role to handle this task."},
-    }),
+    _fn(
+        "submit_refined_spec",
+        "Submit the refined and analyzed specification.",
+        {
+            "spec": {"type": "string", "description": "The refined specification text."},
+        },
+    ),
+    _fn(
+        "create_task",
+        "Create a new task for the job.",
+        {
+            "title": {"type": "string", "description": "Short task title."},
+            "description": {"type": "string", "description": "Detailed task description."},
+            "service": {"type": "string", "description": "Target service name."},
+            "agent_role": {"type": "string", "description": "Agent role to handle this task."},
+        },
+    ),
     _fn("mark_tasks_created", "Signal that all tasks have been created for this spec."),
     _SEND_MESSAGE_TOOL,
     _HEARTBEAT_TOOL,
@@ -374,43 +417,79 @@ ARBITER_TOOL_DEFINITIONS: list[dict[str, Any]] = [
 
 # Engineer tools
 ENGINEER_TOOL_DEFINITIONS: list[dict[str, Any]] = [
-    _fn("read_file", "Read a file from the repository.", {
-        "path": {"type": "string", "description": "File path relative to repo root."},
-        "start_line": {"type": "integer", "description": "Start line (1-indexed, optional)."},
-        "end_line": {"type": "integer", "description": "End line (inclusive, optional)."},
-    }),
-    _fn("write_file", "Write content to a file.", {
-        "path": {"type": "string", "description": "File path relative to repo root."},
-        "content": {"type": "string", "description": "File content to write."},
-    }),
-    _fn("run_command", "Run a shell command in the working directory.", {
-        "command": {"type": "string", "description": "Shell command to execute."},
-        "timeout": {"type": "integer", "description": "Timeout in seconds (default 60)."},
-    }),
-    _fn("search_code", "Search the repository for a regex pattern.", {
-        "pattern": {"type": "string", "description": "Regex pattern to search."},
-        "glob": {"type": "string", "description": "File glob filter (optional)."},
-    }),
-    _fn("create_branch", "Create and checkout a new git branch.", {
-        "branch_name": {"type": "string", "description": "Branch name to create."},
-    }),
-    _fn("commit", "Stage and commit changes.", {
-        "message": {"type": "string", "description": "Commit message."},
-        "files": {"type": "array", "items": {"type": "string"}, "description": "Files to stage (empty = all)."},
-    }),
-    _fn("push", "Push the current branch to remote.", {
-        "branch_name": {"type": "string", "description": "Branch name to push."},
-    }),
-    _fn("create_pr", "Create a pull request.", {
-        "title": {"type": "string", "description": "PR title."},
-        "body": {"type": "string", "description": "PR description."},
-        "base": {"type": "string", "description": "Base branch (default: main)."},
-    }),
-    _fn("report_pr", "Report that a PR has been created for the current task.", {
-        "pr_url": {"type": "string", "description": "URL of the created PR."},
-        "pr_number": {"type": "integer", "description": "PR number."},
-        "branch_name": {"type": "string", "description": "Branch name."},
-    }),
+    _fn(
+        "read_file",
+        "Read a file from the repository.",
+        {
+            "path": {"type": "string", "description": "File path relative to repo root."},
+            "start_line": {"type": "integer", "description": "Start line (1-indexed, optional)."},
+            "end_line": {"type": "integer", "description": "End line (inclusive, optional)."},
+        },
+    ),
+    _fn(
+        "write_file",
+        "Write content to a file.",
+        {
+            "path": {"type": "string", "description": "File path relative to repo root."},
+            "content": {"type": "string", "description": "File content to write."},
+        },
+    ),
+    _fn(
+        "run_command",
+        "Run a shell command in the working directory.",
+        {
+            "command": {"type": "string", "description": "Shell command to execute."},
+            "timeout": {"type": "integer", "description": "Timeout in seconds (default 60)."},
+        },
+    ),
+    _fn(
+        "search_code",
+        "Search the repository for a regex pattern.",
+        {
+            "pattern": {"type": "string", "description": "Regex pattern to search."},
+            "glob": {"type": "string", "description": "File glob filter (optional)."},
+        },
+    ),
+    _fn(
+        "create_branch",
+        "Create and checkout a new git branch.",
+        {
+            "branch_name": {"type": "string", "description": "Branch name to create."},
+        },
+    ),
+    _fn(
+        "commit",
+        "Stage and commit changes.",
+        {
+            "message": {"type": "string", "description": "Commit message."},
+            "files": {"type": "array", "items": {"type": "string"}, "description": "Files to stage (empty = all)."},
+        },
+    ),
+    _fn(
+        "push",
+        "Push the current branch to remote.",
+        {
+            "branch_name": {"type": "string", "description": "Branch name to push."},
+        },
+    ),
+    _fn(
+        "create_pr",
+        "Create a pull request.",
+        {
+            "title": {"type": "string", "description": "PR title."},
+            "body": {"type": "string", "description": "PR description."},
+            "base": {"type": "string", "description": "Base branch (default: main)."},
+        },
+    ),
+    _fn(
+        "report_pr",
+        "Report that a PR has been created for the current task.",
+        {
+            "pr_url": {"type": "string", "description": "URL of the created PR."},
+            "pr_number": {"type": "integer", "description": "PR number."},
+            "branch_name": {"type": "string", "description": "Branch name."},
+        },
+    ),
     *_SUBTASK_TOOLS,
     _UPDATE_TASK_STATUS_TOOL,
     _HEARTBEAT_TOOL,
@@ -418,38 +497,70 @@ ENGINEER_TOOL_DEFINITIONS: list[dict[str, Any]] = [
 
 # Database engineer tools (no subtask decomposition, no PR workflow)
 DB_ENGINEER_TOOL_DEFINITIONS: list[dict[str, Any]] = [
-    _fn("read_file", "Read a file from the repository.", {
-        "path": {"type": "string", "description": "File path relative to repo root."},
-        "start_line": {"type": "integer", "description": "Start line (1-indexed, optional)."},
-        "end_line": {"type": "integer", "description": "End line (inclusive, optional)."},
-    }),
-    _fn("write_file", "Write content to a file.", {
-        "path": {"type": "string", "description": "File path relative to repo root."},
-        "content": {"type": "string", "description": "File content to write."},
-    }),
-    _fn("run_command", "Run a shell command in the working directory.", {
-        "command": {"type": "string", "description": "Shell command to execute."},
-        "timeout": {"type": "integer", "description": "Timeout in seconds (default 60)."},
-    }),
-    _fn("search_code", "Search the repository for a regex pattern.", {
-        "pattern": {"type": "string", "description": "Regex pattern to search."},
-        "glob": {"type": "string", "description": "File glob filter (optional)."},
-    }),
-    _fn("create_branch", "Create and checkout a new git branch.", {
-        "branch_name": {"type": "string", "description": "Branch name to create."},
-    }),
-    _fn("commit", "Stage and commit changes.", {
-        "message": {"type": "string", "description": "Commit message."},
-        "files": {"type": "array", "items": {"type": "string"}, "description": "Files to stage (empty = all)."},
-    }),
-    _fn("push", "Push the current branch to remote.", {
-        "branch_name": {"type": "string", "description": "Branch name to push."},
-    }),
-    _fn("report_pr", "Report that a PR has been created for the current task.", {
-        "pr_url": {"type": "string", "description": "URL of the created PR."},
-        "pr_number": {"type": "integer", "description": "PR number."},
-        "branch_name": {"type": "string", "description": "Branch name."},
-    }),
+    _fn(
+        "read_file",
+        "Read a file from the repository.",
+        {
+            "path": {"type": "string", "description": "File path relative to repo root."},
+            "start_line": {"type": "integer", "description": "Start line (1-indexed, optional)."},
+            "end_line": {"type": "integer", "description": "End line (inclusive, optional)."},
+        },
+    ),
+    _fn(
+        "write_file",
+        "Write content to a file.",
+        {
+            "path": {"type": "string", "description": "File path relative to repo root."},
+            "content": {"type": "string", "description": "File content to write."},
+        },
+    ),
+    _fn(
+        "run_command",
+        "Run a shell command in the working directory.",
+        {
+            "command": {"type": "string", "description": "Shell command to execute."},
+            "timeout": {"type": "integer", "description": "Timeout in seconds (default 60)."},
+        },
+    ),
+    _fn(
+        "search_code",
+        "Search the repository for a regex pattern.",
+        {
+            "pattern": {"type": "string", "description": "Regex pattern to search."},
+            "glob": {"type": "string", "description": "File glob filter (optional)."},
+        },
+    ),
+    _fn(
+        "create_branch",
+        "Create and checkout a new git branch.",
+        {
+            "branch_name": {"type": "string", "description": "Branch name to create."},
+        },
+    ),
+    _fn(
+        "commit",
+        "Stage and commit changes.",
+        {
+            "message": {"type": "string", "description": "Commit message."},
+            "files": {"type": "array", "items": {"type": "string"}, "description": "Files to stage (empty = all)."},
+        },
+    ),
+    _fn(
+        "push",
+        "Push the current branch to remote.",
+        {
+            "branch_name": {"type": "string", "description": "Branch name to push."},
+        },
+    ),
+    _fn(
+        "report_pr",
+        "Report that a PR has been created for the current task.",
+        {
+            "pr_url": {"type": "string", "description": "URL of the created PR."},
+            "pr_number": {"type": "integer", "description": "PR number."},
+            "branch_name": {"type": "string", "description": "Branch name."},
+        },
+    ),
     _SEND_MESSAGE_TOOL,
     _UPDATE_TASK_STATUS_TOOL,
     _HEARTBEAT_TOOL,
@@ -457,13 +568,21 @@ DB_ENGINEER_TOOL_DEFINITIONS: list[dict[str, Any]] = [
 
 # Deploy monitor tools
 DEPLOY_TOOL_DEFINITIONS: list[dict[str, Any]] = [
-    _fn("check_ci_status", "Check the CI/CD pipeline status.", {
-        "pr_url": {"type": "string", "description": "PR URL to check CI for."},
-    }),
-    _fn("report_deploy_status", "Report the deployment status.", {
-        "status": {"type": "string", "description": "Deploy status: deploying, deployed, failed."},
-        "detail": {"type": "string", "description": "Status details."},
-    }),
+    _fn(
+        "check_ci_status",
+        "Check the CI/CD pipeline status.",
+        {
+            "pr_url": {"type": "string", "description": "PR URL to check CI for."},
+        },
+    ),
+    _fn(
+        "report_deploy_status",
+        "Report the deployment status.",
+        {
+            "status": {"type": "string", "description": "Deploy status: deploying, deployed, failed."},
+            "detail": {"type": "string", "description": "Status details."},
+        },
+    ),
     *_SUBTASK_TOOLS,
     _SEND_MESSAGE_TOOL,
     _UPDATE_TASK_STATUS_TOOL,
@@ -474,10 +593,14 @@ DEPLOY_TOOL_DEFINITIONS: list[dict[str, Any]] = [
 # Code reviewer tools for job orchestration (extends REVIEW_TOOL_DEFINITIONS with state tools)
 CODE_REVIEWER_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     *REVIEW_TOOL_DEFINITIONS,
-    _fn("report_review_complete", "Report that a PR review is complete.", {
-        "verdict": {"type": "string", "enum": ["approved", "changes_requested"], "description": "Review verdict."},
-        "feedback": {"type": "string", "description": "Review feedback summary."},
-    }),
+    _fn(
+        "report_review_complete",
+        "Report that a PR review is complete.",
+        {
+            "verdict": {"type": "string", "enum": ["approved", "changes_requested"], "description": "Review verdict."},
+            "feedback": {"type": "string", "description": "Review feedback summary."},
+        },
+    ),
     _SEND_MESSAGE_TOOL,
     _fn("get_messages", "Get messages sent to this agent."),
     _UPDATE_TASK_STATUS_TOOL,

@@ -7,8 +7,7 @@ and native K8s observability.
 
 import json
 import logging
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 from kubernetes_asyncio import client as k8s_client
 from kubernetes_asyncio import config as k8s_config
@@ -255,7 +254,9 @@ class K8sJobLauncher:
         try:
             try:
                 await batch_v1.delete_namespaced_job(
-                    name=job_name, namespace=self.namespace, propagation_policy="Background",
+                    name=job_name,
+                    namespace=self.namespace,
+                    propagation_policy="Background",
                 )
                 logger.info("Deleted K8s Job: %s", job_name)
             except k8s_client.ApiException as e:
@@ -278,7 +279,7 @@ class K8sJobLauncher:
         batch_v1 = k8s_client.BatchV1Api()
         core_v1 = k8s_client.CoreV1Api()
         deleted = 0
-        cutoff = datetime.now(timezone.utc)
+        cutoff = datetime.now(UTC)
 
         try:
             jobs = await batch_v1.list_namespaced_job(
@@ -304,7 +305,9 @@ class K8sJobLauncher:
                 job_name = job.metadata.name
                 try:
                     await batch_v1.delete_namespaced_job(
-                        name=job_name, namespace=self.namespace, propagation_policy="Background",
+                        name=job_name,
+                        namespace=self.namespace,
+                        propagation_policy="Background",
                     )
                     deleted += 1
                 except k8s_client.ApiException:
@@ -342,14 +345,16 @@ class K8sJobLauncher:
                 elif job.status.active and job.status.active > 0:
                     status = "running"
 
-                result.append({
-                    "name": job.metadata.name,
-                    "status": status,
-                    "role": job.metadata.labels.get("minion-suite/role", ""),
-                    "job_id": job.metadata.labels.get("minion-suite/job-id", ""),
-                    "agent_id": job.metadata.labels.get("minion-suite/agent-id", ""),
-                    "created": job.metadata.creation_timestamp.isoformat() if job.metadata.creation_timestamp else "",
-                })
+                result.append(
+                    {
+                        "name": job.metadata.name,
+                        "status": status,
+                        "role": job.metadata.labels.get("minion-suite/role", ""),
+                        "job_id": job.metadata.labels.get("minion-suite/job-id", ""),
+                        "agent_id": job.metadata.labels.get("minion-suite/agent-id", ""),
+                        "created": job.metadata.creation_timestamp.isoformat() if job.metadata.creation_timestamp else "",
+                    }
+                )
             return result
         finally:
             await batch_v1.api_client.close()

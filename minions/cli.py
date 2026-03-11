@@ -19,12 +19,11 @@ import asyncio
 import json
 import logging
 import re
-import signal
 import sys
 from pathlib import Path
 
 from .config import Config
-from .core.models import AgentRole, Job, JobStatus, TaskStatus
+from .core.models import Job, JobStatus, TaskStatus
 from .db import SQLiteDatabase
 
 logger = logging.getLogger("minions")
@@ -74,7 +73,6 @@ async def _run_one_shot(url: str, project_name: str, config: Config) -> int:
     from .agents.runner import run_agent
     from .engine.review import _create_provider_for_project
     from .project_registry import build_registry
-    from .providers.git import create_provider
 
     db = _create_db(config)
     await db.connect()
@@ -514,7 +512,7 @@ async def _run_agent_worker(config: Config) -> int:
     """K8s agent worker mode: pull work item, run LiteLLM loop, publish result."""
     import os
 
-    from .agents.dispatch import AgentResultMessage, deserialize_work_item, serialize_result
+    from .agents.dispatch import AgentResultMessage, deserialize_work_item
 
     work_item_path = os.getenv("AGENT_WORK_ITEM_PATH")
     if not work_item_path:
@@ -529,7 +527,7 @@ async def _run_agent_worker(config: Config) -> int:
     working_dir = os.getenv("AGENT_WORKING_DIR", work_item.working_dir)
 
     # Build a minimal Job and Task for the agent loop
-    from .core.models import AgentRole, Task
+    from .core.models import Task
 
     job = Job(id=work_item.job_id, spec="(loaded from work item)")
     task = Task(
@@ -572,12 +570,16 @@ async def _run_agent_worker(config: Config) -> int:
             logger.debug("Failed to publish NATS result", exc_info=True)
 
     # Write result to stdout for K8s log collection
-    print(json.dumps({
-        "agent_id": result_msg.agent_id,
-        "success": result_msg.success,
-        "cost_usd": result_msg.cost_usd,
-        "num_turns": result_msg.num_turns,
-    }))
+    print(
+        json.dumps(
+            {
+                "agent_id": result_msg.agent_id,
+                "success": result_msg.success,
+                "cost_usd": result_msg.cost_usd,
+                "num_turns": result_msg.num_turns,
+            }
+        )
+    )
 
     return 0 if result_msg.success else 1
 

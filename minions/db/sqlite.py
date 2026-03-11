@@ -2,7 +2,6 @@
 
 import json
 import logging
-from typing import List, Optional
 
 from ..core.models import (
     Agent,
@@ -164,7 +163,7 @@ class SQLiteDatabase:
         import aiosqlite
 
         self.db_path = db_path
-        self._db: Optional[aiosqlite.Connection] = None
+        self._db: aiosqlite.Connection | None = None
 
     async def connect(self) -> None:
         import aiosqlite
@@ -191,11 +190,23 @@ class SQLiteDatabase:
                cost_usd, num_turns, error, job_id, role, task_id, k8s_job_name)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                agent.id, agent.review_id, agent.model, agent.status, agent.started_at,
-                agent.log_file, agent.input_tokens, agent.output_tokens,
-                agent.cache_read_tokens, agent.cache_creation_tokens,
-                agent.cost_usd, agent.num_turns, agent.error,
-                agent.job_id, agent.role, agent.task_id, agent.k8s_job_name,
+                agent.id,
+                agent.review_id,
+                agent.model,
+                agent.status,
+                agent.started_at,
+                agent.log_file,
+                agent.input_tokens,
+                agent.output_tokens,
+                agent.cache_read_tokens,
+                agent.cache_creation_tokens,
+                agent.cost_usd,
+                agent.num_turns,
+                agent.error,
+                agent.job_id,
+                agent.role,
+                agent.task_id,
+                agent.k8s_job_name,
             ),
         )
         await self._db.commit()
@@ -209,14 +220,14 @@ class SQLiteDatabase:
         await self._db.execute(f"UPDATE agents SET {sets} WHERE id = ?", values)
         await self._db.commit()
 
-    async def get_agent(self, agent_id: str) -> Optional[Agent]:
+    async def get_agent(self, agent_id: str) -> Agent | None:
         cursor = await self._db.execute("SELECT * FROM agents WHERE id = ?", (agent_id,))
         row = await cursor.fetchone()
         if not row:
             return None
         return _row_to_agent(row)
 
-    async def get_agents_for_job(self, job_id: str) -> List[Agent]:
+    async def get_agents_for_job(self, job_id: str) -> list[Agent]:
         cursor = await self._db.execute(
             "SELECT * FROM agents WHERE job_id = ? ORDER BY started_at",
             (job_id,),
@@ -228,7 +239,7 @@ class SQLiteDatabase:
     # Stats
     # ===================================================================
 
-    async def get_cost_summary(self, project: Optional[str] = None, days: int = 30) -> dict:
+    async def get_cost_summary(self, project: str | None = None, days: int = 30) -> dict:
         base_query = """
             SELECT
                 COUNT(DISTINCT j.id) as total_reviews,
@@ -261,7 +272,7 @@ class SQLiteDatabase:
     # Jobs
     # ===================================================================
 
-    async def create_job(self, spec: str, external_id: Optional[str] = None) -> Job:
+    async def create_job(self, spec: str, external_id: str | None = None) -> Job:
         job = Job(spec=spec, external_id=external_id)
         await self._db.execute(
             "INSERT INTO jobs (id, spec, status, job_type, mr_url, created_at, updated_at, external_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -272,7 +283,7 @@ class SQLiteDatabase:
         await self.record_event(job.id, "job_created", "db", f"status={job.status}")
         return job
 
-    async def create_review_job(self, project: str, mr_url: str, mr_id: str, model: Optional[str] = None) -> tuple[Job, Task]:
+    async def create_review_job(self, project: str, mr_url: str, mr_id: str, model: str | None = None) -> tuple[Job, Task]:
         """Create a review-type job with a single CODE_REVIEWER task atomically."""
         job = Job(spec=mr_url, status=JobStatus.TASKS_CREATED, job_type="review", mr_url=mr_url)
         await self._db.execute(
@@ -295,12 +306,28 @@ class SQLiteDatabase:
                attempt, max_attempts, error, mr_url, mr_id, verdict, comments_posted, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                task.id, task.job_id, task.title, task.description, task.service,
-                task.agent_role, task.status, task.branch_name, task.pr_number,
-                task.pr_url, task.review_status, task.deploy_status,
-                task.revision_count, task.attempt, task.max_attempts, task.error,
-                task.mr_url, task.mr_id, task.verdict, task.comments_posted,
-                task.created_at, task.updated_at,
+                task.id,
+                task.job_id,
+                task.title,
+                task.description,
+                task.service,
+                task.agent_role,
+                task.status,
+                task.branch_name,
+                task.pr_number,
+                task.pr_url,
+                task.review_status,
+                task.deploy_status,
+                task.revision_count,
+                task.attempt,
+                task.max_attempts,
+                task.error,
+                task.mr_url,
+                task.mr_id,
+                task.verdict,
+                task.comments_posted,
+                task.created_at,
+                task.updated_at,
             ),
         )
         await self._db.commit()
@@ -308,25 +335,25 @@ class SQLiteDatabase:
         await self.record_event(job.id, "job_created", "db", f"type=review mr_url={mr_url}")
         return job, task
 
-    async def get_job(self, job_id: str) -> Optional[Job]:
+    async def get_job(self, job_id: str) -> Job | None:
         cursor = await self._db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
         row = await cursor.fetchone()
         if not row:
             return None
         return _row_to_job(row)
 
-    async def get_all_jobs(self) -> List[Job]:
+    async def get_all_jobs(self) -> list[Job]:
         cursor = await self._db.execute("SELECT * FROM jobs ORDER BY created_at DESC")
         rows = await cursor.fetchall()
         return [_row_to_job(r) for r in rows]
 
-    async def get_active_jobs(self) -> List[Job]:
+    async def get_active_jobs(self) -> list[Job]:
         terminal = (JobStatus.DONE, JobStatus.FAILED, JobStatus.NO_WORK_NEEDED)
         cursor = await self._db.execute("SELECT * FROM jobs WHERE status NOT IN (?, ?, ?)", terminal)
         rows = await cursor.fetchall()
         return [_row_to_job(r) for r in rows]
 
-    async def get_job_by_external_id(self, external_id: str) -> Optional[Job]:
+    async def get_job_by_external_id(self, external_id: str) -> Job | None:
         cursor = await self._db.execute("SELECT * FROM jobs WHERE external_id = ?", (external_id,))
         row = await cursor.fetchone()
         if not row:
@@ -342,7 +369,7 @@ class SQLiteDatabase:
         logger.info("Updated spec for job %s (%d chars)", job_id, len(spec))
         await self.record_event(job_id, "spec_refined", "db", f"spec_length={len(spec)}")
 
-    async def update_job_status(self, job_id: str, status: JobStatus, error: Optional[str] = None) -> None:
+    async def update_job_status(self, job_id: str, status: JobStatus, error: str | None = None) -> None:
         job = await self.get_job(job_id)
         if job:
             try:
@@ -390,12 +417,28 @@ class SQLiteDatabase:
                attempt, max_attempts, error, mr_url, mr_id, verdict, comments_posted, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                task.id, task.job_id, task.title, task.description, task.service,
-                task.agent_role, task.status, task.branch_name, task.pr_number,
-                task.pr_url, task.review_status, task.deploy_status,
-                task.revision_count, task.attempt, task.max_attempts, task.error,
-                task.mr_url, task.mr_id, task.verdict, task.comments_posted,
-                task.created_at, task.updated_at,
+                task.id,
+                task.job_id,
+                task.title,
+                task.description,
+                task.service,
+                task.agent_role,
+                task.status,
+                task.branch_name,
+                task.pr_number,
+                task.pr_url,
+                task.review_status,
+                task.deploy_status,
+                task.revision_count,
+                task.attempt,
+                task.max_attempts,
+                task.error,
+                task.mr_url,
+                task.mr_id,
+                task.verdict,
+                task.comments_posted,
+                task.created_at,
+                task.updated_at,
             ),
         )
         await self._db.commit()
@@ -403,19 +446,19 @@ class SQLiteDatabase:
         await self.record_event(task.job_id, "task_created", "db", f"task={task.id} title={task.title} service={task.service}")
         return task
 
-    async def get_task(self, task_id: str) -> Optional[Task]:
+    async def get_task(self, task_id: str) -> Task | None:
         cursor = await self._db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
         row = await cursor.fetchone()
         if not row:
             return None
         return _row_to_task(row)
 
-    async def get_tasks(self, job_id: str) -> List[Task]:
+    async def get_tasks(self, job_id: str) -> list[Task]:
         cursor = await self._db.execute("SELECT * FROM tasks WHERE job_id = ? ORDER BY created_at", (job_id,))
         rows = await cursor.fetchall()
         return [_row_to_task(r) for r in rows]
 
-    async def update_task(self, task_id: str, **kwargs) -> Optional[Task]:
+    async def update_task(self, task_id: str, **kwargs) -> Task | None:
         requesting_role = kwargs.pop("agent_role", None)
 
         if "status" in kwargs:
@@ -445,7 +488,7 @@ class SQLiteDatabase:
             await self.record_event(task.job_id, "task_status_changed", "db", f"task={task_id} status={kwargs['status']}")
         return task
 
-    async def get_tasks_by_status(self, job_id: str, status: TaskStatus) -> List[Task]:
+    async def get_tasks_by_status(self, job_id: str, status: TaskStatus) -> list[Task]:
         cursor = await self._db.execute("SELECT * FROM tasks WHERE job_id = ? AND status = ?", (job_id, status))
         rows = await cursor.fetchall()
         return [_row_to_task(r) for r in rows]
@@ -459,10 +502,16 @@ class SQLiteDatabase:
             """INSERT INTO subtasks (id, task_id, sequence_num, description, status, started_at, completed_at, result, error, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                subtask.id, subtask.task_id, subtask.sequence_num, subtask.description,
-                subtask.status, subtask.started_at, subtask.completed_at,
+                subtask.id,
+                subtask.task_id,
+                subtask.sequence_num,
+                subtask.description,
+                subtask.status,
+                subtask.started_at,
+                subtask.completed_at,
                 json.dumps(subtask.result) if subtask.result else None,
-                subtask.error, subtask.created_at,
+                subtask.error,
+                subtask.created_at,
             ),
         )
         await self._db.commit()
@@ -478,7 +527,7 @@ class SQLiteDatabase:
             results.append(await self.create_subtask(s))
         return results
 
-    async def get_subtask(self, subtask_id: str) -> Optional[Subtask]:
+    async def get_subtask(self, subtask_id: str) -> Subtask | None:
         cursor = await self._db.execute("SELECT * FROM subtasks WHERE id = ?", (subtask_id,))
         row = await cursor.fetchone()
         if not row:
@@ -490,7 +539,7 @@ class SQLiteDatabase:
         rows = await cursor.fetchall()
         return [_row_to_subtask(r) for r in rows]
 
-    async def update_subtask(self, subtask_id: str, **kwargs) -> Optional[Subtask]:
+    async def update_subtask(self, subtask_id: str, **kwargs) -> Subtask | None:
         if "status" in kwargs:
             current = await self.get_subtask(subtask_id)
             if current:
@@ -534,7 +583,7 @@ class SQLiteDatabase:
         await self._db.commit()
         return msg
 
-    async def get_messages(self, job_id: str, role: Optional[AgentRole] = None) -> List[Message]:
+    async def get_messages(self, job_id: str, role: AgentRole | None = None) -> list[Message]:
         if role:
             cursor = await self._db.execute(
                 "SELECT * FROM messages WHERE job_id = ? AND (to_role = ? OR to_role IS NULL) ORDER BY created_at",
@@ -552,7 +601,7 @@ class SQLiteDatabase:
     # Events / Audit
     # ===================================================================
 
-    async def record_event(self, job_id: Optional[str], event_type: str, source: Optional[str] = None, detail: Optional[str] = None) -> None:
+    async def record_event(self, job_id: str | None, event_type: str, source: str | None = None, detail: str | None = None) -> None:
         try:
             await self._db.execute(
                 "INSERT INTO events (job_id, event_type, source, detail, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -562,7 +611,7 @@ class SQLiteDatabase:
         except Exception:
             logger.debug("Failed to record event %s", event_type, exc_info=True)
 
-    async def get_events(self, job_id: str) -> List[dict]:
+    async def get_events(self, job_id: str) -> list[dict]:
         cursor = await self._db.execute("SELECT * FROM events WHERE job_id = ? ORDER BY created_at", (job_id,))
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
@@ -570,11 +619,11 @@ class SQLiteDatabase:
     async def record_tool_call(
         self,
         tool_name: str,
-        params: Optional[dict] = None,
-        result: Optional[str] = None,
-        error: Optional[str] = None,
-        duration_ms: Optional[float] = None,
-        job_id: Optional[str] = None,
+        params: dict | None = None,
+        result: str | None = None,
+        error: str | None = None,
+        duration_ms: float | None = None,
+        job_id: str | None = None,
     ) -> None:
         await self._db.execute(
             "INSERT INTO tool_calls (job_id, tool_name, params, result, error, duration_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -582,12 +631,12 @@ class SQLiteDatabase:
         )
         await self._db.commit()
 
-    async def get_tool_calls(self, job_id: str) -> List[dict]:
+    async def get_tool_calls(self, job_id: str) -> list[dict]:
         cursor = await self._db.execute("SELECT * FROM tool_calls WHERE job_id = ? ORDER BY created_at", (job_id,))
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
 
-    async def get_job_timeline(self, job_id: str) -> List[dict]:
+    async def get_job_timeline(self, job_id: str) -> list[dict]:
         events = await self.get_events(job_id)
         tool_calls = await self.get_tool_calls(job_id)
 
@@ -622,8 +671,8 @@ class SQLiteDatabase:
         from_status: str,
         to_status: str,
         approved: bool,
-        rejection_reason: Optional[str] = None,
-        job_id: Optional[str] = None,
+        rejection_reason: str | None = None,
+        job_id: str | None = None,
     ) -> None:
         try:
             task_id = entity_id if entity_type == "task" else None
@@ -643,11 +692,18 @@ class SQLiteDatabase:
     # Heartbeats (no-op for SQLite — table only lives in Postgres)
     # ===================================================================
 
-    async def upsert_heartbeat(self, agent_id: str, agent_role: str, job_id: Optional[str] = None,
-                               task_id: Optional[str] = None, subtask_id: Optional[str] = None, status: str = "active") -> None:
+    async def upsert_heartbeat(
+        self,
+        agent_id: str,
+        agent_role: str,
+        job_id: str | None = None,
+        task_id: str | None = None,
+        subtask_id: str | None = None,
+        status: str = "active",
+    ) -> None:
         pass
 
-    async def get_stale_heartbeats(self, threshold_seconds: int) -> List[dict]:
+    async def get_stale_heartbeats(self, threshold_seconds: int) -> list[dict]:
         return []
 
     async def has_recent_heartbeat(self, task_id: str, threshold_seconds: int) -> bool:
@@ -663,14 +719,12 @@ class SQLiteDatabase:
     # Recovery
     # ===================================================================
 
-    async def get_running_agents(self) -> List[Agent]:
-        cursor = await self._db.execute(
-            "SELECT * FROM agents WHERE status IN ('starting', 'running') ORDER BY started_at"
-        )
+    async def get_running_agents(self) -> list[Agent]:
+        cursor = await self._db.execute("SELECT * FROM agents WHERE status IN ('starting', 'running') ORDER BY started_at")
         rows = await cursor.fetchall()
         return [_row_to_agent(r) for r in rows]
 
-    async def get_agent_for_task(self, task_id: str) -> Optional[Agent]:
+    async def get_agent_for_task(self, task_id: str) -> Agent | None:
         cursor = await self._db.execute(
             "SELECT * FROM agents WHERE task_id = ? ORDER BY started_at DESC LIMIT 1",
             (task_id,),
@@ -753,7 +807,12 @@ def _row_to_task(row) -> Task:
 def _row_to_subtask(row) -> Subtask:
     d = dict(row)
     if d.get("result") and isinstance(d["result"], str):
-        d["result"] = json.loads(d["result"])
+        try:
+            d["result"] = json.loads(d["result"])
+        except (json.JSONDecodeError, ValueError):
+            d["result"] = {"output": d["result"]}
+    if d.get("result") is not None and not isinstance(d["result"], dict):
+        d["result"] = {"output": d["result"]}
     return Subtask(
         id=d["id"],
         task_id=d["task_id"],

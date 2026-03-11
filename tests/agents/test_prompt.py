@@ -153,8 +153,7 @@ class TestBuildAgentPrompt:
 
 class TestRoleMappings:
     def test_all_roles_have_prompt_mapping(self):
-        expected_roles = {"spec_analyst", "arbiter", "backend_engineer", "frontend_engineer",
-                         "database_engineer", "code_reviewer", "deploy_monitor"}
+        expected_roles = {"spec_analyst", "arbiter", "backend_engineer", "frontend_engineer", "database_engineer", "code_reviewer", "deploy_monitor"}
         assert set(_ROLE_TO_PROMPT.keys()) == expected_roles
 
     def test_engineer_roles_share_prompt(self):

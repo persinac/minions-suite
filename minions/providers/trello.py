@@ -2,9 +2,8 @@
 
 import asyncio
 import logging
-import re
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 import httpx
 
@@ -32,11 +31,11 @@ class TrelloPoller:
         self.config = config
         self.db = db
         self._auth = {"key": config.trello_api_key, "token": config.trello_token}
-        self._client: Optional[httpx.AsyncClient] = None
-        self._list_ids: Dict[str, str] = {}
-        self._minion_label_id: Optional[str] = None
+        self._client: httpx.AsyncClient | None = None
+        self._list_ids: dict[str, str] = {}
+        self._minion_label_id: str | None = None
         self._running = False
-        self._active: Dict[str, Dict[str, Any]] = {}
+        self._active: dict[str, dict[str, Any]] = {}
 
     async def start(self):
         """Main polling loop."""
@@ -149,7 +148,7 @@ class TrelloPoller:
         resp = await self._api("POST", f"/cards/{card_id}/actions/comments", params={"text": text})
         resp.raise_for_status()
 
-    async def _api(self, method: str, path: str, params: Optional[dict] = None) -> httpx.Response:
+    async def _api(self, method: str, path: str, params: dict | None = None) -> httpx.Response:
         """Make an authenticated Trello API call."""
         url = f"{TRELLO_API}{path}"
         all_params = {**self._auth, **(params or {})}
@@ -172,7 +171,7 @@ class TrelloPoller:
 
         job = Job(spec=spec_text, external_id=card_id)
         job = await self.db.create_job(job)
-        started_at = datetime.now(timezone.utc).isoformat()
+        started_at = datetime.now(UTC).isoformat()
         self._active[card_id] = {
             "job_id": job.id,
             "started_at": started_at,
@@ -231,11 +230,11 @@ def _format_elapsed(started_at: str) -> str:
     """Format elapsed time from an ISO timestamp to now."""
     try:
         start = datetime.fromisoformat(started_at)
-        secs = int((datetime.now(timezone.utc) - start).total_seconds())
+        secs = int((datetime.now(UTC) - start).total_seconds())
         if secs < 60:
             return f"{secs}s"
         elif secs < 3600:
             return f"{secs // 60}m {secs % 60}s"
         return f"{secs // 3600}h {(secs % 3600) // 60}m"
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return "?"

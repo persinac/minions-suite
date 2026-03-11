@@ -93,7 +93,8 @@ async def _propose_transition(entity_type: str, entity_id: str, to_status: str, 
     )
     if not response.get("approved"):
         raise InvalidTransitionError(
-            entity_type, entity_id,
+            entity_type,
+            entity_id,
             response.get("from_status", "?"),
             to_status,
         )
@@ -127,14 +128,16 @@ def create_server(db: AbstractDatabase, config: Config | None = None) -> FastMCP
         tasks = await db.get_tasks(job_id)
         review_tasks = [t for t in tasks if t.agent_role == AgentRole.CODE_REVIEWER]
         task = review_tasks[0] if review_tasks else None
-        return json.dumps({
-            "job_id": job.id,
-            "status": str(job.status),
-            "mr_url": job.mr_url,
-            "verdict": task.verdict if task else None,
-            "comments_posted": task.comments_posted if task else 0,
-            "error": job.error,
-        })
+        return json.dumps(
+            {
+                "job_id": job.id,
+                "status": str(job.status),
+                "mr_url": job.mr_url,
+                "verdict": task.verdict if task else None,
+                "comments_posted": task.comments_posted if task else 0,
+                "error": job.error,
+            }
+        )
 
     @mcp.tool()
     async def get_review_history(project: str | None = None, limit: int = 20) -> str:
@@ -154,15 +157,17 @@ def create_server(db: AbstractDatabase, config: Config | None = None) -> FastMCP
         for j in review_jobs:
             tasks = await db.get_tasks(j.id)
             review_task = next((t for t in tasks if t.agent_role == AgentRole.CODE_REVIEWER), None)
-            results.append({
-                "job_id": j.id,
-                "project": review_task.service if review_task else "",
-                "mr_url": j.mr_url or "",
-                "status": str(j.status),
-                "verdict": review_task.verdict if review_task else None,
-                "comments_posted": review_task.comments_posted if review_task else 0,
-                "created_at": j.created_at,
-            })
+            results.append(
+                {
+                    "job_id": j.id,
+                    "project": review_task.service if review_task else "",
+                    "mr_url": j.mr_url or "",
+                    "status": str(j.status),
+                    "verdict": review_task.verdict if review_task else None,
+                    "comments_posted": review_task.comments_posted if review_task else 0,
+                    "created_at": j.created_at,
+                }
+            )
         return json.dumps(results)
 
     @mcp.tool()
@@ -204,22 +209,24 @@ def create_server(db: AbstractDatabase, config: Config | None = None) -> FastMCP
     async def get_agent_logs(job_id: str) -> str:
         """List agent invocations for a job with their metrics."""
         agents = await db.get_agents_for_job(job_id)
-        return json.dumps([
-            {
-                "id": a.id,
-                "model": a.model,
-                "status": a.status,
-                "input_tokens": a.input_tokens,
-                "output_tokens": a.output_tokens,
-                "cost_usd": a.cost_usd,
-                "num_turns": a.num_turns,
-                "log_file": a.log_file,
-                "started_at": a.started_at,
-                "finished_at": a.finished_at,
-                "error": a.error,
-            }
-            for a in agents
-        ])
+        return json.dumps(
+            [
+                {
+                    "id": a.id,
+                    "model": a.model,
+                    "status": a.status,
+                    "input_tokens": a.input_tokens,
+                    "output_tokens": a.output_tokens,
+                    "cost_usd": a.cost_usd,
+                    "num_turns": a.num_turns,
+                    "log_file": a.log_file,
+                    "started_at": a.started_at,
+                    "finished_at": a.finished_at,
+                    "error": a.error,
+                }
+                for a in agents
+            ]
+        )
 
     # =========================================================================
     # Job Management Tools
@@ -264,9 +271,9 @@ def create_server(db: AbstractDatabase, config: Config | None = None) -> FastMCP
         RESERVED_SERVICES = {"_spec", "_arbiter", "_worker"}
         if service.strip().lower() in RESERVED_SERVICES:
             logger.warning("create_task: rejected reserved service name '%s' for title='%s'", service, title)
-            return json.dumps({
-                "error": f"'{service}' is a reserved internal service name. Use a real service name from Available Services (e.g. 'api')."
-            })
+            return json.dumps(
+                {"error": f"'{service}' is a reserved internal service name. Use a real service name from Available Services (e.g. 'api')."}
+            )
 
         resolved_role = _resolve_role(agent_role)
         # Hard guard: database service must always use database_engineer
@@ -304,26 +311,28 @@ def create_server(db: AbstractDatabase, config: Config | None = None) -> FastMCP
         if not job:
             return json.dumps({"error": f"Job {job_id} not found"})
         tasks = await db.get_tasks(job_id)
-        return json.dumps({
-            "job_id": job.id,
-            "status": str(job.status),
-            "error": job.error,
-            "created_at": job.created_at,
-            "updated_at": job.updated_at,
-            "tasks": [
-                {
-                    "id": t.id,
-                    "title": t.title,
-                    "service": t.service,
-                    "agent_role": str(t.agent_role),
-                    "status": str(t.status),
-                    "pr_url": t.pr_url,
-                    "attempt": t.attempt,
-                    "error": t.error,
-                }
-                for t in tasks
-            ],
-        })
+        return json.dumps(
+            {
+                "job_id": job.id,
+                "status": str(job.status),
+                "error": job.error,
+                "created_at": job.created_at,
+                "updated_at": job.updated_at,
+                "tasks": [
+                    {
+                        "id": t.id,
+                        "title": t.title,
+                        "service": t.service,
+                        "agent_role": str(t.agent_role),
+                        "status": str(t.status),
+                        "pr_url": t.pr_url,
+                        "attempt": t.attempt,
+                        "error": t.error,
+                    }
+                    for t in tasks
+                ],
+            }
+        )
 
     # =========================================================================
     # Task Status Tools
@@ -365,17 +374,18 @@ def create_server(db: AbstractDatabase, config: Config | None = None) -> FastMCP
                 if not task:
                     return json.dumps({"error": f"Task {task_id} not found"})
                 await _propose_transition(
-                    "task", task_id, "pr_open",
+                    "task",
+                    task_id,
+                    "pr_open",
                     job_id=task.job_id,
-                    pr_url=pr_url, pr_number=pr_number,
+                    pr_url=pr_url,
+                    pr_number=pr_number,
                 )
                 # Update non-state fields directly (branch_name is not a state transition concern)
                 await db.update_task(task_id, branch_name=branch_name)
                 task = await db.get_task(task_id)
             else:
-                task = await db.update_task(
-                    task_id, pr_url=pr_url, pr_number=pr_number, branch_name=branch_name, status=TaskStatus.PR_OPEN
-                )
+                task = await db.update_task(task_id, pr_url=pr_url, pr_number=pr_number, branch_name=branch_name, status=TaskStatus.PR_OPEN)
             if not task:
                 return json.dumps({"error": f"Task {task_id} not found"})
 
@@ -404,9 +414,12 @@ def create_server(db: AbstractDatabase, config: Config | None = None) -> FastMCP
                 if not task:
                     return json.dumps({"error": f"Task {task_id} not found"})
                 await _propose_transition(
-                    "task", task_id, new_status,
+                    "task",
+                    task_id,
+                    new_status,
                     job_id=task.job_id,
-                    review_status=review_status, agent_role="code_reviewer",
+                    review_status=review_status,
+                    agent_role="code_reviewer",
                 )
                 task = await db.get_task(task_id)
             else:
@@ -467,9 +480,7 @@ def create_server(db: AbstractDatabase, config: Config | None = None) -> FastMCP
                 return json.dumps({"error": f"Task {task_id} not found"})
 
             if task.job_id:
-                await db.record_event(
-                    task.job_id, "deploy_status", "deploy_monitor", f"task={task_id} status={status} detail={detail or ''}"
-                )
+                await db.record_event(task.job_id, "deploy_status", "deploy_monitor", f"task={task_id} status={status} detail={detail or ''}")
 
             return json.dumps({"task_id": task_id, "deploy_status": status})
         except InvalidTransitionError as e:
@@ -519,9 +530,7 @@ def create_server(db: AbstractDatabase, config: Config | None = None) -> FastMCP
                 await _propose_transition("subtask", subtask_id, "completed", **kwargs)
                 subtask = await db.get_subtask(subtask_id)
             else:
-                subtask = await db.update_subtask(
-                    subtask_id, status=SubtaskStatus.COMPLETED, completed_at=_now(), result=result
-                )
+                subtask = await db.update_subtask(subtask_id, status=SubtaskStatus.COMPLETED, completed_at=_now(), result=result)
             if not subtask:
                 return json.dumps({"error": f"Subtask {subtask_id} not found"})
             return json.dumps({"subtask_id": subtask_id, "status": "completed"})
@@ -536,9 +545,7 @@ def create_server(db: AbstractDatabase, config: Config | None = None) -> FastMCP
                 await _propose_transition("subtask", subtask_id, "failed", error=error)
                 subtask = await db.get_subtask(subtask_id)
             else:
-                subtask = await db.update_subtask(
-                    subtask_id, status=SubtaskStatus.FAILED, completed_at=_now(), error=error
-                )
+                subtask = await db.update_subtask(subtask_id, status=SubtaskStatus.FAILED, completed_at=_now(), error=error)
             if not subtask:
                 return json.dumps({"error": f"Subtask {subtask_id} not found"})
             return json.dumps({"subtask_id": subtask_id, "status": "failed"})
@@ -549,19 +556,21 @@ def create_server(db: AbstractDatabase, config: Config | None = None) -> FastMCP
     async def get_subtasks(task_id: str) -> str:
         """Get all subtasks for a task, ordered by sequence number."""
         subtasks = await db.get_subtasks(task_id)
-        return json.dumps([
-            {
-                "id": s.id,
-                "seq": s.sequence_num,
-                "description": s.description,
-                "status": str(s.status),
-                "started_at": s.started_at,
-                "completed_at": s.completed_at,
-                "result": s.result,
-                "error": s.error,
-            }
-            for s in subtasks
-        ])
+        return json.dumps(
+            [
+                {
+                    "id": s.id,
+                    "seq": s.sequence_num,
+                    "description": s.description,
+                    "status": str(s.status),
+                    "started_at": s.started_at,
+                    "completed_at": s.completed_at,
+                    "result": s.result,
+                    "error": s.error,
+                }
+                for s in subtasks
+            ]
+        )
 
     # =========================================================================
     # Communication Tools
@@ -578,16 +587,18 @@ def create_server(db: AbstractDatabase, config: Config | None = None) -> FastMCP
     async def get_messages(job_id: str, role: str | None = None) -> str:
         """Get messages for a job, optionally filtered to a specific role."""
         messages = await db.get_messages(job_id, role=role)
-        return json.dumps([
-            {
-                "id": m.id,
-                "from_role": m.from_role,
-                "to_role": m.to_role,
-                "content": m.content,
-                "created_at": m.created_at,
-            }
-            for m in messages
-        ])
+        return json.dumps(
+            [
+                {
+                    "id": m.id,
+                    "from_role": m.from_role,
+                    "to_role": m.to_role,
+                    "content": m.content,
+                    "created_at": m.created_at,
+                }
+                for m in messages
+            ]
+        )
 
     # =========================================================================
     # Heartbeat Tool
@@ -807,14 +818,16 @@ def create_server(db: AbstractDatabase, config: Config | None = None) -> FastMCP
 
         lines = log_path.read_text().splitlines()
         tail_lines = lines[-tail:] if len(lines) > tail else lines
-        return json.dumps({
-            "agent_id": agent_id,
-            "role": agent.role,
-            "log_file": agent.log_file,
-            "total_lines": len(lines),
-            "showing_last": len(tail_lines),
-            "lines": tail_lines,
-        })
+        return json.dumps(
+            {
+                "agent_id": agent_id,
+                "role": agent.role,
+                "log_file": agent.log_file,
+                "total_lines": len(lines),
+                "showing_last": len(tail_lines),
+                "lines": tail_lines,
+            }
+        )
 
     @mcp.tool()
     async def list_agent_logs(job_id: str) -> str:
@@ -844,11 +857,13 @@ def create_server(db: AbstractDatabase, config: Config | None = None) -> FastMCP
             return json.dumps({"error": "Not found"})
         tasks = await db.get_tasks(job_id)
         agents = await db.get_agents_for_job(job_id)
-        return json.dumps({
-            "job": job.model_dump(),
-            "tasks": [t.model_dump() for t in tasks],
-            "agents": [a.model_dump() for a in agents],
-        })
+        return json.dumps(
+            {
+                "job": job.model_dump(),
+                "tasks": [t.model_dump() for t in tasks],
+                "agents": [a.model_dump() for a in agents],
+            }
+        )
 
     @mcp.resource("job://active")
     async def active_jobs_resource() -> str:

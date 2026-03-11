@@ -7,7 +7,7 @@ Used by agent subprocesses that don't maintain a persistent NATS connection.
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import nats
 
@@ -57,7 +57,7 @@ async def publish_agent_message(job_id: str, from_role: str, to_role: str | None
         "from_role": from_role,
         "to_role": to_role,
         "content": content,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
     }
 
     try:
@@ -79,7 +79,7 @@ async def publish_agent_status(job_id: str, agent_id: str, role: str, status: st
         "agent_id": agent_id,
         "role": role,
         "status": status,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
     }
 
     try:
@@ -101,7 +101,7 @@ async def publish_system_event(job_id: str | None, event_type: str, source: str,
         "event_type": event_type,
         "source": source,
         "detail": detail,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
     }
 
     try:

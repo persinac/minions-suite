@@ -12,7 +12,7 @@ class RoleTimeoutConfig:
     max_subtask_retries: int = 2
 
 
-def _default_role_configs() -> dict[str, "RoleTimeoutConfig"]:
+def _default_role_configs() -> dict[str, RoleTimeoutConfig]:
     return {
         "spec_analyst": RoleTimeoutConfig(subtask_timeout_seconds=180, task_timeout_seconds=1200),
         "arbiter": RoleTimeoutConfig(subtask_timeout_seconds=180, task_timeout_seconds=1200),

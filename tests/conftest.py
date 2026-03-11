@@ -34,6 +34,7 @@ async def sample_review_job(db):
 @pytest.fixture
 def make_task():
     """Factory for creating Task instances."""
+
     def _make(job_id, **overrides):
         defaults = {
             "job_id": job_id,
@@ -44,4 +45,5 @@ def make_task():
         }
         defaults.update(overrides)
         return Task(**defaults)
+
     return _make

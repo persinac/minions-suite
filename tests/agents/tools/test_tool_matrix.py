@@ -45,51 +45,107 @@ def _tool_names(tools: list) -> set[str]:
 
 TOOL_MATRIX: dict[str, set[str]] = {
     "spec_analyst": {
-        "Read", "Glob", "Grep",
+        "Read",
+        "Glob",
+        "Grep",
         "submit_refined_spec",
-        "send_message", "get_messages", "send_heartbeat", "get_job_status",
-        "create_phase_card", "mark_phases_created",
+        "send_message",
+        "get_messages",
+        "send_heartbeat",
+        "get_job_status",
+        "create_phase_card",
+        "mark_phases_created",
     },
     "arbiter": {
-        "create_task", "mark_tasks_created",
-        "send_message", "get_messages", "send_heartbeat", "get_job_status",
+        "create_task",
+        "mark_tasks_created",
+        "send_message",
+        "get_messages",
+        "send_heartbeat",
+        "get_job_status",
     },
     "backend_engineer": {
-        "Read", "Edit", "Write", "Glob", "Grep", "Bash",
-        "update_task_status", "report_pr",
-        "submit_subtask_plan", "start_subtask", "complete_subtask", "fail_subtask", "get_subtasks",
-        "send_message", "get_messages", "send_heartbeat",
+        "Read",
+        "Edit",
+        "Write",
+        "Glob",
+        "Grep",
+        "Bash",
+        "update_task_status",
+        "report_pr",
+        "submit_subtask_plan",
+        "start_subtask",
+        "complete_subtask",
+        "fail_subtask",
+        "get_subtasks",
+        "send_message",
+        "get_messages",
+        "send_heartbeat",
     },
     "frontend_engineer": {
-        "Read", "Edit", "Write", "Glob", "Grep", "Bash",
-        "update_task_status", "report_pr",
-        "submit_subtask_plan", "start_subtask", "complete_subtask", "fail_subtask", "get_subtasks",
-        "send_message", "get_messages", "send_heartbeat",
+        "Read",
+        "Edit",
+        "Write",
+        "Glob",
+        "Grep",
+        "Bash",
+        "update_task_status",
+        "report_pr",
+        "submit_subtask_plan",
+        "start_subtask",
+        "complete_subtask",
+        "fail_subtask",
+        "get_subtasks",
+        "send_message",
+        "get_messages",
+        "send_heartbeat",
     },
     "database_engineer": {
-        "Read", "Write", "Glob", "Grep", "Bash",
-        "update_task_status", "report_pr",
-        "send_message", "get_messages", "send_heartbeat",
+        "Read",
+        "Write",
+        "Glob",
+        "Grep",
+        "Bash",
+        "update_task_status",
+        "report_pr",
+        "send_message",
+        "get_messages",
+        "send_heartbeat",
     },
     "code_reviewer": {
-        "Read", "Glob", "Grep", "Bash",
+        "Read",
+        "Glob",
+        "Grep",
+        "Bash",
         "report_review_complete",
-        "submit_subtask_plan", "start_subtask", "complete_subtask", "fail_subtask", "get_subtasks",
-        "send_message", "get_messages", "send_heartbeat",
+        "submit_subtask_plan",
+        "start_subtask",
+        "complete_subtask",
+        "fail_subtask",
+        "get_subtasks",
+        "send_message",
+        "get_messages",
+        "send_heartbeat",
         "create_trello_tech_debt",
     },
     "deploy_monitor": {
         "Bash",
         "report_deploy_status",
-        "submit_subtask_plan", "start_subtask", "complete_subtask", "fail_subtask", "get_subtasks",
-        "send_message", "get_messages", "send_heartbeat",
+        "submit_subtask_plan",
+        "start_subtask",
+        "complete_subtask",
+        "fail_subtask",
+        "get_subtasks",
+        "send_message",
+        "get_messages",
+        "send_heartbeat",
     },
 }
 
 # Alpha tool -> minions-suite local tool equivalents
 ALPHA_TO_LOCAL: dict[str, set[str]] = {
     "Read": {"read_file"},
-    "Edit": {"write_file"},       # minions-suite merges edit into write_file
+    "Edit": {"write_file"},  # minions-suite merges edit into write_file
     "Write": {"write_file"},
     "Glob": {"list_files", "search_code"},  # list_files in review, search_code for engineers
     "Grep": {"search_code"},
@@ -124,14 +180,10 @@ class TestToolMatrixCounts:
     @pytest.mark.parametrize("role,expected_count", EXPECTED_TOOL_COUNTS.items())
     def test_matrix_tool_count(self, role, expected_count):
         actual = len(TOOL_MATRIX[role])
-        assert actual == expected_count, (
-            f"{role}: matrix has {actual} tools but CSV says {expected_count}. "
-            f"Tools: {sorted(TOOL_MATRIX[role])}"
-        )
+        assert actual == expected_count, f"{role}: matrix has {actual} tools but CSV says {expected_count}. Tools: {sorted(TOOL_MATRIX[role])}"
 
     def test_all_roles_in_matrix(self):
-        expected_roles = {"spec_analyst", "arbiter", "backend_engineer", "frontend_engineer",
-                         "database_engineer", "code_reviewer", "deploy_monitor"}
+        expected_roles = {"spec_analyst", "arbiter", "backend_engineer", "frontend_engineer", "database_engineer", "code_reviewer", "deploy_monitor"}
         assert set(TOOL_MATRIX.keys()) == expected_roles
 
 
@@ -457,8 +509,7 @@ class TestSpecArbiterSeparation:
 
     def test_spec_analyst_has_tools_arbiter_lacks(self):
         spec_only = TOOL_MATRIX["spec_analyst"] - TOOL_MATRIX["arbiter"]
-        expected_spec_only = {"Read", "Glob", "Grep", "submit_refined_spec",
-                             "create_phase_card", "mark_phases_created"}
+        expected_spec_only = {"Read", "Glob", "Grep", "submit_refined_spec", "create_phase_card", "mark_phases_created"}
         assert spec_only == expected_spec_only
 
     def test_arbiter_has_tools_spec_analyst_lacks(self):
@@ -562,7 +613,4 @@ class TestCodeReviewerParity:
         injections = set(_STATE_TOOL_INJECTIONS.keys())
         exists = "report_review_complete" in tool_defs or "report_review_complete" in injections
         if not exists:
-            pytest.xfail(
-                "report_review_complete is in the matrix but not implemented in "
-                "_STATE_TOOL_INJECTIONS or REVIEW_TOOL_DEFINITIONS."
-            )
+            pytest.xfail("report_review_complete is in the matrix but not implemented in _STATE_TOOL_INJECTIONS or REVIEW_TOOL_DEFINITIONS.")

@@ -1,6 +1,5 @@
 """Tests for project registry and profile inference."""
 
-
 import pytest
 import yaml
 
@@ -62,11 +61,13 @@ class TestInferProfile:
         assert "data_engineer" in profile.roles
 
     def test_mixed_files(self):
-        profile = infer_profile([
-            "src/api/handler.py",
-            "src/components/Button.tsx",
-            "db/migration.sql",
-        ])
+        profile = infer_profile(
+            [
+                "src/api/handler.py",
+                "src/components/Button.tsx",
+                "db/migration.sql",
+            ]
+        )
         assert "python" in profile.languages
         assert "typescript" in profile.languages
         assert "sql" in profile.languages

@@ -15,10 +15,9 @@ Subjects:
     system.events                   — dashboard SSE events
 """
 
-import asyncio
 import json
 import logging
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import nats
 from nats.aio.client import Client as NatsConnection
@@ -33,14 +32,14 @@ class NatsClient:
     """Persistent NATS connection for review event pub/sub."""
 
     def __init__(self):
-        self._nc: Optional[NatsConnection] = None
+        self._nc: NatsConnection | None = None
         self._subscriptions: list = []
 
     @property
     def is_connected(self) -> bool:
         return self._nc is not None and self._nc.is_connected
 
-    async def connect(self, config: Optional[NatsConfig] = None) -> None:
+    async def connect(self, config: NatsConfig | None = None) -> None:
         """Connect to NATS with auto-reconnect."""
         config = config or NatsConfig.from_env()
 
@@ -92,33 +91,45 @@ class NatsClient:
     # -- Convenience methods for review job events --
 
     async def publish_review_requested(self, project: str, job_id: str, mr_url: str) -> None:
-        await self.publish(f"jobs.review.requested.{project}", {
-            "job_id": job_id,
-            "mr_url": mr_url,
-            "project": project,
-        })
+        await self.publish(
+            f"jobs.review.requested.{project}",
+            {
+                "job_id": job_id,
+                "mr_url": mr_url,
+                "project": project,
+            },
+        )
 
     async def publish_review_started(self, project: str, job_id: str) -> None:
-        await self.publish(f"jobs.review.started.{project}", {
-            "job_id": job_id,
-            "project": project,
-        })
+        await self.publish(
+            f"jobs.review.started.{project}",
+            {
+                "job_id": job_id,
+                "project": project,
+            },
+        )
 
     async def publish_review_completed(self, project: str, job_id: str, verdict: str, comments: int, cost: float) -> None:
-        await self.publish(f"jobs.review.completed.{project}", {
-            "job_id": job_id,
-            "project": project,
-            "verdict": verdict,
-            "comments_posted": comments,
-            "cost_usd": cost,
-        })
+        await self.publish(
+            f"jobs.review.completed.{project}",
+            {
+                "job_id": job_id,
+                "project": project,
+                "verdict": verdict,
+                "comments_posted": comments,
+                "cost_usd": cost,
+            },
+        )
 
     async def publish_review_failed(self, project: str, job_id: str, error: str) -> None:
-        await self.publish(f"jobs.review.failed.{project}", {
-            "job_id": job_id,
-            "project": project,
-            "error": error[:500],
-        })
+        await self.publish(
+            f"jobs.review.failed.{project}",
+            {
+                "job_id": job_id,
+                "project": project,
+                "error": error[:500],
+            },
+        )
 
     @staticmethod
     async def reply(msg: Msg, payload: dict) -> None:
@@ -174,25 +185,34 @@ class NatsClient:
 
     # -- Job event convenience methods --
 
-    async def publish_job_status(self, job_id: str, status: str, detail: Optional[str] = None) -> None:
-        await self.publish(f"jobs.{job_id}.status", {
-            "job_id": job_id,
-            "status": status,
-            "detail": detail,
-        })
+    async def publish_job_status(self, job_id: str, status: str, detail: str | None = None) -> None:
+        await self.publish(
+            f"jobs.{job_id}.status",
+            {
+                "job_id": job_id,
+                "status": status,
+                "detail": detail,
+            },
+        )
 
     async def publish_agent_status(self, job_id: str, agent_id: str, role: str, status: str) -> None:
-        await self.publish(f"agents.{job_id}.status", {
-            "job_id": job_id,
-            "agent_id": agent_id,
-            "role": role,
-            "status": status,
-        })
+        await self.publish(
+            f"agents.{job_id}.status",
+            {
+                "job_id": job_id,
+                "agent_id": agent_id,
+                "role": role,
+                "status": status,
+            },
+        )
 
-    async def publish_system_event(self, job_id: Optional[str], event_type: str, source: str, detail: Optional[str] = None) -> None:
-        await self.publish("system.events", {
-            "job_id": job_id,
-            "event_type": event_type,
-            "source": source,
-            "detail": detail,
-        })
+    async def publish_system_event(self, job_id: str | None, event_type: str, source: str, detail: str | None = None) -> None:
+        await self.publish(
+            "system.events",
+            {
+                "job_id": job_id,
+                "event_type": event_type,
+                "source": source,
+                "detail": detail,
+            },
+        )

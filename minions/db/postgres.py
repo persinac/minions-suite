@@ -7,9 +7,7 @@ Uses psycopg3 with an async connection pool. All tables live under
 import json
 import logging
 from datetime import datetime
-from typing import List, Optional
 
-import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 from psycopg_pool import AsyncConnectionPool
@@ -39,7 +37,7 @@ logger = logging.getLogger(__name__)
 JOB_SCHEMA = "minions"
 
 
-def _ts(value) -> Optional[str]:
+def _ts(value) -> str | None:
     """Convert a Postgres TIMESTAMPTZ to an ISO string, or pass through if already a string."""
     if value is None:
         return None
@@ -55,7 +53,7 @@ class PostgresDatabase:
         self._url = postgres_url
         self._pool_min = pool_min
         self._pool_max = pool_max
-        self._pool: Optional[AsyncConnectionPool] = None
+        self._pool: AsyncConnectionPool | None = None
 
     async def connect(self) -> None:
         self._pool = AsyncConnectionPool(
@@ -86,11 +84,23 @@ class PostgresDatabase:
                      cache_creation_tokens, cost_usd, num_turns, model, k8s_job_name)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
-                    agent.id, agent.job_id, agent.role, agent.task_id,
-                    agent.status, agent.started_at, agent.finished_at,
-                    agent.error, agent.log_file, agent.input_tokens, agent.output_tokens,
-                    agent.cache_read_tokens, agent.cache_creation_tokens,
-                    agent.cost_usd, agent.num_turns, agent.model, agent.k8s_job_name,
+                    agent.id,
+                    agent.job_id,
+                    agent.role,
+                    agent.task_id,
+                    agent.status,
+                    agent.started_at,
+                    agent.finished_at,
+                    agent.error,
+                    agent.log_file,
+                    agent.input_tokens,
+                    agent.output_tokens,
+                    agent.cache_read_tokens,
+                    agent.cache_creation_tokens,
+                    agent.cost_usd,
+                    agent.num_turns,
+                    agent.model,
+                    agent.k8s_job_name,
                 ),
             )
         return agent
@@ -103,7 +113,7 @@ class PostgresDatabase:
         async with self._pool.connection() as conn:
             await conn.execute(f"UPDATE {JOB_SCHEMA}.agents SET {sets} WHERE id = %s", values)
 
-    async def get_agent(self, agent_id: str) -> Optional[Agent]:
+    async def get_agent(self, agent_id: str) -> Agent | None:
         async with self._pool.connection() as conn:
             cur = await conn.execute(f"SELECT * FROM {JOB_SCHEMA}.agents WHERE id = %s", (agent_id,))
             row = await cur.fetchone()
@@ -111,7 +121,7 @@ class PostgresDatabase:
                 return None
             return _dict_to_job_agent(row)
 
-    async def get_agents_for_job(self, job_id: str) -> List[Agent]:
+    async def get_agents_for_job(self, job_id: str) -> list[Agent]:
         async with self._pool.connection() as conn:
             cur = await conn.execute(
                 f"SELECT * FROM {JOB_SCHEMA}.agents WHERE job_id = %s ORDER BY started_at",
@@ -124,7 +134,7 @@ class PostgresDatabase:
     # Stats
     # ===================================================================
 
-    async def get_cost_summary(self, project: Optional[str] = None, days: int = 30) -> dict:
+    async def get_cost_summary(self, project: str | None = None, days: int = 30) -> dict:
         query = f"""
             SELECT
                 COUNT(DISTINCT j.id) as total_reviews,
@@ -158,7 +168,7 @@ class PostgresDatabase:
     # Jobs
     # ===================================================================
 
-    async def create_job(self, spec: str, external_id: Optional[str] = None) -> Job:
+    async def create_job(self, spec: str, external_id: str | None = None) -> Job:
         job = Job(spec=spec, external_id=external_id)
         async with self._pool.connection() as conn:
             await conn.execute(
@@ -170,7 +180,7 @@ class PostgresDatabase:
         await self.record_event(job.id, "job_created", "db", f"status={job.status}")
         return job
 
-    async def create_review_job(self, project: str, mr_url: str, mr_id: str, model: Optional[str] = None) -> tuple[Job, Task]:
+    async def create_review_job(self, project: str, mr_url: str, mr_id: str, model: str | None = None) -> tuple[Job, Task]:
         """Create a review-type job with a single CODE_REVIEWER task atomically."""
         job = Job(spec=mr_url, status=JobStatus.TASKS_CREATED, job_type="review", mr_url=mr_url)
         task = Task(
@@ -196,19 +206,35 @@ class PostgresDatabase:
                      mr_url, mr_id, verdict, comments_posted, created_at, updated_at)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
-                    task.id, task.job_id, task.title, task.description, task.service,
-                    task.agent_role, task.status, task.branch_name, task.pr_number,
-                    task.pr_url, task.review_status, task.deploy_status,
-                    task.revision_count, task.attempt, task.max_attempts, task.error,
-                    task.mr_url, task.mr_id, task.verdict, task.comments_posted,
-                    task.created_at, task.updated_at,
+                    task.id,
+                    task.job_id,
+                    task.title,
+                    task.description,
+                    task.service,
+                    task.agent_role,
+                    task.status,
+                    task.branch_name,
+                    task.pr_number,
+                    task.pr_url,
+                    task.review_status,
+                    task.deploy_status,
+                    task.revision_count,
+                    task.attempt,
+                    task.max_attempts,
+                    task.error,
+                    task.mr_url,
+                    task.mr_id,
+                    task.verdict,
+                    task.comments_posted,
+                    task.created_at,
+                    task.updated_at,
                 ),
             )
         logger.info("Created review job %s with task %s for %s", job.id, task.id, mr_url)
         await self.record_event(job.id, "job_created", "db", f"type=review mr_url={mr_url}")
         return job, task
 
-    async def get_job(self, job_id: str) -> Optional[Job]:
+    async def get_job(self, job_id: str) -> Job | None:
         async with self._pool.connection() as conn:
             cur = await conn.execute(f"SELECT * FROM {JOB_SCHEMA}.jobs WHERE id = %s", (job_id,))
             row = await cur.fetchone()
@@ -216,13 +242,13 @@ class PostgresDatabase:
                 return None
             return _dict_to_job(row)
 
-    async def get_all_jobs(self) -> List[Job]:
+    async def get_all_jobs(self) -> list[Job]:
         async with self._pool.connection() as conn:
             cur = await conn.execute(f"SELECT * FROM {JOB_SCHEMA}.jobs ORDER BY created_at DESC")
             rows = await cur.fetchall()
             return [_dict_to_job(r) for r in rows]
 
-    async def get_active_jobs(self) -> List[Job]:
+    async def get_active_jobs(self) -> list[Job]:
         async with self._pool.connection() as conn:
             cur = await conn.execute(
                 f"SELECT * FROM {JOB_SCHEMA}.jobs WHERE status NOT IN (%s, %s, %s)",
@@ -231,7 +257,7 @@ class PostgresDatabase:
             rows = await cur.fetchall()
             return [_dict_to_job(r) for r in rows]
 
-    async def get_job_by_external_id(self, external_id: str) -> Optional[Job]:
+    async def get_job_by_external_id(self, external_id: str) -> Job | None:
         async with self._pool.connection() as conn:
             cur = await conn.execute(f"SELECT * FROM {JOB_SCHEMA}.jobs WHERE external_id = %s", (external_id,))
             row = await cur.fetchone()
@@ -248,7 +274,7 @@ class PostgresDatabase:
         logger.info("Updated spec for job %s (%d chars)", job_id, len(spec))
         await self.record_event(job_id, "spec_refined", "db", f"spec_length={len(spec)}")
 
-    async def update_job_status(self, job_id: str, status: JobStatus, error: Optional[str] = None) -> None:
+    async def update_job_status(self, job_id: str, status: JobStatus, error: str | None = None) -> None:
         job = await self.get_job(job_id)
         if job:
             try:
@@ -300,19 +326,35 @@ class PostgresDatabase:
                      mr_url, mr_id, verdict, comments_posted, created_at, updated_at)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
-                    task.id, task.job_id, task.title, task.description, task.service,
-                    task.agent_role, task.status, task.branch_name, task.pr_number,
-                    task.pr_url, task.review_status, task.deploy_status,
-                    task.revision_count, task.attempt, task.max_attempts,
-                    task.error, task.mr_url, task.mr_id, task.verdict, task.comments_posted,
-                    task.created_at, task.updated_at,
+                    task.id,
+                    task.job_id,
+                    task.title,
+                    task.description,
+                    task.service,
+                    task.agent_role,
+                    task.status,
+                    task.branch_name,
+                    task.pr_number,
+                    task.pr_url,
+                    task.review_status,
+                    task.deploy_status,
+                    task.revision_count,
+                    task.attempt,
+                    task.max_attempts,
+                    task.error,
+                    task.mr_url,
+                    task.mr_id,
+                    task.verdict,
+                    task.comments_posted,
+                    task.created_at,
+                    task.updated_at,
                 ),
             )
         logger.info("Created task %s: %s", task.id, task.title)
         await self.record_event(task.job_id, "task_created", "db", f"task={task.id} title={task.title} service={task.service}")
         return task
 
-    async def get_task(self, task_id: str) -> Optional[Task]:
+    async def get_task(self, task_id: str) -> Task | None:
         async with self._pool.connection() as conn:
             cur = await conn.execute(f"SELECT * FROM {JOB_SCHEMA}.tasks WHERE id = %s", (task_id,))
             row = await cur.fetchone()
@@ -320,13 +362,13 @@ class PostgresDatabase:
                 return None
             return _dict_to_task(row)
 
-    async def get_tasks(self, job_id: str) -> List[Task]:
+    async def get_tasks(self, job_id: str) -> list[Task]:
         async with self._pool.connection() as conn:
             cur = await conn.execute(f"SELECT * FROM {JOB_SCHEMA}.tasks WHERE job_id = %s ORDER BY created_at", (job_id,))
             rows = await cur.fetchall()
             return [_dict_to_task(r) for r in rows]
 
-    async def update_task(self, task_id: str, **kwargs) -> Optional[Task]:
+    async def update_task(self, task_id: str, **kwargs) -> Task | None:
         requesting_role = kwargs.pop("agent_role", None)
 
         if "status" in kwargs:
@@ -356,7 +398,7 @@ class PostgresDatabase:
             await self.record_event(task.job_id, "task_status_changed", "db", f"task={task_id} status={kwargs['status']}")
         return task
 
-    async def get_tasks_by_status(self, job_id: str, status: TaskStatus) -> List[Task]:
+    async def get_tasks_by_status(self, job_id: str, status: TaskStatus) -> list[Task]:
         async with self._pool.connection() as conn:
             cur = await conn.execute(
                 f"SELECT * FROM {JOB_SCHEMA}.tasks WHERE job_id = %s AND status = %s",
@@ -376,10 +418,16 @@ class PostgresDatabase:
                     (id, task_id, sequence_num, description, status, started_at, completed_at, result, error, created_at)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
-                    subtask.id, subtask.task_id, subtask.sequence_num, subtask.description,
-                    subtask.status, subtask.started_at, subtask.completed_at,
+                    subtask.id,
+                    subtask.task_id,
+                    subtask.sequence_num,
+                    subtask.description,
+                    subtask.status,
+                    subtask.started_at,
+                    subtask.completed_at,
                     Json(subtask.result) if subtask.result else None,
-                    subtask.error, subtask.created_at,
+                    subtask.error,
+                    subtask.created_at,
                 ),
             )
         logger.info("Created subtask %s for task %s", subtask.id, subtask.task_id)
@@ -394,7 +442,7 @@ class PostgresDatabase:
             results.append(await self.create_subtask(s))
         return results
 
-    async def get_subtask(self, subtask_id: str) -> Optional[Subtask]:
+    async def get_subtask(self, subtask_id: str) -> Subtask | None:
         async with self._pool.connection() as conn:
             cur = await conn.execute(f"SELECT * FROM {JOB_SCHEMA}.subtasks WHERE id = %s", (subtask_id,))
             row = await cur.fetchone()
@@ -408,7 +456,7 @@ class PostgresDatabase:
             rows = await cur.fetchall()
             return [_dict_to_subtask(r) for r in rows]
 
-    async def update_subtask(self, subtask_id: str, **kwargs) -> Optional[Subtask]:
+    async def update_subtask(self, subtask_id: str, **kwargs) -> Subtask | None:
         if "status" in kwargs:
             current = await self.get_subtask(subtask_id)
             if current:
@@ -454,7 +502,7 @@ class PostgresDatabase:
             )
         return msg
 
-    async def get_messages(self, job_id: str, role: Optional[AgentRole] = None) -> List[Message]:
+    async def get_messages(self, job_id: str, role: AgentRole | None = None) -> list[Message]:
         async with self._pool.connection() as conn:
             if role:
                 cur = await conn.execute(
@@ -473,7 +521,7 @@ class PostgresDatabase:
     # Events / Audit
     # ===================================================================
 
-    async def record_event(self, job_id: Optional[str], event_type: str, source: Optional[str] = None, detail: Optional[str] = None) -> None:
+    async def record_event(self, job_id: str | None, event_type: str, source: str | None = None, detail: str | None = None) -> None:
         try:
             async with self._pool.connection() as conn:
                 await conn.execute(
@@ -484,7 +532,7 @@ class PostgresDatabase:
         except Exception:
             logger.debug("Failed to record event %s", event_type, exc_info=True)
 
-    async def get_events(self, job_id: str) -> List[dict]:
+    async def get_events(self, job_id: str) -> list[dict]:
         async with self._pool.connection() as conn:
             cur = await conn.execute(
                 f"SELECT * FROM {JOB_SCHEMA}.events WHERE job_id = %s ORDER BY created_at",
@@ -502,11 +550,11 @@ class PostgresDatabase:
     async def record_tool_call(
         self,
         tool_name: str,
-        params: Optional[dict] = None,
-        result: Optional[str] = None,
-        error: Optional[str] = None,
-        duration_ms: Optional[float] = None,
-        job_id: Optional[str] = None,
+        params: dict | None = None,
+        result: str | None = None,
+        error: str | None = None,
+        duration_ms: float | None = None,
+        job_id: str | None = None,
     ) -> None:
         try:
             async with self._pool.connection() as conn:
@@ -518,7 +566,7 @@ class PostgresDatabase:
         except Exception:
             logger.debug("Failed to record tool_call %s", tool_name, exc_info=True)
 
-    async def get_tool_calls(self, job_id: str) -> List[dict]:
+    async def get_tool_calls(self, job_id: str) -> list[dict]:
         async with self._pool.connection() as conn:
             cur = await conn.execute(
                 f"SELECT * FROM {JOB_SCHEMA}.tool_calls WHERE job_id = %s ORDER BY created_at",
@@ -535,7 +583,7 @@ class PostgresDatabase:
                 result.append(d)
             return result
 
-    async def get_job_timeline(self, job_id: str) -> List[dict]:
+    async def get_job_timeline(self, job_id: str) -> list[dict]:
         events = await self.get_events(job_id)
         tool_calls = await self.get_tool_calls(job_id)
 
@@ -570,8 +618,8 @@ class PostgresDatabase:
         from_status: str,
         to_status: str,
         approved: bool,
-        rejection_reason: Optional[str] = None,
-        job_id: Optional[str] = None,
+        rejection_reason: str | None = None,
+        job_id: str | None = None,
     ) -> None:
         task_id = entity_id if entity_type == "task" else None
         subtask_id = entity_id if entity_type == "subtask" else None
@@ -596,9 +644,9 @@ class PostgresDatabase:
         self,
         agent_id: str,
         agent_role: str,
-        job_id: Optional[str] = None,
-        task_id: Optional[str] = None,
-        subtask_id: Optional[str] = None,
+        job_id: str | None = None,
+        task_id: str | None = None,
+        subtask_id: str | None = None,
         status: str = "active",
     ) -> None:
         async with self._pool.connection() as conn:
@@ -615,7 +663,7 @@ class PostgresDatabase:
                 (agent_id, agent_role, job_id, task_id, subtask_id, status),
             )
 
-    async def get_stale_heartbeats(self, threshold_seconds: int) -> List[dict]:
+    async def get_stale_heartbeats(self, threshold_seconds: int) -> list[dict]:
         async with self._pool.connection() as conn:
             cur = await conn.execute(
                 f"""SELECT * FROM {JOB_SCHEMA}.heartbeats
@@ -658,15 +706,13 @@ class PostgresDatabase:
     # Recovery
     # ===================================================================
 
-    async def get_running_agents(self) -> List[Agent]:
+    async def get_running_agents(self) -> list[Agent]:
         async with self._pool.connection() as conn:
-            cur = await conn.execute(
-                f"SELECT * FROM {JOB_SCHEMA}.agents WHERE status IN ('starting', 'running') ORDER BY started_at"
-            )
+            cur = await conn.execute(f"SELECT * FROM {JOB_SCHEMA}.agents WHERE status IN ('starting', 'running') ORDER BY started_at")
             rows = await cur.fetchall()
             return [_dict_to_job_agent(r) for r in rows]
 
-    async def get_agent_for_task(self, task_id: str) -> Optional[Agent]:
+    async def get_agent_for_task(self, task_id: str) -> Agent | None:
         async with self._pool.connection() as conn:
             cur = await conn.execute(
                 f"SELECT * FROM {JOB_SCHEMA}.agents WHERE task_id = %s ORDER BY started_at DESC LIMIT 1",
@@ -749,8 +795,11 @@ def _dict_to_task(d: dict) -> Task:
 
 def _dict_to_subtask(d: dict) -> Subtask:
     result_val = d.get("result")
+    # psycopg3 auto-deserializes jsonb; result may already be a dict, str, etc.
     if result_val is not None and isinstance(result_val, str):
-        result_val = json.loads(result_val)
+        result_val = {"output": result_val}
+    if result_val is not None and not isinstance(result_val, dict):
+        result_val = {"output": result_val}
     return Subtask(
         id=d["id"],
         task_id=d["task_id"],

@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-async def launch_deploy_monitor(engine: "JobEngine", job: Job):
+async def launch_deploy_monitor(engine: JobEngine, job: Job):
     """Launch the deploy monitor agent."""
     if await engine._has_running_agent(job.id, AgentRole.DEPLOY_MONITOR):
         return
@@ -57,9 +57,7 @@ async def launch_deploy_monitor(engine: "JobEngine", job: Job):
     agent = Agent(job_id=job.id, role=AgentRole.DEPLOY_MONITOR, task_id=deploy_task.id, model=engine.config.model)
     agent = await engine.db.create_agent(agent)
 
-    deploy_info = json.dumps(
-        [{"task_id": t.id, "title": t.title, "service": t.service, "branch": t.branch_name} for t in merged_tasks], indent=2
-    )
+    deploy_info = json.dumps([{"task_id": t.id, "title": t.title, "service": t.service, "branch": t.branch_name} for t in merged_tasks], indent=2)
     context = f"## Deploy Targets\n\n{deploy_info}"
 
     await engine.db.record_event(job.id, "agent_launched", "engine", f"agent={agent.id} role=deploy_monitor task={deploy_task.id}")
@@ -85,7 +83,7 @@ async def launch_deploy_monitor(engine: "JobEngine", job: Job):
             logger.warning("Could not mark deploy task %s as failed", deploy_task.id)
 
 
-async def check_deployed(engine: "JobEngine", job: Job):
+async def check_deployed(engine: JobEngine, job: Job):
     """Check if all deployments are complete."""
     engineer_roles = {AgentRole.BACKEND_ENGINEER, AgentRole.FRONTEND_ENGINEER, AgentRole.DATABASE_ENGINEER}
     tasks = await engine.db.get_tasks(job.id)

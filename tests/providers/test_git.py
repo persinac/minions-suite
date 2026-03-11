@@ -50,9 +50,14 @@ class TestInlineComment:
 class TestPRInfo:
     def test_construction(self):
         pr = PRInfo(
-            id="42", url="https://example.com/mr/42", title="Fix bug",
-            description="Details", author="dev", branch="fix/bug",
-            target_branch="main", state="open",
+            id="42",
+            url="https://example.com/mr/42",
+            title="Fix bug",
+            description="Details",
+            author="dev",
+            branch="fix/bug",
+            target_branch="main",
+            state="open",
         )
         assert pr.id == "42"
         assert pr.state == "open"

@@ -23,7 +23,7 @@ class NatsConfig:
         return server
 
     @classmethod
-    def from_env(cls) -> "NatsConfig":
+    def from_env(cls) -> NatsConfig:
         """Load configuration from environment variables."""
         servers_str = os.getenv("NATS_SERVER_IP", "nats://localhost:4222")
         servers = [cls._normalize_server(s) for s in servers_str.split(",")]

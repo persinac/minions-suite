@@ -54,17 +54,19 @@ _STATE_TOOL_INJECTIONS: dict[str, list[tuple[str, str]]] = {
 }
 
 # Local tools handled by built-in methods (filesystem, git, subprocess).
-_LOCAL_TOOLS = frozenset({
-    "read_file",
-    "write_file",
-    "run_command",
-    "search_code",
-    "create_branch",
-    "commit",
-    "push",
-    "create_pr",
-    "check_ci_status",
-})
+_LOCAL_TOOLS = frozenset(
+    {
+        "read_file",
+        "write_file",
+        "run_command",
+        "search_code",
+        "create_branch",
+        "commit",
+        "push",
+        "create_pr",
+        "check_ci_status",
+    }
+)
 
 
 class McpToolExecutor:
@@ -233,7 +235,10 @@ class McpToolExecutor:
         if not branch:
             return json.dumps({"error": "branch_name is required"})
         proc = await asyncio.create_subprocess_exec(
-            "git", "checkout", "-b", branch,
+            "git",
+            "checkout",
+            "-b",
+            branch,
             cwd=self.working_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -260,7 +265,10 @@ class McpToolExecutor:
         )
         await proc.communicate()
         proc = await asyncio.create_subprocess_exec(
-            "git", "commit", "-m", message,
+            "git",
+            "commit",
+            "-m",
+            message,
             cwd=self.working_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -275,7 +283,11 @@ class McpToolExecutor:
         if not branch:
             return json.dumps({"error": "branch_name is required"})
         proc = await asyncio.create_subprocess_exec(
-            "git", "push", "-u", "origin", branch,
+            "git",
+            "push",
+            "-u",
+            "origin",
+            branch,
             cwd=self.working_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -292,7 +304,15 @@ class McpToolExecutor:
         if not title:
             return json.dumps({"error": "title is required"})
         proc = await asyncio.create_subprocess_exec(
-            "gh", "pr", "create", "--title", title, "--body", body, "--base", base,
+            "gh",
+            "pr",
+            "create",
+            "--title",
+            title,
+            "--body",
+            body,
+            "--base",
+            base,
             cwd=self.working_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -309,7 +329,12 @@ class McpToolExecutor:
             return json.dumps({"error": "pr_url is required"})
         try:
             proc = await asyncio.create_subprocess_exec(
-                "gh", "pr", "checks", pr_url, "--json", "name,state,conclusion",
+                "gh",
+                "pr",
+                "checks",
+                pr_url,
+                "--json",
+                "name,state,conclusion",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )

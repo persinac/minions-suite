@@ -56,7 +56,19 @@ class _PgConnectionWrapper:
     def __init__(self, conn):
         self._conn = conn
 
-    _MINION_TABLES = ("jobs", "tasks", "agents", "events", "tool_calls", "messages", "subtasks", "state_transitions", "heartbeats", "message_log", "reviews")
+    _MINION_TABLES = (
+        "jobs",
+        "tasks",
+        "agents",
+        "events",
+        "tool_calls",
+        "messages",
+        "subtasks",
+        "state_transitions",
+        "heartbeats",
+        "message_log",
+        "reviews",
+    )
 
     @asynccontextmanager
     async def execute(self, sql, params=None):
@@ -111,7 +123,7 @@ def _elapsed(start_str, end_str=None) -> str:
         elif secs < 3600:
             return f"{secs // 60}m {secs % 60}s"
         return f"{secs // 3600}h {(secs % 3600) // 60}m"
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return "?"
 
 
@@ -127,7 +139,9 @@ async def _get_db():
         from psycopg.rows import dict_row
 
         conn = await psycopg.AsyncConnection.connect(
-            _postgres_url, row_factory=dict_row, autocommit=True,
+            _postgres_url,
+            row_factory=dict_row,
+            autocommit=True,
         )
         return _PgConnectionWrapper(conn)
     db = await aiosqlite.connect(_db_path)
@@ -407,8 +421,8 @@ async def job_detail(job_id: str):
             dur = _elapsed(a["started_at"], a["finished_at"]) if a.get("finished_at") else "running"
             log_link = f'<span style="font-family:monospace;font-size:0.85em">{_esc(a["log_file"])}</span>' if a.get("log_file") else "-"
             err = f'<span style="color:#f44336">{_esc(str(a["error"])[:100])}</span>' if a.get("error") else "-"
-            tokens = f'{a.get("input_tokens", 0):,} / {a.get("output_tokens", 0):,}'
-            cost = f'${a.get("cost_usd", 0):.4f}' if a.get("cost_usd") else "-"
+            tokens = f"{a.get('input_tokens', 0):,} / {a.get('output_tokens', 0):,}"
+            cost = f"${a.get('cost_usd', 0):.4f}" if a.get("cost_usd") else "-"
             turns = str(a.get("num_turns", 0)) if a.get("num_turns") else "-"
             model = _esc(a.get("model") or "-")
             agent_rows += f"""<tr>
@@ -449,7 +463,7 @@ async def job_detail(job_id: str):
                         if len(ps) > 120:
                             ps = ps[:120] + "..."
                         detail_parts.append(ps)
-                    except (json.JSONDecodeError, TypeError):
+                    except json.JSONDecodeError, TypeError:
                         pass
                 if tc.get("duration_ms") is not None:
                     detail_parts.append(f"{tc['duration_ms']:.0f}ms")
@@ -555,7 +569,7 @@ async def api_job_detail_html(job_id: str):
                     completed = sum(1 for s in subtasks if s["status"] == "completed")
                     subtask_info = f' <span style="color:#8b949e;font-size:0.85em">({completed}/{len(subtasks)} subtasks)</span>'
 
-                rows += f'<tr><td>{_esc(t["title"])}{subtask_info}</td><td>{_esc(t["service"])}</td><td>{_esc(t["agent_role"])}</td><td>{_badge(t["status"])}</td><td>{pr_link}</td><td>{err}</td></tr>'
+                rows += f"<tr><td>{_esc(t['title'])}{subtask_info}</td><td>{_esc(t['service'])}</td><td>{_esc(t['agent_role'])}</td><td>{_badge(t['status'])}</td><td>{pr_link}</td><td>{err}</td></tr>"
 
                 for s in subtasks:
                     s_err = f'<span style="color:#f44336">{_esc(str(s["error"])[:80])}</span>' if s.get("error") else ""
@@ -576,11 +590,11 @@ async def api_job_detail_html(job_id: str):
                 dur = _elapsed(a["started_at"], a["finished_at"]) if a.get("finished_at") else "running"
                 log_link = f'<span style="font-family:monospace;font-size:0.85em">{_esc(a["log_file"])}</span>' if a.get("log_file") else "-"
                 err = f'<span style="color:#f44336">{_esc(str(a["error"])[:100])}</span>' if a.get("error") else "-"
-                tokens = f'{a.get("input_tokens", 0):,} / {a.get("output_tokens", 0):,}'
-                cost = f'${a.get("cost_usd", 0):.4f}' if a.get("cost_usd") else "-"
+                tokens = f"{a.get('input_tokens', 0):,} / {a.get('output_tokens', 0):,}"
+                cost = f"${a.get('cost_usd', 0):.4f}" if a.get("cost_usd") else "-"
                 turns = str(a.get("num_turns", 0)) if a.get("num_turns") else "-"
                 model = _esc(a.get("model") or "-")
-                rows += f'<tr><td>{_esc(a["role"])}</td><td>{_badge(a["status"])}</td><td>{dur}</td><td>{tokens}</td><td>{cost}</td><td>{turns}</td><td>{model}</td><td>{log_link}</td><td>{err}</td></tr>'
+                rows += f"<tr><td>{_esc(a['role'])}</td><td>{_badge(a['status'])}</td><td>{dur}</td><td>{tokens}</td><td>{cost}</td><td>{turns}</td><td>{model}</td><td>{log_link}</td><td>{err}</td></tr>"
             parts.append(
                 f"<h2>Agents</h2><table><tr><th>Role</th><th>Status</th><th>Duration</th><th>Tokens (in/out)</th><th>Cost</th><th>Turns</th><th>Model</th><th>Log</th><th>Error</th></tr>{rows}</table>"
             )
@@ -604,7 +618,7 @@ async def api_job_detail_html(job_id: str):
                         if len(ps) > 120:
                             ps = ps[:120] + "..."
                         detail_parts.append(ps)
-                    except (json.JSONDecodeError, TypeError):
+                    except json.JSONDecodeError, TypeError:
                         pass
                 if tc.get("duration_ms") is not None:
                     detail_parts.append(f"{tc['duration_ms']:.0f}ms")

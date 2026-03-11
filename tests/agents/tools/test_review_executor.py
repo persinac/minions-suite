@@ -115,12 +115,15 @@ class TestGetComments:
 
 class TestPostInlineComment:
     async def test_posts_comment(self, executor, provider):
-        result = await executor.execute("post_inline_comment", {
-            "file_path": "foo.py",
-            "line": 10,
-            "body": "Bug here",
-            "severity": "critical",
-        })
+        result = await executor.execute(
+            "post_inline_comment",
+            {
+                "file_path": "foo.py",
+                "line": 10,
+                "body": "Bug here",
+                "severity": "critical",
+            },
+        )
         data = json.loads(result)
         assert data["posted"] is True
         assert data["total_comments"] == 1
@@ -137,9 +140,15 @@ class TestPostInlineComment:
         assert "error" in data
 
     async def test_severity_prefix(self, executor, provider):
-        await executor.execute("post_inline_comment", {
-            "file_path": "foo.py", "line": 1, "body": "Unused import", "severity": "warning",
-        })
+        await executor.execute(
+            "post_inline_comment",
+            {
+                "file_path": "foo.py",
+                "line": 1,
+                "body": "Unused import",
+                "severity": "warning",
+            },
+        )
         call_args = provider.post_inline_comment.call_args
         comment = call_args[0][2]  # third positional arg is the InlineComment
         assert "[WARNING]" in comment.body

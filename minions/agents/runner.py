@@ -8,7 +8,6 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Optional
 
 import litellm
 
@@ -25,15 +24,15 @@ logger = logging.getLogger(__name__)
 async def run_agent(
     job: Job,
     task: Task,
-    project: Optional[ProjectConfig] = None,
-    service: Optional[ServiceTarget] = None,
-    config: Optional[Config] = None,
+    project: ProjectConfig | None = None,
+    service: ServiceTarget | None = None,
+    config: Config | None = None,
     db=None,
     tool_executor=None,
-    context: Optional[str] = None,
-    provider: Optional[GitProviderProtocol] = None,
-    mr_info: Optional[dict] = None,
-    agent: Optional[Agent] = None,
+    context: str | None = None,
+    provider: GitProviderProtocol | None = None,
+    mr_info: dict | None = None,
+    agent: Agent | None = None,
 ) -> Agent:
     """Execute an agent for a job task using the LiteLLM tool-use loop.
 
@@ -90,6 +89,7 @@ async def run_agent(
 
         # Use role-specific timeout if available
         from ..core.timeout_config import TimeoutConfig
+
         timeout_cfg = TimeoutConfig()
         role_cfg = timeout_cfg.roles.get(task.agent_role)
         timeout = role_cfg.task_timeout_seconds if role_cfg else config.agent_timeout
@@ -124,7 +124,10 @@ async def run_agent(
 
         logger.info(
             "Agent %s (role=%s) done: cost=$%.4f, turns=%d",
-            agent.id, task.agent_role, agent.cost_usd, agent.num_turns,
+            agent.id,
+            task.agent_role,
+            agent.cost_usd,
+            agent.num_turns,
         )
 
     except Exception as e:
@@ -157,7 +160,7 @@ async def _agent_loop_generic(
     tool_executor,
     timeout: int,
     log_path: Path,
-    user_message: Optional[str] = None,
+    user_message: str | None = None,
     max_turns: int = 30,
 ) -> dict:
     """Generic tool-use loop for all agents (job orchestration + code review).
@@ -244,11 +247,13 @@ async def _agent_loop_generic(
                     verdict = fn_args.get("verdict")
                     summary = fn_args.get("body", "")
 
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": result,
-                })
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": result,
+                    }
+                )
 
         log.write(f"\n=== Done ===\nTurns: {num_turns}\nInput tokens: {total_input}\nOutput tokens: {total_output}\nCost: ${total_cost:.4f}\n")
 
