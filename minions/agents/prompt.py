@@ -16,7 +16,7 @@ from ..project_registry import ProjectConfig, ServiceTarget, infer_profile
 
 logger = logging.getLogger(__name__)
 
-PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
+PROMPTS_DIR = Path(__file__).parent.parent.parent / "prompts"
 
 
 def _load(relative_path: str) -> str | None:

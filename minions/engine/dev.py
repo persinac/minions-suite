@@ -375,7 +375,7 @@ async def run_engineer(engine: JobEngine, job: Job, task: Task, is_revision: boo
         if is_revision:
             # After a successful revision, move task back to PR_OPEN for re-review
             current_task = await engine.db.get_task(task.id)
-            if current_task and current_task.status not in (TaskStatus.PR_OPEN, TaskStatus.MERGED, TaskStatus.DONE):
+            if current_task and current_task.status not in (TaskStatus.PR_OPEN, TaskStatus.IN_REVIEW, TaskStatus.MERGED, TaskStatus.DONE):
                 try:
                     await engine.db.update_task(task.id, status=TaskStatus.PR_OPEN, agent_role="", review_status="revision_complete")
                     logger.info("Revision agent completed, task %s -> PR_OPEN for re-review", task.id)
