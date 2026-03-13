@@ -182,6 +182,46 @@ pre.spec { background:#0d1117; border:1px solid #30363d; border-radius:6px; padd
 .msg { background:#161b22; border:1px solid #30363d; border-radius:6px; padding:10px; margin:6px 0; }
 .msg-header { font-size:0.8em; color:#8b949e; margin-bottom:4px; }
 .msg-content { white-space:pre-wrap; word-break:break-word; }
+
+/* Review Rounds */
+.review-rounds { margin:16px 0; }
+.round-service { background:#161b22; border:1px solid #30363d; border-radius:8px; padding:16px; margin:12px 0; }
+.round-service h3 { color:#f0f6fc; font-size:1em; margin-bottom:12px; font-weight:700; }
+.rounds-summary { color:#8b949e; font-size:0.85em; margin-bottom:16px; padding:8px 12px; background:#0d1117; border-radius:6px; display:flex; gap:16px; flex-wrap:wrap; }
+.rounds-summary .stat { font-weight:600; }
+.rounds-summary .stat-val { color:#f0f6fc; }
+.round-card { border:1px solid #30363d; border-radius:6px; padding:12px; margin:8px 0; background:#0d1117; }
+.round-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+.round-num { font-weight:700; color:#f0f6fc; font-size:0.95em; }
+.verdict-badge { padding:2px 10px; border-radius:12px; font-size:0.85em; font-weight:600; }
+.verdict-approve { background:#4caf5022; color:#4caf50; border:1px solid #4caf5044; }
+.verdict-changes { background:#f4433622; color:#f44336; border:1px solid #f4433644; }
+.verdict-unknown { background:#88888822; color:#888; border:1px solid #88888844; }
+.round-agents { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:8px; }
+.round-agent { display:flex; align-items:center; gap:6px; font-size:0.85em; padding:6px 10px; border-radius:4px; }
+.round-agent.eng { background:#1a3a2a; border:1px solid #2d5a3d; }
+.round-agent.rev { background:#2a1a3a; border:1px solid #4a2d5a; }
+.round-connector { color:#30363d; font-size:1.2em; font-weight:700; }
+.agent-role { font-weight:600; color:#c9d1d9; }
+.agent-meta { color:#8b949e; font-size:0.85em; }
+.round-threads { margin-top:8px; display:flex; gap:12px; font-size:0.85em; align-items:center; flex-wrap:wrap; }
+.sev-count { padding:2px 8px; border-radius:3px; font-weight:600; font-size:0.85em; }
+.sev-count.critical { background:#f4433622; color:#f44336; }
+.sev-count.warning { background:#ffc10722; color:#ffc107; }
+.sev-count.nit { background:#8b949e22; color:#8b949e; }
+.thread-details { margin-top:8px; }
+.thread-details summary { color:#58a6ff; cursor:pointer; font-size:0.85em; }
+.thread-details summary:hover { text-decoration:underline; }
+.thread-table { width:100%; font-size:0.85em; margin-top:6px; }
+.thread-table td { padding:3px 8px; border-bottom:1px solid #21262d; vertical-align:top; }
+.thread-table .file-ref { color:#58a6ff; font-family:monospace; white-space:nowrap; }
+.thread-table .thread-body { color:#c9d1d9; word-break:break-word; max-width:500px; }
+.round-arrow { text-align:center; color:#30363d; font-size:1.4em; line-height:1; margin:4px 0; }
+.resolution-info { font-size:0.85em; margin-top:6px; display:flex; gap:12px; flex-wrap:wrap; }
+.resolution-info .resolved { color:#4caf50; }
+.resolution-info .persisted { color:#ffc107; }
+.resolution-info .new-threads { color:#58a6ff; }
+.round-feedback { margin-top:8px; padding:8px; background:#161b22; border-left:3px solid #30363d; font-size:0.85em; color:#8b949e; max-height:120px; overflow-y:auto; white-space:pre-wrap; word-break:break-word; }
 """
 
 
@@ -199,6 +239,312 @@ def _page(title: str, body: str) -> str:
 <h1>Minions Suite Dashboard</h1>
 {body}
 </body></html>"""
+
+
+# -- Review Rounds --
+
+
+async def _build_review_rounds(db, job_id: str) -> list[dict]:
+    """Build review round data grouped by service.
+
+    Each round represents one engineer→reviewer cycle. Returns a list of
+    per-service dicts containing rounds with agent info, verdict, threads,
+    and resolution tracking.
+    """
+    engineer_roles = {"backend_engineer", "frontend_engineer", "database_engineer"}
+
+    async with db.execute("SELECT * FROM tasks WHERE job_id = ? ORDER BY created_at", (job_id,)) as cur:
+        tasks = [dict(r) for r in await cur.fetchall()]
+
+    async with db.execute("SELECT * FROM agents WHERE job_id = ? ORDER BY started_at", (job_id,)) as cur:
+        agents = [dict(r) for r in await cur.fetchall()]
+
+    async with db.execute(
+        "SELECT * FROM tool_calls WHERE job_id = ? AND tool_name IN ('post_inline_comment', 'submit_review', 'report_review_complete') ORDER BY created_at",
+        (job_id,),
+    ) as cur:
+        review_tool_calls = [dict(r) for r in await cur.fetchall()]
+
+    async with db.execute(
+        "SELECT * FROM messages WHERE job_id = ? AND from_role = 'code_reviewer' ORDER BY created_at",
+        (job_id,),
+    ) as cur:
+        review_messages = [dict(r) for r in await cur.fetchall()]
+
+    # Group tasks by service
+    eng_tasks_by_svc = {}
+    rev_tasks_by_svc = {}
+    for t in tasks:
+        if t["service"] in ("_spec", "_arbiter"):
+            continue
+        if t["agent_role"] in engineer_roles:
+            eng_tasks_by_svc.setdefault(t["service"], []).append(t)
+        elif t["agent_role"] == "code_reviewer":
+            rev_tasks_by_svc.setdefault(t["service"], []).append(t)
+
+    # Agents lookup by task_id
+    agents_by_task = {}
+    for a in agents:
+        if a.get("task_id"):
+            agents_by_task.setdefault(a["task_id"], []).append(a)
+
+    services = []
+    for svc_name in eng_tasks_by_svc:
+        eng_tasks = eng_tasks_by_svc[svc_name]
+        rev_tasks = rev_tasks_by_svc.get(svc_name, [])
+
+        if not rev_tasks:
+            continue
+
+        eng_task = eng_tasks[0]
+        eng_agents = agents_by_task.get(eng_task["id"], [])
+
+        rounds = []
+        for i, rev_task in enumerate(rev_tasks):
+            round_num = i + 1
+
+            # Reviewer agent
+            rev_agents = agents_by_task.get(rev_task["id"], [])
+            rev_agent = rev_agents[-1] if rev_agents else None
+
+            # Engineer agent preceding this review (by timestamp)
+            eng_agent = None
+            if rev_agent and eng_agents:
+                rev_start = rev_agent.get("started_at", "")
+                preceding = [a for a in eng_agents if a.get("started_at", "") < rev_start]
+                if preceding:
+                    eng_agent = preceding[-1]
+                elif eng_agents:
+                    eng_agent = eng_agents[min(i, len(eng_agents) - 1)]
+
+            # Extract threads from post_inline_comment tool_calls within reviewer's window
+            threads = []
+            submit_verdict = None
+            submit_summary = None
+            if rev_agent:
+                rev_start = rev_agent.get("started_at", "")
+                rev_end = rev_agent.get("finished_at") or "9999"
+                for tc in review_tool_calls:
+                    tc_ts = tc["created_at"]
+                    if not (rev_start <= tc_ts <= rev_end):
+                        continue
+                    params = {}
+                    if tc.get("params"):
+                        try:
+                            params = json.loads(tc["params"]) if isinstance(tc["params"], str) else tc["params"]
+                        except json.JSONDecodeError, TypeError:
+                            pass
+                    if tc["tool_name"] == "post_inline_comment":
+                        threads.append(
+                            {
+                                "file": params.get("file_path", "?"),
+                                "line": params.get("line", 0),
+                                "severity": params.get("severity", "nit"),
+                                "body": params.get("body", "")[:200],
+                            }
+                        )
+                    elif tc["tool_name"] == "submit_review":
+                        submit_verdict = params.get("verdict")
+                        submit_summary = params.get("body", "")[:500]
+
+            # Thread resolution vs previous round
+            resolved = 0
+            persisted = 0
+            new_count = 0
+            if round_num > 1 and rounds:
+                prev_threads = rounds[-1].get("threads", [])
+                prev_files = {(t["file"], t["line"]) for t in prev_threads}
+                curr_files = {(t["file"], t["line"]) for t in threads}
+                resolved = len(prev_files - curr_files)
+                persisted = len(prev_files & curr_files)
+                new_count = len(curr_files - prev_files)
+
+            # Feedback message from reviewer
+            feedback = None
+            for msg in review_messages:
+                if rev_agent:
+                    msg_ts = msg["created_at"]
+                    if rev_agent.get("started_at", "") <= msg_ts <= (rev_agent.get("finished_at") or "9999"):
+                        feedback = msg["content"][:500]
+                        break
+
+            verdict = rev_task.get("verdict") or submit_verdict or "unknown"
+            comments = rev_task.get("comments_posted", 0) or len(threads)
+
+            rounds.append(
+                {
+                    "num": round_num,
+                    "eng_agent": eng_agent,
+                    "rev_agent": rev_agent,
+                    "rev_task": rev_task,
+                    "verdict": verdict,
+                    "comments": comments,
+                    "threads": threads,
+                    "resolved": resolved,
+                    "persisted": persisted,
+                    "new_count": new_count,
+                    "feedback": feedback,
+                    "submit_summary": submit_summary,
+                }
+            )
+
+        total_threads = sum(r["comments"] for r in rounds)
+        total_resolved = sum(r["resolved"] for r in rounds)
+
+        services.append(
+            {
+                "service": svc_name,
+                "eng_task": eng_task,
+                "rounds": rounds,
+                "total_threads": total_threads,
+                "total_resolved": total_resolved,
+            }
+        )
+
+    return services
+
+
+def _render_review_rounds(services_data: list[dict]) -> str:
+    """Render the review rounds HTML from pre-built data."""
+    if not services_data:
+        return ""
+
+    parts = ['<h2>Review Rounds</h2><div class="review-rounds">']
+
+    for svc in services_data:
+        svc_name = _esc(svc["service"])
+        rounds = svc["rounds"]
+        total_threads = svc["total_threads"]
+        total_resolved = svc["total_resolved"]
+        eng_task = svc["eng_task"]
+        revision_count = eng_task.get("revision_count", 0)
+
+        parts.append(f'<div class="round-service"><h3>{svc_name}</h3>')
+        parts.append('<div class="rounds-summary">')
+        parts.append(f'<span class="stat"><span class="stat-val">{len(rounds)}</span> rounds</span>')
+        parts.append(f'<span class="stat"><span class="stat-val">{total_threads}</span> threads opened</span>')
+        if total_resolved > 0:
+            parts.append(f'<span class="stat"><span class="stat-val">{total_resolved}</span> resolved</span>')
+        if revision_count > 0:
+            parts.append(f'<span class="stat"><span class="stat-val">{revision_count}</span> revisions</span>')
+        parts.append("</div>")
+
+        for rnd in rounds:
+            verdict = rnd["verdict"]
+            if verdict == "approve" or verdict == "approved":
+                verdict_class = "verdict-approve"
+                verdict_label = "approved"
+            elif verdict == "request_changes" or verdict == "changes_requested":
+                verdict_class = "verdict-changes"
+                verdict_label = "changes requested"
+            else:
+                verdict_class = "verdict-unknown"
+                verdict_label = _esc(verdict)
+
+            parts.append('<div class="round-card">')
+            parts.append(f'<div class="round-header"><span class="round-num">Round {rnd["num"]}</span>')
+            parts.append(f'<span class="verdict-badge {verdict_class}">{verdict_label}</span></div>')
+
+            # Agent row
+            parts.append('<div class="round-agents">')
+            eng = rnd["eng_agent"]
+            if eng:
+                eng_dur = _elapsed(eng.get("started_at", ""), eng.get("finished_at"))
+                eng_cost = f"${eng.get('cost_usd', 0):.3f}"
+                eng_turns = eng.get("num_turns", 0)
+                parts.append(
+                    f'<div class="round-agent eng">'
+                    f'<span class="agent-role">{_esc(eng.get("role", "engineer"))}</span>'
+                    f'<span class="agent-meta">{eng_dur} &middot; {eng_cost} &middot; {eng_turns} turns</span>'
+                    f"</div>"
+                )
+            parts.append('<span class="round-connector">&rarr;</span>')
+            rev = rnd["rev_agent"]
+            if rev:
+                rev_dur = _elapsed(rev.get("started_at", ""), rev.get("finished_at"))
+                rev_cost = f"${rev.get('cost_usd', 0):.3f}"
+                rev_turns = rev.get("num_turns", 0)
+                parts.append(
+                    f'<div class="round-agent rev">'
+                    f'<span class="agent-role">code_reviewer</span>'
+                    f'<span class="agent-meta">{rev_dur} &middot; {rev_cost} &middot; {rev_turns} turns</span>'
+                    f"</div>"
+                )
+            elif rnd["rev_task"]:
+                parts.append(
+                    f'<div class="round-agent rev">'
+                    f'<span class="agent-role">code_reviewer</span>'
+                    f'<span class="agent-meta">{rnd["comments"]} comments</span>'
+                    f"</div>"
+                )
+            parts.append("</div>")
+
+            # Resolution info (round 2+)
+            if rnd["num"] > 1 and (rnd["resolved"] or rnd["persisted"] or rnd["new_count"]):
+                parts.append('<div class="resolution-info">')
+                if rnd["resolved"]:
+                    parts.append(f'<span class="resolved">{rnd["resolved"]} resolved</span>')
+                if rnd["persisted"]:
+                    parts.append(f'<span class="persisted">{rnd["persisted"]} persisted</span>')
+                if rnd["new_count"]:
+                    parts.append(f'<span class="new-threads">{rnd["new_count"]} new</span>')
+                parts.append("</div>")
+
+            # Thread severity breakdown
+            threads = rnd["threads"]
+            if threads:
+                sev_counts = {"critical": 0, "warning": 0, "nit": 0}
+                for t in threads:
+                    sev = t.get("severity", "nit")
+                    if sev in sev_counts:
+                        sev_counts[sev] += 1
+                    else:
+                        sev_counts["nit"] += 1
+
+                parts.append('<div class="round-threads">')
+                if sev_counts["critical"]:
+                    parts.append(f'<span class="sev-count critical">{sev_counts["critical"]} critical</span>')
+                if sev_counts["warning"]:
+                    parts.append(f'<span class="sev-count warning">{sev_counts["warning"]} warning</span>')
+                if sev_counts["nit"]:
+                    parts.append(f'<span class="sev-count nit">{sev_counts["nit"]} nit</span>')
+                parts.append("</div>")
+
+                # Expandable thread list
+                parts.append(f'<details class="thread-details"><summary>{len(threads)} threads</summary>')
+                parts.append('<table class="thread-table">')
+                for t in threads:
+                    sev = t.get("severity", "nit")
+                    sev_class = sev if sev in ("critical", "warning", "nit") else "nit"
+                    parts.append(
+                        f"<tr>"
+                        f'<td><span class="sev-count {sev_class}">{_esc(sev).upper()}</span></td>'
+                        f'<td class="file-ref">{_esc(t["file"])}:{t["line"]}</td>'
+                        f'<td class="thread-body">{_esc(t["body"])}</td>'
+                        f"</tr>"
+                    )
+                parts.append("</table></details>")
+            elif rnd["comments"] > 0:
+                parts.append(
+                    f'<div class="round-threads"><span style="color:#8b949e">{rnd["comments"]} comments (detail available on next run)</span></div>'
+                )
+
+            # Feedback excerpt
+            if rnd["submit_summary"]:
+                parts.append(f'<div class="round-feedback">{_esc(rnd["submit_summary"][:300])}</div>')
+            elif rnd["feedback"]:
+                parts.append(f'<div class="round-feedback">{_esc(rnd["feedback"][:300])}</div>')
+
+            parts.append("</div>")  # close round-card
+
+            # Arrow between rounds (not after last)
+            if rnd["num"] < len(rounds):
+                parts.append('<div class="round-arrow">&darr;</div>')
+
+        parts.append("</div>")  # close round-service
+
+    parts.append("</div>")  # close review-rounds
+    return "\n".join(parts)
 
 
 # -- Routes --
@@ -500,12 +846,17 @@ async def job_detail(job_id: str):
         else:
             msgs_html = '<p style="color:#8b949e">No messages.</p>'
 
+        # Review rounds
+        review_rounds_data = await _build_review_rounds(db, job_id)
+        review_rounds_html = _render_review_rounds(review_rounds_data)
+
         # Detail body with HTMX auto-refresh on the detail section
         detail_content = f"""
             <h2>Spec</h2>
             {spec_html}
             <h2>Tasks</h2>
             {tasks_html}
+            {review_rounds_html}
             <h2>Agents</h2>
             {agents_html}
             <h2>Timeline ({len(events)} entries)</h2>
@@ -580,6 +931,12 @@ async def api_job_detail_html(job_id: str):
             )
         else:
             parts.append('<h2>Tasks</h2><p style="color:#8b949e">No tasks.</p>')
+
+        # Review Rounds
+        review_rounds_data = await _build_review_rounds(db, job_id)
+        review_rounds_html = _render_review_rounds(review_rounds_data)
+        if review_rounds_html:
+            parts.append(review_rounds_html)
 
         # Agents
         async with db.execute("SELECT * FROM agents WHERE job_id = ? ORDER BY started_at", (job_id,)) as cur:

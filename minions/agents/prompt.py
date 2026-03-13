@@ -120,7 +120,7 @@ _ROLE_TO_PROMPT: dict[str, str] = {
     "backend_engineer": "agents/engineer.md",
     "frontend_engineer": "agents/engineer.md",
     "database_engineer": "agents/engineer.md",
-    "code_reviewer": "agents/spec_analyst.md",  # reuse base analysis prompt
+    "code_reviewer": "agents/code_reviewer.md",
     "deploy_monitor": "agents/deployer.md",
 }
 
@@ -152,22 +152,53 @@ def build_agent_prompt(
     if agent_base:
         sections.append(agent_base)
 
-    # 2. Role mixins (if applicable)
+    # 2. For code_reviewer, layer in the review checklist (base.md) and
+    #    use the project's review profile for role/language mixins — same
+    #    composition system as standalone reviews.
     role = task.agent_role
-    if role in ("backend_engineer", "frontend_engineer"):
-        role_name = role.replace("_engineer", "")
-        content = _load(f"roles/{role_name}.md")
-        if content:
-            sections.append(content)
+    if role == "code_reviewer":
+        base = _load("base.md")
+        if base:
+            sections.append(base)
 
-    # 3. Language mixin
-    lang = _ROLE_TO_LANGUAGE.get(role, "")
-    if service and service.language:
-        lang = service.language
-    if lang:
-        content = _load(f"languages/{lang}.md")
-        if content:
-            sections.append(content)
+        if project:
+            profile = project.review_profile
+            if not profile.roles and not profile.languages and service:
+                # Infer from the service language so the reviewer gets
+                # the right language-specific checklist.
+                from ..project_registry import ReviewProfile
+
+                inferred_langs = [service.language] if service.language else []
+                profile = ReviewProfile(roles=[], languages=inferred_langs, custom=[])
+
+            for r in profile.roles:
+                content = _load(f"roles/{r}.md")
+                if content:
+                    sections.append(content)
+            for lang in profile.languages:
+                content = _load(f"languages/{lang}.md")
+                if content:
+                    sections.append(content)
+            for custom in profile.custom:
+                content = _load(f"custom/{custom}")
+                if content:
+                    sections.append(content)
+    else:
+        # Role mixins (if applicable)
+        if role in ("backend_engineer", "frontend_engineer"):
+            role_name = role.replace("_engineer", "")
+            content = _load(f"roles/{role_name}.md")
+            if content:
+                sections.append(content)
+
+        # Language mixin
+        lang = _ROLE_TO_LANGUAGE.get(role, "")
+        if service and service.language:
+            lang = service.language
+        if lang:
+            content = _load(f"languages/{lang}.md")
+            if content:
+                sections.append(content)
 
     # 4. Task context
     task_context = _build_task_context(job, task, project, service)
@@ -218,6 +249,8 @@ def _build_task_context(
 
     if task.branch_name:
         lines.append(f"- Branch: `{task.branch_name}`")
+    if task.pr_url:
+        lines.append(f"- Existing MR: {task.pr_url} (push to the branch to update it — do NOT create a new MR)")
 
     lines.append(f"\n### Spec\n{job.spec}")
 

@@ -75,8 +75,9 @@ async def run_review_in_process(engine: JobEngine, job: Job, task: Task):
         logger.warning("Failed to fetch MR info for task %s: %s", task.id, e)
         mr_info = {"project_id": project.project_id, "changed_files": []}
 
-    # Create agent record
-    agent = Agent(job_id=job.id, role=AgentRole.CODE_REVIEWER, task_id=task.id, model=engine.config.model)
+    # Create agent record — use project model if available
+    model = project.model if project and project.model else engine.config.model
+    agent = Agent(job_id=job.id, role=AgentRole.CODE_REVIEWER, task_id=task.id, model=model)
     agent = await engine.db.create_agent(agent)
 
     await engine.db.record_event(job.id, "agent_launched", "engine", f"agent={agent.id} role=code_reviewer task={task.id}")
@@ -91,6 +92,7 @@ async def run_review_in_process(engine: JobEngine, job: Job, task: Task):
         db=engine.db,
         provider=provider,
         mr_info=mr_info,
+        agent=agent,
     )
 
     # Update task with review results

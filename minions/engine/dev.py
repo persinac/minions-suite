@@ -257,23 +257,25 @@ async def launch_engineers(engine: JobEngine, job: Job):
 
     engineer_roles = {AgentRole.BACKEND_ENGINEER, AgentRole.FRONTEND_ENGINEER, AgentRole.DATABASE_ENGINEER}
 
-    # Check which services already have a running engineer
-    in_progress_tasks = await engine.db.get_tasks_by_status(job.id, TaskStatus.IN_PROGRESS)
-    busy_services = {t.service for t in in_progress_tasks if t.agent_role in engineer_roles}
+    # A service is "busy" if any engineer task is actively running through its lifecycle
+    # (IN_PROGRESS, PR_OPEN, IN_REVIEW). Tasks in PR_OPEN/IN_REVIEW still own the service
+    # slot because they may come back for revisions. PENDING tasks are waiting, not active.
+    active_statuses = {TaskStatus.IN_PROGRESS, TaskStatus.PR_OPEN, TaskStatus.IN_REVIEW}
+    job_tasks = await engine.db.get_tasks(job.id)
+    busy_services = {t.service for t in job_tasks if t.agent_role in engineer_roles and t.status in active_statuses}
 
-    pending_tasks = await engine.db.get_tasks_by_status(job.id, TaskStatus.PENDING)
-    pending_tasks = [t for t in pending_tasks if t.agent_role in engineer_roles]
+    pending_tasks = [t for t in job_tasks if t.agent_role in engineer_roles and t.status == TaskStatus.PENDING]
 
     fresh_tasks = [t for t in pending_tasks if t.attempt <= 1]
     retry_tasks = [t for t in pending_tasks if t.attempt > 1]
 
-    # Pick up tasks needing revisions
-    revision_tasks = [t for t in in_progress_tasks if t.review_status == "changes_requested" and t.agent_role in engineer_roles]
+    # Pick up tasks needing revisions (in_progress with changes_requested)
+    in_progress_eng = [t for t in job_tasks if t.agent_role in engineer_roles and t.status == TaskStatus.IN_PROGRESS]
+    revision_tasks = [t for t in in_progress_eng if t.review_status == "changes_requested"]
 
-    all_tasks = fresh_tasks + retry_tasks + revision_tasks
-    if not all_tasks:
-        all_job_tasks = await engine.db.get_tasks(job.id)
-        real_tasks = [t for t in all_job_tasks if t.service not in ("_spec", "_arbiter")]
+    actionable_tasks = fresh_tasks + retry_tasks + revision_tasks
+    if not actionable_tasks:
+        real_tasks = [t for t in job_tasks if t.service not in ("_spec", "_arbiter")]
         if not real_tasks:
             logger.info("Job %s has no tasks -- arbiter determined no work needed", job.id)
             await engine.db.update_job_status(job.id, JobStatus.NO_WORK_NEEDED)
@@ -319,7 +321,7 @@ async def run_engineer(engine: JobEngine, job: Job, task: Task, is_revision: boo
         if not branch_name:
             short_job_id = job.id[:8]
             slug = task.title.lower().replace(" ", "-")[:30]
-            branch_name = f"feat/job-{short_job_id}/{slug}"
+            branch_name = f"feat-job-{short_job_id}-{slug}"
 
         try:
             await engine.db.update_task(task.id, branch_name=branch_name, status=TaskStatus.IN_PROGRESS)
@@ -341,19 +343,30 @@ async def run_engineer(engine: JobEngine, job: Job, task: Task, is_revision: boo
         context = f"## Revision Context (revision {task.revision_count})\n\n{review_feedback}"
 
     else:
-        # Fresh task — generate branch name (task already claimed as IN_PROGRESS by manage_dev_tasks)
+        # Fresh task — generate branch name per job+service so sequential tasks for the
+        # same service share one branch (and one MR).
         short_job_id = job.id[:8]
-        slug = task.title.lower().replace(" ", "-")[:30]
-        branch_name = f"feat/job-{short_job_id}/{slug}"
+        branch_name = f"feat-job-{short_job_id}-{task.service}"
+
+        # Inherit PR from a prior completed task on the same service+branch so the
+        # engineer pushes to the existing MR instead of creating a new one.
+        update_kwargs: dict = {"branch_name": branch_name}
+        all_job_tasks = await engine.db.get_tasks(job.id)
+        prior = [t for t in all_job_tasks if t.service == task.service and t.id != task.id and t.pr_url and t.branch_name == branch_name]
+        if prior:
+            update_kwargs["pr_url"] = prior[-1].pr_url
+            update_kwargs["pr_number"] = prior[-1].pr_number
+            update_kwargs["mr_id"] = prior[-1].mr_id
+
         current_task = await engine.db.get_task(task.id)
         if current_task and current_task.status != TaskStatus.IN_PROGRESS:
             try:
-                await engine.db.update_task(task.id, branch_name=branch_name, status=TaskStatus.IN_PROGRESS)
+                await engine.db.update_task(task.id, status=TaskStatus.IN_PROGRESS, **update_kwargs)
             except InvalidTransitionError as e:
                 logger.warning("Rejected task transition for %s: %s", task.id, e)
                 return
         else:
-            await engine.db.update_task(task.id, branch_name=branch_name)
+            await engine.db.update_task(task.id, **update_kwargs)
 
     agent = Agent(job_id=job.id, role=task.agent_role, task_id=task.id, model=engine.config.model)
     agent = await engine.db.create_agent(agent)
@@ -446,10 +459,12 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
     )
     reviewer_task = await engine.db.create_task(reviewer_task)
 
-    agent = Agent(job_id=job.id, role=AgentRole.CODE_REVIEWER, task_id=reviewer_task.id, model=engine.config.model)
-    agent = await engine.db.create_agent(agent)
-
     project, service = engine._resolve_service(task.service)
+
+    # Use project model if available, otherwise fall back to engine config
+    model = project.model if project and project.model else engine.config.model
+    agent = Agent(job_id=job.id, role=AgentRole.CODE_REVIEWER, task_id=reviewer_task.id, model=model)
+    agent = await engine.db.create_agent(agent)
 
     await engine.db.record_event(job.id, "agent_launched", "engine", f"agent={agent.id} role=code_reviewer task={task.id}")
     await engine._nats_agent_status(job.id, agent.id, "code_reviewer", "launched")
@@ -486,7 +501,20 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
         provider=provider,
         mr_info=mr_info if provider else None,
         context=context,
+        agent=agent,
     )
+
+    # Mark the reviewer task as done/failed regardless of verdict
+    reviewer_terminal_status = TaskStatus.DONE if result_agent.status == "done" else TaskStatus.FAILED
+    try:
+        await engine.db.update_task(
+            reviewer_task.id,
+            status=reviewer_terminal_status,
+            agent_role="",
+            verdict=getattr(result_agent, "_review_verdict", None) or "",
+        )
+    except InvalidTransitionError as e:
+        logger.warning("Could not mark reviewer task %s as %s: %s", reviewer_task.id, reviewer_terminal_status, e)
 
     # Re-fetch task — it may have moved on if a concurrent reviewer already handled it
     current_task = await engine.db.get_task(task.id)
@@ -546,11 +574,14 @@ async def manage_dev_tasks(engine: JobEngine, job: Job):
     if not dev_tasks:
         return
 
-    # Track which services already have a running engineer
-    busy_services = {t.service for t in dev_tasks if t.status == TaskStatus.IN_PROGRESS}
-    launched_services = set()
-
     terminal_statuses = {TaskStatus.MERGED, TaskStatus.DONE, TaskStatus.FAILED}
+
+    # A service is "busy" if any engineer task is actively running through its lifecycle
+    # (IN_PROGRESS, PR_OPEN, IN_REVIEW). Tasks in PR_OPEN/IN_REVIEW still own the service
+    # slot because they may come back for revisions. PENDING tasks are waiting, not active.
+    active_statuses = {TaskStatus.IN_PROGRESS, TaskStatus.PR_OPEN, TaskStatus.IN_REVIEW}
+    busy_services = {t.service for t in dev_tasks if t.status in active_statuses}
+    launched_services = set()
 
     for task in dev_tasks:
         if task.status == TaskStatus.PR_OPEN:

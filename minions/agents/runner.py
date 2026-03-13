@@ -74,6 +74,8 @@ async def run_agent(
             # Build review-specific prompt and tool executor
             changed_files = mr_info.get("changed_files", [])
             system_prompt = build_prompt(task, project, changed_files)
+            if context:
+                system_prompt += f"\n\n---\n\n{context}"
             tools = REVIEW_TOOL_DEFINITIONS
             executor = ToolExecutor(
                 provider=provider,
@@ -113,6 +115,8 @@ async def run_agent(
             log_path=log_path,
             user_message=user_message,
             max_turns=max_turns,
+            db=db,
+            job_id=job.id,
         )
 
         agent.input_tokens = result["input_tokens"]
@@ -168,6 +172,8 @@ async def _agent_loop_generic(
     log_path: Path,
     user_message: str | None = None,
     max_turns: int = 30,
+    db=None,
+    job_id: str | None = None,
 ) -> dict:
     """Generic tool-use loop for all agents (job orchestration + code review).
 
@@ -184,8 +190,27 @@ async def _agent_loop_generic(
     verdict = None
     summary = ""
     start_time = time.time()
-    wind_down_sent = False
+    wind_down_phase = 0  # 0=normal, 1=wind-down (80%), 2=hard-stop (90%)
     wind_down_turn = int(max_turns * 0.8)
+    hard_stop_turn = int(max_turns * 0.9)
+
+    # Tools the agent is always allowed to call during hard-stop phase.
+    # Everything else gets blocked so the agent is forced to ship.
+    _WRAP_UP_TOOLS = frozenset(
+        {
+            "create_branch",
+            "commit",
+            "push",
+            "create_pr",
+            "report_pr",
+            "complete_subtask",
+            "fail_subtask",
+            "update_task_status",
+            "send_heartbeat",
+            "submit_review",
+            "report_review_complete",
+        }
+    )
 
     with open(log_path, "w", encoding="utf-8") as log:
         log.write(f"=== Agent Log ===\nModel: {model}\nStarted: {_now()}\n\n")
@@ -196,12 +221,27 @@ async def _agent_loop_generic(
                 logger.warning("Agent timeout after %ds", elapsed)
                 break
 
-            # Inject wind-down message at 80% of turns or 80% of timeout
-            if not wind_down_sent:
-                turns_near_limit = num_turns >= wind_down_turn
-                time_near_limit = elapsed >= timeout * 0.8
-                if turns_near_limit or time_near_limit:
-                    wind_down_sent = True
+            # --- Wind-down escalation ---
+            turns_pct_reached = num_turns >= hard_stop_turn
+            time_pct_reached = elapsed >= timeout * 0.9
+            if wind_down_phase < 2 and (turns_pct_reached or time_pct_reached):
+                wind_down_phase = 2
+                remaining_turns = max_turns - num_turns
+                remaining_time = int(timeout - elapsed)
+                hard_msg = (
+                    f"🛑 HARD STOP: You have only {remaining_turns} turns and ~{remaining_time}s left. "
+                    "Non-essential tool calls will be BLOCKED from now on. "
+                    "You may ONLY call: create_branch, commit, push, create_pr, report_pr, "
+                    "complete_subtask, fail_subtask, update_task_status, send_heartbeat. "
+                    "Commit and push what you have RIGHT NOW, then create the merge request."
+                )
+                messages.append({"role": "user", "content": hard_msg})
+                log.write(f"[SYSTEM] Hard-stop injected at turn {num_turns}\n")
+            elif wind_down_phase < 1:
+                turns_near = num_turns >= wind_down_turn
+                time_near = elapsed >= timeout * 0.8
+                if turns_near or time_near:
+                    wind_down_phase = 1
                     remaining_turns = max_turns - num_turns
                     remaining_time = int(timeout - elapsed)
                     wind_down_msg = (
@@ -212,6 +252,16 @@ async def _agent_loop_generic(
                     )
                     messages.append({"role": "user", "content": wind_down_msg})
                     log.write(f"[SYSTEM] Wind-down injected at turn {num_turns}\n")
+            elif wind_down_phase == 1 and num_turns % 3 == 0:
+                # Repeat wind-down every 3 turns so it doesn't get buried
+                remaining_turns = max_turns - num_turns
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": f"⚠️ REMINDER: {remaining_turns} turns left. Stop fixing issues and ship the MR now.",
+                    }
+                )
+                log.write(f"[SYSTEM] Wind-down reminder at turn {num_turns}\n")
 
             num_turns += 1
             log.write(f"\n--- Turn {num_turns} ---\n")
@@ -271,10 +321,47 @@ async def _agent_loop_generic(
 
                 log.write(f"Tool: {fn_name}({json.dumps(fn_args)[:200]})\n")
 
-                if tool_executor:
+                # Hard-stop phase: block non-essential tools
+                tc_start = time.time()
+                tc_error = None
+                if wind_down_phase >= 2 and fn_name not in _WRAP_UP_TOOLS:
+                    result = json.dumps(
+                        {
+                            "error": f"BLOCKED: '{fn_name}' is not allowed during hard-stop phase. "
+                            "You must wrap up now — use create_branch, commit, push, create_pr, report_pr only."
+                        }
+                    )
+                    tc_error = "blocked_hard_stop"
+                    log.write(f"[BLOCKED] {fn_name} blocked during hard-stop\n")
+                elif tool_executor:
                     result = await tool_executor.execute(fn_name, fn_args)
                 else:
                     result = json.dumps({"error": "No tool executor configured"})
+
+                tc_duration = (time.time() - tc_start) * 1000
+
+                # Extract error from result if present
+                if tc_error is None:
+                    try:
+                        parsed = json.loads(result)
+                        if isinstance(parsed, dict) and "error" in parsed:
+                            tc_error = str(parsed["error"])[:200]
+                    except json.JSONDecodeError, TypeError:
+                        pass
+
+                # Record tool call to DB for dashboard visibility
+                if db and job_id:
+                    try:
+                        await db.record_tool_call(
+                            tool_name=fn_name,
+                            params=fn_args,
+                            result=result[:1000] if result else None,
+                            error=tc_error,
+                            duration_ms=tc_duration,
+                            job_id=job_id,
+                        )
+                    except Exception:
+                        pass
 
                 log.write(f"Result: {result[:500]}\n")
 

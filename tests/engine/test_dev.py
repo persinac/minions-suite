@@ -307,6 +307,87 @@ class TestLaunchEngineers:
         # t2 should NOT be spawned — api service is busy
         engine._spawn.assert_not_called()
 
+    async def test_skips_service_in_review(self, db, sample_job, make_task):
+        """Pending task should wait when another task for same service is in PR_OPEN or IN_REVIEW."""
+        from minions.engine.dev import launch_engineers
+
+        job = sample_job
+        await db.update_job_status(job.id, JobStatus.SPEC_READY)
+        await db.update_job_status(job.id, JobStatus.TASKS_CREATED)
+
+        # Task 1 is in review cycle (PR_OPEN), task 2 is pending — same service
+        t1 = make_task(job.id, title="In review", service="api")
+        await db.create_task(t1)
+        await db.update_task(t1.id, status=TaskStatus.IN_PROGRESS)
+        await db.update_task(t1.id, pr_url="https://gitlab.com/mr/1", pr_number=1, branch_name="feat/test")
+        await db.update_task(t1.id, status=TaskStatus.PR_OPEN, agent_role="")
+
+        t2 = make_task(job.id, title="Waiting", service="api")
+        await db.create_task(t2)
+
+        engine = _mock_engine(db)
+        await launch_engineers(engine, job)
+
+        # t2 should NOT be spawned — api service has a task in PR_OPEN
+        engine._spawn.assert_not_called()
+
+    async def test_skips_service_in_review_manage_dev_tasks(self, db, sample_job, make_task):
+        """manage_dev_tasks should not launch pending task when same service has IN_REVIEW task."""
+        from minions.engine.dev import manage_dev_tasks
+
+        job = sample_job
+        await db.update_job_status(job.id, JobStatus.SPEC_READY)
+        await db.update_job_status(job.id, JobStatus.TASKS_CREATED)
+        await db.update_job_status(job.id, JobStatus.DEV_IN_PROGRESS)
+
+        # Task 1 is in IN_REVIEW, task 2 is pending — same service
+        t1 = make_task(job.id, title="In review", service="api")
+        await db.create_task(t1)
+        await db.update_task(t1.id, status=TaskStatus.IN_PROGRESS)
+        await db.update_task(t1.id, pr_url="https://gitlab.com/mr/1", pr_number=1, branch_name="feat/test")
+        await db.update_task(t1.id, status=TaskStatus.PR_OPEN, agent_role="")
+        await db.update_task(t1.id, status=TaskStatus.IN_REVIEW, agent_role="")
+
+        # Create a running reviewer agent so stuck-reviewer recovery doesn't kick in
+        agent = Agent(job_id=job.id, role=AgentRole.CODE_REVIEWER, task_id=t1.id, model="test", status="running")
+        await db.create_agent(agent)
+        await db.update_agent(agent.id, status="running")
+
+        t2 = make_task(job.id, title="Waiting", service="api")
+        await db.create_task(t2)
+
+        engine = _mock_engine(db)
+        await manage_dev_tasks(engine, job)
+
+        # t2 should NOT be spawned — api service has a task in IN_REVIEW
+        engine._spawn.assert_not_called()
+
+    async def test_launches_after_service_freed(self, db, sample_job, make_task):
+        """Pending task should launch once the prior task for that service is terminal."""
+        from minions.engine.dev import launch_engineers
+
+        job = sample_job
+        await db.update_job_status(job.id, JobStatus.SPEC_READY)
+        await db.update_job_status(job.id, JobStatus.TASKS_CREATED)
+
+        # Task 1 is merged (terminal), task 2 is pending — same service
+        t1 = make_task(job.id, title="Merged", service="api")
+        await db.create_task(t1)
+        await db.update_task(t1.id, status=TaskStatus.IN_PROGRESS)
+        await db.update_task(t1.id, pr_url="https://gitlab.com/mr/1", pr_number=1, branch_name="feat/test")
+        await db.update_task(t1.id, status=TaskStatus.PR_OPEN, agent_role="")
+        await db.update_task(t1.id, status=TaskStatus.IN_REVIEW, agent_role="")
+        await db.update_task(t1.id, status=TaskStatus.MERGED, agent_role="code_reviewer")
+
+        t2 = make_task(job.id, title="Ready to go", service="api")
+        await db.create_task(t2)
+
+        engine = _mock_engine(db)
+        await launch_engineers(engine, job)
+
+        # t2 should be spawned — api service is free (t1 is terminal)
+        assert engine._spawn.call_count == 1
+
 
 # ---------------------------------------------------------------------------
 # manage_dev_tasks — orphan recovery
@@ -655,3 +736,233 @@ class TestSubtaskGating:
         # Should retry, not mark done
         assert updated.status == TaskStatus.PENDING
         assert updated.attempt == 2
+
+
+# ---------------------------------------------------------------------------
+# Revision completion — race condition: task already advanced to IN_REVIEW
+# ---------------------------------------------------------------------------
+
+
+class TestRevisionCompletionRace:
+    """Regression tests for the race where the poll loop advances a task to
+    IN_REVIEW before the revision engineer's completion handler runs."""
+
+    async def _setup_in_progress_task(self, db, job, make_task):
+        """Helper: create a task and walk it to IN_PROGRESS with PR metadata."""
+        task = make_task(job.id)
+        task = await db.create_task(task)
+        await db.update_task(task.id, status=TaskStatus.IN_PROGRESS)
+        await db.update_task(task.id, pr_url="https://gitlab.com/mr/1", pr_number=1, branch_name="feat/test")
+        return task
+
+    async def test_revision_does_not_clobber_in_review(self, db, sample_job, make_task):
+        """If the poll loop already moved the task to IN_REVIEW, the revision
+        completion handler must NOT reset it back to PR_OPEN."""
+        from minions.engine.dev import run_engineer
+
+        job = sample_job
+        task = await self._setup_in_progress_task(db, job, make_task)
+        engine = _mock_engine(db)
+        engine._resolve_service.return_value = (MagicMock(), MagicMock(repo_path="/tmp"))
+
+        # Simulate: agent tool call sets PR_OPEN, then poll loop advances to IN_REVIEW
+        # before run_agent() returns.
+        async def fake_run(job, task, agent, project, service, context=None):
+            await db.update_task(task.id, status=TaskStatus.PR_OPEN, agent_role="")
+            await db.update_task(task.id, status=TaskStatus.IN_REVIEW, agent_role="")
+            return _make_agent(status="done")
+
+        engine._run_in_process.side_effect = fake_run
+
+        await run_engineer(engine, job, task, is_revision=True)
+
+        updated = await db.get_task(task.id)
+        # Must stay in IN_REVIEW, NOT regress to PR_OPEN
+        assert updated.status == TaskStatus.IN_REVIEW
+
+    async def test_revision_does_not_clobber_pr_open(self, db, sample_job, make_task):
+        """If the task is already PR_OPEN (agent set it during execution),
+        the completion handler should not try to set it again."""
+        from minions.engine.dev import run_engineer
+
+        job = sample_job
+        task = await self._setup_in_progress_task(db, job, make_task)
+        engine = _mock_engine(db)
+        engine._resolve_service.return_value = (MagicMock(), MagicMock(repo_path="/tmp"))
+
+        async def fake_run(job, task, agent, project, service, context=None):
+            await db.update_task(task.id, status=TaskStatus.PR_OPEN, agent_role="")
+            return _make_agent(status="done")
+
+        engine._run_in_process.side_effect = fake_run
+
+        await run_engineer(engine, job, task, is_revision=True)
+
+        updated = await db.get_task(task.id)
+        assert updated.status == TaskStatus.PR_OPEN
+
+    async def test_revision_sets_pr_open_when_still_in_progress(self, db, sample_job, make_task):
+        """Normal case: task is still IN_PROGRESS when agent finishes — should advance to PR_OPEN."""
+        from minions.engine.dev import run_engineer
+
+        job = sample_job
+        task = await self._setup_in_progress_task(db, job, make_task)
+        engine = _mock_engine(db)
+        engine._resolve_service.return_value = (MagicMock(), MagicMock(repo_path="/tmp"))
+        engine._run_in_process.return_value = _make_agent(status="done")
+
+        await run_engineer(engine, job, task, is_revision=True)
+
+        updated = await db.get_task(task.id)
+        assert updated.status == TaskStatus.PR_OPEN
+
+
+# ---------------------------------------------------------------------------
+# run_task_review — single agent creation (no duplicates)
+# ---------------------------------------------------------------------------
+
+
+class TestReviewAgentCreation:
+    """Regression tests for double-agent creation in run_task_review."""
+
+    async def test_creates_exactly_one_agent(self, db, sample_job, make_task):
+        """run_task_review must create exactly one agent, not two."""
+        from unittest.mock import patch
+
+        from minions.engine.dev import run_task_review
+
+        job = sample_job
+        task = make_task(job.id)
+        task = await db.create_task(task)
+        await db.update_task(task.id, status=TaskStatus.IN_PROGRESS)
+        await db.update_task(task.id, pr_url="https://gitlab.com/mr/1", mr_id="1")
+
+        engine = _mock_engine(db)
+        mock_project = MagicMock()
+        mock_project.model = "claude-sonnet-4-6"
+        mock_project.project_id = "test/repo"
+        mock_project.auto_merge = False
+        mock_service = MagicMock(repo_path="/tmp")
+        engine._resolve_service.return_value = (mock_project, mock_service)
+
+        # Mock run_agent to capture calls and return a done agent
+        mock_result = _make_agent(role=AgentRole.CODE_REVIEWER, status="done")
+        mock_result._review_verdict = "approve"
+        mock_result._review_comments_posted = 0
+
+        with patch("minions.engine.dev.run_agent", new_callable=AsyncMock, return_value=mock_result) as mock_run:
+            with patch("minions.engine.review._create_provider_for_project") as mock_provider_factory:
+                mock_provider = AsyncMock()
+                mock_provider.get_changed_files.return_value = ["file.py"]
+                mock_provider_factory.return_value = mock_provider
+
+                await run_task_review(engine, job, task)
+
+                # run_agent must receive the pre-created agent
+                assert mock_run.call_count == 1
+                call_kwargs = mock_run.call_args.kwargs
+                assert call_kwargs.get("agent") is not None, "run_agent must receive agent= to prevent double creation"
+
+        # Verify only one agent was created in the DB for this job's reviewer tasks
+        agents = await db.get_agents_for_job(job.id)
+        reviewer_agents = [a for a in agents if a.role == AgentRole.CODE_REVIEWER]
+        assert len(reviewer_agents) == 1
+
+    async def test_agent_uses_project_model(self, db, sample_job, make_task):
+        """The reviewer agent should use the project model, not engine.config.model."""
+        from unittest.mock import patch
+
+        from minions.engine.dev import run_task_review
+
+        job = sample_job
+        task = make_task(job.id)
+        task = await db.create_task(task)
+        await db.update_task(task.id, status=TaskStatus.IN_PROGRESS)
+        await db.update_task(task.id, pr_url="https://gitlab.com/mr/1", mr_id="1")
+
+        engine = _mock_engine(db)
+        engine.config.model = "claude-opus-4-6"
+        mock_project = MagicMock()
+        mock_project.model = "claude-sonnet-4-6"
+        mock_project.project_id = "test/repo"
+        mock_project.auto_merge = False
+        mock_service = MagicMock(repo_path="/tmp")
+        engine._resolve_service.return_value = (mock_project, mock_service)
+
+        mock_result = _make_agent(role=AgentRole.CODE_REVIEWER, status="done")
+        mock_result._review_verdict = "approve"
+        mock_result._review_comments_posted = 0
+
+        with patch("minions.engine.dev.run_agent", new_callable=AsyncMock, return_value=mock_result) as mock_run:
+            with patch("minions.engine.review._create_provider_for_project") as mock_provider_factory:
+                mock_provider = AsyncMock()
+                mock_provider.get_changed_files.return_value = []
+                mock_provider_factory.return_value = mock_provider
+
+                await run_task_review(engine, job, task)
+
+        # The agent in the DB should have the project model, not the engine default
+        agents = await db.get_agents_for_job(job.id)
+        reviewer_agents = [a for a in agents if a.role == AgentRole.CODE_REVIEWER]
+        assert len(reviewer_agents) == 1
+        assert reviewer_agents[0].model == "claude-sonnet-4-6"
+
+
+# ---------------------------------------------------------------------------
+# manage_dev_tasks — PR_OPEN spawns exactly one reviewer
+# ---------------------------------------------------------------------------
+
+
+class TestManageDevTasksReviewSpawn:
+    async def _make_pr_open_task(self, db, job, make_task):
+        """Helper: create a task and walk it to PR_OPEN with all required fields."""
+        task = make_task(job.id)
+        task = await db.create_task(task)
+        await db.update_task(task.id, status=TaskStatus.IN_PROGRESS)
+        await db.update_task(task.id, pr_url="https://gitlab.com/mr/1", pr_number=1, branch_name="feat/test")
+        await db.update_task(task.id, status=TaskStatus.PR_OPEN, agent_role="")
+        return task
+
+    async def test_pr_open_spawns_single_reviewer(self, db, sample_job, make_task):
+        """When a task reaches PR_OPEN, manage_dev_tasks should spawn exactly one reviewer."""
+        from minions.engine.dev import manage_dev_tasks
+
+        job = sample_job
+        await db.update_job_status(job.id, JobStatus.SPEC_READY)
+        await db.update_job_status(job.id, JobStatus.TASKS_CREATED)
+        await db.update_job_status(job.id, JobStatus.DEV_IN_PROGRESS)
+
+        task = await self._make_pr_open_task(db, job, make_task)
+
+        engine = _mock_engine(db)
+        await manage_dev_tasks(engine, job)
+
+        # Should spawn exactly one reviewer
+        assert engine._spawn.call_count == 1
+
+        # Task should now be IN_REVIEW
+        updated = await db.get_task(task.id)
+        assert updated.status == TaskStatus.IN_REVIEW
+
+    async def test_in_review_does_not_spawn_another_reviewer(self, db, sample_job, make_task):
+        """A task already in IN_REVIEW should NOT trigger another reviewer spawn."""
+        from minions.engine.dev import manage_dev_tasks
+
+        job = sample_job
+        await db.update_job_status(job.id, JobStatus.SPEC_READY)
+        await db.update_job_status(job.id, JobStatus.TASKS_CREATED)
+        await db.update_job_status(job.id, JobStatus.DEV_IN_PROGRESS)
+
+        task = await self._make_pr_open_task(db, job, make_task)
+        await db.update_task(task.id, status=TaskStatus.IN_REVIEW, agent_role="")
+
+        # Create a running reviewer agent so the stuck-reviewer recovery doesn't kick in
+        agent = Agent(job_id=job.id, role=AgentRole.CODE_REVIEWER, task_id=task.id, model="test", status="running")
+        await db.create_agent(agent)
+        await db.update_agent(agent.id, status="running")
+
+        engine = _mock_engine(db)
+        await manage_dev_tasks(engine, job)
+
+        # No new spawns
+        engine._spawn.assert_not_called()
