@@ -102,6 +102,15 @@ class Config:
     s3_artifact_region: str = "us-east-1"
     s3_artifact_prefix: str = "minions"
 
+    # LangGraph feature flags
+    use_langgraph_agent: bool = True
+    use_langgraph_engine: bool = True
+
+    # Langfuse (optional, LLM observability)
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_host: str = "https://cloud.langfuse.com"
+
     # Container / deployment settings
     repo_base_dir: str = "/repos"
     mcp_connect_host: str = "localhost"
@@ -154,6 +163,11 @@ class Config:
             s3_artifact_bucket=os.getenv("S3_ARTIFACT_BUCKET", ""),
             s3_artifact_region=os.getenv("S3_ARTIFACT_REGION", "us-east-1"),
             s3_artifact_prefix=os.getenv("S3_ARTIFACT_PREFIX", "minions"),
+            use_langgraph_agent=os.getenv("USE_LANGGRAPH_AGENT", "").lower() in ("1", "true", "yes"),
+            use_langgraph_engine=os.getenv("USE_LANGGRAPH_ENGINE", "").lower() in ("1", "true", "yes"),
+            langfuse_public_key=os.getenv("LANGFUSE_PUBLIC_KEY", ""),
+            langfuse_secret_key=os.getenv("LANGFUSE_SECRET_KEY", ""),
+            langfuse_host=os.getenv("LANGFUSE_OTEL_HOST", "https://cloud.langfuse.com"),
             repo_base_dir=os.getenv("REPO_BASE_DIR", "/repos"),
             mcp_connect_host=os.getenv("MCP_CONNECT_HOST", "localhost"),
         )

@@ -150,7 +150,8 @@ def build_registry(config_path: str) -> dict[str, ProjectConfig]:
     """
     path = Path(config_path)
     if not path.exists():
-        raise ProjectRegistryError(f"Projects config not found: {config_path}")
+        logger.warning("Projects config not found: %s — continuing with empty registry", config_path)
+        return {}
 
     with open(path) as f:
         data = yaml.safe_load(f) or {}

@@ -81,7 +81,16 @@ async def _run_one_shot(url: str, project_name: str, config: Config) -> int:
     """Run a single review as a Job+Task and exit."""
     from .agents.runner import run_agent
     from .engine.review import _create_provider_for_project
+    from .observability.langfuse import create_langfuse_logger
     from .project_registry import build_registry
+
+    # Optional Langfuse tracing
+    langfuse_logger = create_langfuse_logger(config)
+    if langfuse_logger:
+        import litellm
+
+        litellm.callbacks = [langfuse_logger]
+        logger.info("Langfuse tracing enabled")
 
     db = _create_db(config)
     await db.connect()
@@ -240,6 +249,16 @@ async def _run_server(config: Config) -> None:
     if not ok:
         logger.error("Preflight checks failed — aborting server startup")
         return
+
+    # Optional Langfuse tracing
+    from .observability.langfuse import create_langfuse_logger
+
+    langfuse_logger = create_langfuse_logger(config)
+    if langfuse_logger:
+        import litellm
+
+        litellm.callbacks = [langfuse_logger]
+        logger.info("Langfuse tracing enabled")
 
     db = _create_db(config)
     await db.connect()

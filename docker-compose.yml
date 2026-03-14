@@ -8,6 +8,7 @@ services:
       - "${MCP_PORT:-8321}:8321"
     volumes:
       - ./projects.yaml:/app/projects.yaml:ro
+      - ./projects.local.yaml:/app/projects.local.yaml:ro
       - ./prompts:/app/prompts:ro
       - logs:/app/logs
     depends_on:

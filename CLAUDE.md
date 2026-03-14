@@ -44,6 +44,8 @@ minions/
 │
 ├── engine/                         # Job orchestration
 │   ├── job_engine.py               # Core JobEngine: poll loop, K8s dispatch, startup recovery
+│   ├── job_graph.py                # LangGraph StateGraph for job orchestration (USE_LANGGRAPH_ENGINE)
+│   ├── checkpointer.py             # LangGraph checkpointer factory (Postgres/SQLite)
 │   ├── review.py                   # Review job handlers (launch, run in-process, check completion)
 │   ├── dev.py                      # Dev handlers (spec analyst, arbiter, engineers, revisions)
 │   ├── deploy.py                   # Deploy monitor launch, deployment checks
@@ -52,6 +54,7 @@ minions/
 │
 ├── agents/                         # Agent execution
 │   ├── runner.py                   # run_agent(), _agent_loop_generic() — unified LiteLLM tool-use loop
+│   ├── graph.py                    # LangGraph subgraph wrapper for agent loop (USE_LANGGRAPH_AGENT)
 │   ├── dispatch.py                 # AgentWorkItem, serialization (K8s handoff)
 │   ├── prompt.py                   # build_prompt(), build_agent_prompt(), profile inference
 │   └── tools/                      # Tool schemas + executors

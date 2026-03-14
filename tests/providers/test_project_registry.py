@@ -109,9 +109,9 @@ class TestBuildRegistry:
         assert proj.model == "gpt-4o"
         assert "backend" in proj.review_profile.roles
 
-    def test_missing_config_raises(self):
-        with pytest.raises(ProjectRegistryError):
-            build_registry("/nonexistent/projects.yaml")
+    def test_missing_config_returns_empty(self):
+        result = build_registry("/nonexistent/projects.yaml")
+        assert result == {}
 
     def test_empty_config(self, tmp_path):
         config_path = tmp_path / "projects.yaml"

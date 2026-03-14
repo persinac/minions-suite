@@ -18,6 +18,7 @@ from ..core.timeout_config import TimeoutConfig
 from ..db import AbstractDatabase
 from ..project_registry import ProjectConfig, ServiceTarget, build_registry
 from . import deploy, dev, review
+from .job_graph import advance_job_via_graph
 
 if TYPE_CHECKING:
     from ..artifact_uploader import ArtifactUploader
@@ -381,6 +382,21 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
 
     async def _startup_cleanup(self):
         """Detect orphaned agents from a prior unclean shutdown and recover their tasks."""
+        # If LangGraph engine is enabled, attempt checkpoint-based resume first
+        if self.config.use_langgraph_engine:
+            try:
+                from .checkpointer import create_checkpointer
+                from .job_graph import resume_from_checkpoint
+
+                checkpointer = await create_checkpointer(self.config)
+                active_jobs = await self.db.get_active_jobs()
+                for job in active_jobs:
+                    resumed = await resume_from_checkpoint(self, job.id, checkpointer)
+                    if resumed:
+                        logger.info("Startup cleanup: resumed job %s from LangGraph checkpoint", job.id)
+            except Exception as e:
+                logger.warning("LangGraph checkpoint resume failed, falling back to standard cleanup: %s", e)
+
         logger.info("Startup cleanup: checking for orphaned agents...")
         orphaned_count = 0
         recovered_count = 0
@@ -510,6 +526,14 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
 
     async def _advance(self, job: Job):
         """Advance a job to the next state if conditions are met."""
+        if self.config.use_langgraph_engine:
+            try:
+                await advance_job_via_graph(self, job)
+                return
+            except Exception as e:
+                logger.warning("LangGraph advance failed for job %s, falling back: %s", job.id, e)
+                # Fall through to existing dispatcher
+
         try:
             if job.status == JobStatus.SPEC_RECEIVED:
                 await dev.launch_spec_analyst(self, job)

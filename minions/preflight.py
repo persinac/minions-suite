@@ -311,6 +311,23 @@ def check_arbiter(config: Config) -> Check:
     return Check("arbiter", PASS, f"prerequisites met (nats={config.nats_enabled}, db={config.db_backend})")
 
 
+def check_langfuse(config: Config) -> Check:
+    """Check Langfuse connectivity (optional, warn-only)."""
+    if not config.langfuse_public_key:
+        return Check("langfuse", WARN, "not configured — LLM tracing disabled", required=False)
+    try:
+        import urllib.request
+
+        url = f"{config.langfuse_host}/api/public/health"
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            if resp.status == 200:
+                return Check("langfuse", PASS, f"reachable ({config.langfuse_host})", required=False)
+            return Check("langfuse", WARN, f"unexpected status {resp.status} from {config.langfuse_host}", required=False)
+    except Exception as e:
+        return Check("langfuse", WARN, f"unreachable ({config.langfuse_host}): {str(e)[:60]}", required=False)
+
+
 def run_preflight(config: Config | None = None) -> list[Check]:
     """Run all preflight checks and return results."""
     config = config or Config.from_env()
@@ -363,6 +380,9 @@ def run_preflight(config: Config | None = None) -> list[Check]:
     # K8s dispatch check (when enabled)
     if config.k8s_dispatch:
         checks.append(check_k8s(config))
+
+    # Langfuse (optional)
+    checks.append(check_langfuse(config))
 
     return checks
 

@@ -106,18 +106,36 @@ async def run_agent(
         if db:
             await db.update_agent(agent.id, status="running")
 
-        result = await _agent_loop_generic(
-            model=model,
-            system_prompt=system_prompt,
-            tools=tools,
-            tool_executor=tool_executor,
-            timeout=timeout,
-            log_path=log_path,
-            user_message=user_message,
-            max_turns=max_turns,
-            db=db,
-            job_id=job.id,
-        )
+        if config.use_langgraph_agent:
+            result = await _run_via_subgraph(
+                model=model,
+                system_prompt=system_prompt,
+                tools=tools,
+                tool_executor=tool_executor,
+                timeout=timeout,
+                log_path=log_path,
+                user_message=user_message,
+                max_turns=max_turns,
+                db=db,
+                job=job,
+                task=task,
+                agent=agent,
+            )
+        else:
+            result = await _agent_loop_generic(
+                model=model,
+                system_prompt=system_prompt,
+                tools=tools,
+                tool_executor=tool_executor,
+                timeout=timeout,
+                log_path=log_path,
+                user_message=user_message,
+                max_turns=max_turns,
+                db=db,
+                job_id=job.id,
+                agent_id=agent.id if agent else "",
+                agent_role=str(task.agent_role) if task.agent_role else "",
+            )
 
         agent.input_tokens = result["input_tokens"]
         agent.output_tokens = result["output_tokens"]
@@ -163,6 +181,51 @@ async def run_agent(
     return agent
 
 
+async def _run_via_subgraph(
+    model: str,
+    system_prompt: str,
+    tools: list,
+    tool_executor,
+    timeout: int,
+    log_path,
+    user_message: str | None,
+    max_turns: int,
+    db,
+    job: Job,
+    task: Task,
+    agent: Agent,
+) -> dict:
+    """Execute the agent loop via LangGraph subgraph."""
+    from .graph import build_agent_subgraph
+
+    subgraph = build_agent_subgraph()
+
+    state = {
+        "job_id": job.id,
+        "task_id": task.id,
+        "agent_id": agent.id,
+        "agent_role": task.agent_role,
+        "model": model,
+        "system_prompt": system_prompt,
+        "tools": tools,
+        "tool_executor": tool_executor,
+        "timeout": timeout,
+        "max_turns": max_turns,
+        "log_path": str(log_path),
+        "user_message": user_message,
+        "db": db,
+        "result": None,
+        "error": None,
+    }
+
+    output = await subgraph.ainvoke(state)
+
+    if output.get("error"):
+        raise RuntimeError(output["error"])
+
+    return output["result"]
+
+
 async def _agent_loop_generic(
     model: str,
     system_prompt: str,
@@ -174,6 +237,8 @@ async def _agent_loop_generic(
     max_turns: int = 30,
     db=None,
     job_id: str | None = None,
+    agent_id: str | None = None,
+    agent_role: str | None = None,
 ) -> dict:
     """Generic tool-use loop for all agents (job orchestration + code review).
 
@@ -275,15 +340,21 @@ async def _agent_loop_generic(
                         tools=tools,
                         max_tokens=8192,
                         timeout=120,
+                        metadata={
+                            "trace_name": agent_role or "agent",
+                            "session_id": job_id or "",
+                            "trace_user_id": agent_id or "",
+                            "tags": ["minion-suite"],
+                        },
                     )
                     break
-                except litellm.exceptions.RateLimitError as e:
+                except (litellm.exceptions.RateLimitError, litellm.exceptions.InternalServerError) as e:
                     if attempt == max_retries - 1:
-                        log.write(f"LLM rate limit exceeded after {max_retries} retries: {e}\n")
+                        log.write(f"LLM API error after {max_retries} retries: {e}\n")
                         raise
                     wait = min(2**attempt * 5, 60)
-                    log.write(f"Rate limited (attempt {attempt + 1}/{max_retries}), waiting {wait}s...\n")
-                    logger.warning("Rate limited on turn %d, retrying in %ds (attempt %d/%d)", num_turns, wait, attempt + 1, max_retries)
+                    log.write(f"Retryable API error (attempt {attempt + 1}/{max_retries}), waiting {wait}s...\n")
+                    logger.warning("Retryable API error on turn %d, retrying in %ds (attempt %d/%d): %s", num_turns, wait, attempt + 1, max_retries, type(e).__name__)
                     await asyncio.sleep(wait)
                 except Exception as e:
                     log.write(f"LLM call failed: {e}\n")
