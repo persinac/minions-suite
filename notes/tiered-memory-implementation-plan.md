@@ -6,6 +6,14 @@ Minion Suite agents are stateless between invocations. We're building a **modula
 
 Design decisions are documented in `notes/distributed-memory-knowledge-graphs.md`.
 
+## Additional notes
+
+- Package naming: agent-memory as the pip package, agent_memory as the Python package. Check PyPI for name conflicts.
+- AGE Docker image: apache/age:PG17_latest bundles AGE but not pgvector. May need a custom Dockerfile that layers pgvector on top, or use pgvector/pgvector:pg17 as base and
+install AGE.
+- fakeredis for tests: Confirm fakeredis[json] supports RediSearch FT.SEARCH commands. If not, tests may need a thin mock layer over the search operations.
+
+
 ---
 
 ## Package Structure
