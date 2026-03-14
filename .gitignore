@@ -15,3 +15,4 @@ docker-compose.local.yml
 .idea
 dnc
 .env.local
+projects.yaml
