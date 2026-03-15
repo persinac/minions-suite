@@ -32,6 +32,7 @@ def build_review_prompt(
     task: Task,
     project: ProjectConfig,
     changed_files: list[str],
+    knowledge_context: str | None = None,
 ) -> str:
     """Assemble the full review prompt from composable sections.
 
@@ -69,7 +70,11 @@ def build_review_prompt(
         if content:
             sections.append(content)
 
-    # 6. Review context
+    # 6. Knowledge context from memory system (when enabled)
+    if knowledge_context:
+        sections.append(knowledge_context)
+
+    # 7. Review context
     context = _build_review_context(task, project, changed_files)
     sections.append(context)
 
@@ -138,6 +143,7 @@ def build_agent_prompt(
     project: ProjectConfig | None = None,
     service: ServiceTarget | None = None,
     context: str | None = None,
+    knowledge_context: str | None = None,
 ) -> str:
     """Assemble a prompt for a job orchestration agent.
 
@@ -204,7 +210,11 @@ def build_agent_prompt(
     task_context = _build_task_context(job, task, project, service)
     sections.append(task_context)
 
-    # 5. Additional context (e.g. checkpoint summary for retries)
+    # 5. Knowledge context from memory system (when enabled)
+    if knowledge_context:
+        sections.append(knowledge_context)
+
+    # 6. Additional context (e.g. checkpoint summary for retries)
     if context:
         sections.append(context)
 

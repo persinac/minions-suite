@@ -611,18 +611,59 @@ CODE_REVIEWER_TOOL_DEFINITIONS: list[dict[str, Any]] = [
 ]
 
 
-def get_tools_for_role(role: str) -> list[dict[str, Any]]:
+# ---------------------------------------------------------------------------
+# Memory tools (gated on memory_enabled)
+# ---------------------------------------------------------------------------
+
+_MEMORY_TOOLS: list[dict[str, Any]] = [
+    _fn(
+        "publish_fact",
+        "Publish a fact to the project's shared memory. Other agents can query it.",
+        {
+            "category": {"type": "string", "description": "Fact category (e.g. 'decision', 'observation', 'pattern')."},
+            "key": {"type": "string", "description": "Fact key (short identifier)."},
+            "value": {"type": "string", "description": "Fact value (the content)."},
+            "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags for categorization."},
+        },
+    ),
+    _fn(
+        "query_facts",
+        "Query shared facts from the project's memory.",
+        {
+            "category": {"type": "string", "description": "Filter by category (optional)."},
+            "tags": {"type": "array", "items": {"type": "string"}, "description": "Filter by tags (optional)."},
+            "limit": {"type": "integer", "description": "Max results to return (default 20)."},
+        },
+    ),
+    _fn(
+        "create_memory_note",
+        "Create a persistent memory note that will be available in future jobs.",
+        {
+            "content": {"type": "string", "description": "Note content."},
+            "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags for categorization."},
+            "links": {"type": "array", "items": {"type": "string"}, "description": "Entity names this note relates to (files, modules, concepts)."},
+        },
+    ),
+]
+
+
+def get_tools_for_role(role: str, memory_enabled: bool = False) -> list[dict[str, Any]]:
     """Return the tool definitions appropriate for the given agent role."""
     if role == "spec_analyst":
-        return SPEC_ANALYST_TOOL_DEFINITIONS
-    if role == "arbiter":
-        return ARBITER_TOOL_DEFINITIONS
-    if role in ("backend_engineer", "frontend_engineer"):
-        return ENGINEER_TOOL_DEFINITIONS
-    if role == "database_engineer":
-        return DB_ENGINEER_TOOL_DEFINITIONS
-    if role == "code_reviewer":
-        return CODE_REVIEWER_TOOL_DEFINITIONS
-    if role == "deploy_monitor":
-        return DEPLOY_TOOL_DEFINITIONS
-    return ENGINEER_TOOL_DEFINITIONS
+        tools = SPEC_ANALYST_TOOL_DEFINITIONS
+    elif role == "arbiter":
+        tools = ARBITER_TOOL_DEFINITIONS
+    elif role in ("backend_engineer", "frontend_engineer"):
+        tools = ENGINEER_TOOL_DEFINITIONS
+    elif role == "database_engineer":
+        tools = DB_ENGINEER_TOOL_DEFINITIONS
+    elif role == "code_reviewer":
+        tools = CODE_REVIEWER_TOOL_DEFINITIONS
+    elif role == "deploy_monitor":
+        tools = DEPLOY_TOOL_DEFINITIONS
+    else:
+        tools = ENGINEER_TOOL_DEFINITIONS
+
+    if memory_enabled:
+        tools = tools + _MEMORY_TOOLS
+    return tools

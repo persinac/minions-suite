@@ -141,7 +141,7 @@ class TestEngineerCompletion:
         engine._resolve_service.return_value = (MagicMock(), MagicMock(repo_path="/tmp"))
 
         # Simulate agent creating a PR during execution
-        async def fake_run(job, task, agent, project, service, context=None):
+        async def fake_run(job, task, agent, project, service, context=None, **kwargs):
             await db.update_task(task.id, pr_url="https://gitlab.com/mr/1", pr_number=1, branch_name="feat/test")
             return _make_agent(status="done")
 
@@ -198,7 +198,7 @@ class TestEngineerCompletion:
         engine._resolve_service.return_value = (MagicMock(), MagicMock(repo_path="/tmp"))
 
         # Simulate agent moving task to PR_OPEN during execution
-        async def fake_run(job, task, agent, project, service, context=None):
+        async def fake_run(job, task, agent, project, service, context=None, **kwargs):
             await db.update_task(task.id, pr_url="https://gitlab.com/mr/1", pr_number=1, branch_name="feat/test")
             await db.update_task(task.id, status=TaskStatus.PR_OPEN, agent_role="")
             return _make_agent(status="done")
@@ -598,7 +598,7 @@ class TestSubtaskGating:
         engine = _mock_engine(db)
         engine._resolve_service.return_value = (MagicMock(), MagicMock(repo_path="/tmp"))
 
-        async def fake_run(job, task, agent, project, service, context=None):
+        async def fake_run(job, task, agent, project, service, context=None, **kwargs):
             await db.update_task(task.id, pr_url="https://gitlab.com/mr/1", pr_number=1, branch_name="feat/test")
             return _make_agent(status="done")
 
@@ -699,7 +699,7 @@ class TestSubtaskGating:
         engine = _mock_engine(db)
         engine._resolve_service.return_value = (MagicMock(), MagicMock(repo_path="/tmp"))
 
-        async def fake_run(job, task, agent, project, service, context=None):
+        async def fake_run(job, task, agent, project, service, context=None, **kwargs):
             await db.update_task(task.id, pr_url="https://gitlab.com/mr/1", pr_number=1, branch_name="feat/test")
             return _make_agent(status="done")
 
@@ -767,7 +767,7 @@ class TestRevisionCompletionRace:
 
         # Simulate: agent tool call sets PR_OPEN, then poll loop advances to IN_REVIEW
         # before run_agent() returns.
-        async def fake_run(job, task, agent, project, service, context=None):
+        async def fake_run(job, task, agent, project, service, context=None, **kwargs):
             await db.update_task(task.id, status=TaskStatus.PR_OPEN, agent_role="")
             await db.update_task(task.id, status=TaskStatus.IN_REVIEW, agent_role="")
             return _make_agent(status="done")
@@ -790,7 +790,7 @@ class TestRevisionCompletionRace:
         engine = _mock_engine(db)
         engine._resolve_service.return_value = (MagicMock(), MagicMock(repo_path="/tmp"))
 
-        async def fake_run(job, task, agent, project, service, context=None):
+        async def fake_run(job, task, agent, project, service, context=None, **kwargs):
             await db.update_task(task.id, status=TaskStatus.PR_OPEN, agent_role="")
             return _make_agent(status="done")
 

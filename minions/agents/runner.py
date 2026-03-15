@@ -34,6 +34,7 @@ async def run_agent(
     provider: GitProviderProtocol | None = None,
     mr_info: dict | None = None,
     agent: Agent | None = None,
+    knowledge_context: str | None = None,
 ) -> Agent:
     """Execute an agent for a job task using the LiteLLM tool-use loop.
 
@@ -73,7 +74,7 @@ async def run_agent(
         if is_reviewer and provider and mr_info:
             # Build review-specific prompt and tool executor
             changed_files = mr_info.get("changed_files", [])
-            system_prompt = build_prompt(task, project, changed_files)
+            system_prompt = build_prompt(task, project, changed_files, knowledge_context=knowledge_context)
             if context:
                 system_prompt += f"\n\n---\n\n{context}"
             tools = REVIEW_TOOL_DEFINITIONS
@@ -86,8 +87,9 @@ async def run_agent(
             tool_executor = executor
             user_message = "Please review the merge request described in your context. Start by reading the diff."
         else:
-            system_prompt = build_agent_prompt(job, task, project, service, context)
-            tools = get_tools_for_role(task.agent_role)
+            system_prompt = build_agent_prompt(job, task, project, service, context, knowledge_context=knowledge_context)
+            memory_enabled = config.memory_enabled if config else False
+            tools = get_tools_for_role(task.agent_role, memory_enabled=memory_enabled)
             user_message = None
 
         # Use role-specific timeout if available
@@ -354,7 +356,14 @@ async def _agent_loop_generic(
                         raise
                     wait = min(2**attempt * 5, 60)
                     log.write(f"Retryable API error (attempt {attempt + 1}/{max_retries}), waiting {wait}s...\n")
-                    logger.warning("Retryable API error on turn %d, retrying in %ds (attempt %d/%d): %s", num_turns, wait, attempt + 1, max_retries, type(e).__name__)
+                    logger.warning(
+                        "Retryable API error on turn %d, retrying in %ds (attempt %d/%d): %s",
+                        num_turns,
+                        wait,
+                        attempt + 1,
+                        max_retries,
+                        type(e).__name__,
+                    )
                     await asyncio.sleep(wait)
                 except Exception as e:
                     log.write(f"LLM call failed: {e}\n")

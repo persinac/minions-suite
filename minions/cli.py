@@ -288,8 +288,44 @@ async def _run_server(config: Config) -> None:
             secrets_name=config.k8s_secrets_name,
         )
 
+    # Optional memory system (agent-memory)
+    memory_tuplespace = None
+    memory_store = None
+    memory_archiver = None
+    if config.memory_enabled:
+        try:
+            from agent_memory.archiver import MemoryArchiver
+            from agent_memory.backends.redis import RedisTupleSpaceBackend
+            from agent_memory.store import MemoryStore
+            from agent_memory.tuplespace import TupleSpace
+
+            # Create tuplespace (L2 — Redis)
+            ts_backend = RedisTupleSpaceBackend(url=config.redis_url, password=config.redis_password or None)
+            # Use first project name as default scope; agents override per-job
+            first_project = next(iter(projects.keys()), "default")
+            memory_tuplespace = TupleSpace(ts_backend, project=first_project)
+            await memory_tuplespace.connect()
+
+            # Memory store (L3) reuses the existing Postgres pool if available
+            # For now, create a lightweight wrapper — the Postgres backend will be
+            # initialised later if POSTGRES_URL is set.
+            from agent_memory.backends.postgres import PostgresMemoryBackend
+
+            if config.postgres_url:
+                ms_backend = PostgresMemoryBackend(conninfo=config.postgres_url)
+                memory_store = MemoryStore(ms_backend)
+                await memory_store.connect()
+
+            memory_archiver = MemoryArchiver()
+            logger.info("Memory system enabled (redis=%s)", config.redis_url)
+        except Exception:
+            logger.exception("Failed to initialise memory system — continuing without it")
+            memory_tuplespace = None
+            memory_store = None
+            memory_archiver = None
+
     # Create MCP server with audit middleware
-    mcp = create_server(db, config)
+    mcp = create_server(db, config, tuplespace=memory_tuplespace, memory_enabled=config.memory_enabled)
     mcp.add_middleware(ToolAuditMiddleware(db))
 
     # Create artifact uploader
@@ -298,7 +334,17 @@ async def _run_server(config: Config) -> None:
     artifact_uploader = ArtifactUploader(db, config)
 
     # Job engine handles both development and review jobs
-    job_engine = JobEngine(db, config, k8s_launcher=k8s_launcher, nats_client=nats_client, artifact_uploader=artifact_uploader, mcp_server=mcp)
+    job_engine = JobEngine(
+        db,
+        config,
+        k8s_launcher=k8s_launcher,
+        nats_client=nats_client,
+        artifact_uploader=artifact_uploader,
+        mcp_server=mcp,
+        memory_store=memory_store,
+        tuplespace=memory_tuplespace,
+        archiver=memory_archiver,
+    )
 
     # Optional GitLab issues poller
     gitlab_issues_poller = None
@@ -335,6 +381,10 @@ async def _run_server(config: Config) -> None:
             await arbiter.stop()
         for t in tasks:
             t.cancel()
+        if memory_tuplespace:
+            await memory_tuplespace.close()
+        if memory_store:
+            await memory_store.close()
         if nats_client:
             await nats_client.close()
         await db.close()

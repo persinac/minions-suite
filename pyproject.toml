@@ -24,7 +24,12 @@ dependencies = [
     "langgraph-checkpoint-postgres>=2.0",
     "langgraph-checkpoint-sqlite>=2.0",
     "langfuse>=4.0.0",
+    "agent-memory",
+    "redis[hiredis]>=5.0",
 ]
+
+[tool.uv.sources]
+agent-memory = { path = "agent-memory", editable = true }
 
 [project.optional-dependencies]
 test = ["pytest>=8.0", "pytest-asyncio>=0.24"]

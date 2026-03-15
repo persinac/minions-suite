@@ -51,6 +51,10 @@ _STATE_TOOL_INJECTIONS: dict[str, list[tuple[str, str]]] = {
     # Read-only state tools
     "get_messages": [("job_id", "job_id")],
     "get_job_status": [("job_id", "job_id")],
+    # Memory tools (only active when memory_enabled)
+    "publish_fact": [("project", "project_name"), ("job_id", "job_id"), ("agent_role", "agent_role")],
+    "query_facts": [("project", "project_name")],
+    "create_memory_note": [("project", "project_name"), ("job_id", "job_id"), ("agent_role", "agent_role")],
 }
 
 # Local tools handled by built-in methods (filesystem, git, subprocess).
@@ -87,6 +91,7 @@ class McpToolExecutor:
         working_dir: str = ".",
         config=None,
         project=None,
+        project_name: str = "",
     ):
         self.mcp_server = mcp_server
         self.job_id = job_id
@@ -96,6 +101,7 @@ class McpToolExecutor:
         self.working_dir = working_dir
         self.config = config
         self.project = project
+        self.project_name = project_name
         # Cache resolved MCP tool functions
         self._tool_cache: dict[str, object] = {}
 
@@ -404,6 +410,7 @@ def create_mcp_tool_executor(
     working_dir: str = ".",
     config=None,
     project=None,
+    project_name: str = "",
 ):
     """Create the appropriate tool executor for the given task's agent role.
 
@@ -422,4 +429,5 @@ def create_mcp_tool_executor(
         working_dir=working_dir,
         config=config,
         project=project,
+        project_name=project_name or task.service,
     )

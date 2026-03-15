@@ -102,6 +102,12 @@ class Config:
     s3_artifact_region: str = "us-east-1"
     s3_artifact_prefix: str = "minions"
 
+    # Memory system (agent-memory)
+    memory_enabled: bool = False
+    redis_url: str = "redis://localhost:6379"
+    redis_password: str = ""
+    memory_l3_token_budget: int = 2000
+
     # LangGraph feature flags
     use_langgraph_agent: bool = True
     use_langgraph_engine: bool = True
@@ -163,6 +169,10 @@ class Config:
             s3_artifact_bucket=os.getenv("S3_ARTIFACT_BUCKET", ""),
             s3_artifact_region=os.getenv("S3_ARTIFACT_REGION", "us-east-1"),
             s3_artifact_prefix=os.getenv("S3_ARTIFACT_PREFIX", "minions"),
+            memory_enabled=os.getenv("MEMORY_ENABLED", "").lower() in ("1", "true", "yes"),
+            redis_url=os.getenv("REDIS_URL", "redis://localhost:6379"),
+            redis_password=os.getenv("REDIS_PASSWORD", ""),
+            memory_l3_token_budget=int(os.getenv("MEMORY_L3_TOKEN_BUDGET", "2000")),
             use_langgraph_agent=os.getenv("USE_LANGGRAPH_AGENT", "").lower() in ("1", "true", "yes"),
             use_langgraph_engine=os.getenv("USE_LANGGRAPH_ENGINE", "").lower() in ("1", "true", "yes"),
             langfuse_public_key=os.getenv("LANGFUSE_PUBLIC_KEY", ""),

@@ -83,6 +83,19 @@ async def run_review_in_process(engine: JobEngine, job: Job, task: Task):
     await engine.db.record_event(job.id, "agent_launched", "engine", f"agent={agent.id} role=code_reviewer task={task.id}")
     await engine._nats_agent_status(job.id, agent.id, "code_reviewer", "launched")
 
+    # Build file knowledge context from memory system (when enabled)
+    knowledge_ctx = None
+    if engine.memory_store and engine.config.memory_enabled:
+        try:
+            from agent_memory.context import build_file_context
+
+            changed_files = mr_info.get("changed_files", [])
+            knowledge_ctx = await build_file_context(
+                engine.memory_store, task.service, changed_files, max_tokens=engine.config.memory_l3_token_budget
+            )
+        except Exception as e:
+            logger.warning("Failed to build file context for review: %s", e)
+
     # Run the agent
     result_agent = await run_agent(
         job=job,
@@ -93,6 +106,7 @@ async def run_review_in_process(engine: JobEngine, job: Job, task: Task):
         provider=provider,
         mr_info=mr_info,
         agent=agent,
+        knowledge_context=knowledge_ctx,
     )
 
     # Update task with review results

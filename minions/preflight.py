@@ -311,6 +311,21 @@ def check_arbiter(config: Config) -> Check:
     return Check("arbiter", PASS, f"prerequisites met (nats={config.nats_enabled}, db={config.db_backend})")
 
 
+def check_redis(config: Config) -> Check:
+    """Check if Redis is reachable when memory is enabled."""
+    try:
+        import redis as redis_lib
+
+        r = redis_lib.Redis.from_url(config.redis_url, password=config.redis_password or None, socket_connect_timeout=5)
+        r.ping()
+        r.close()
+        return Check("redis", PASS, f"connected ({config.redis_url})")
+    except ImportError:
+        return Check("redis", FAIL, "redis not installed -- run: uv add redis[hiredis]")
+    except Exception as e:
+        return Check("redis", FAIL, f"connection failed: {str(e)[:80]}")
+
+
 def check_langfuse(config: Config) -> Check:
     """Check Langfuse connectivity (optional, warn-only)."""
     if not config.langfuse_public_key:
@@ -380,6 +395,10 @@ def run_preflight(config: Config | None = None) -> list[Check]:
     # K8s dispatch check (when enabled)
     if config.k8s_dispatch:
         checks.append(check_k8s(config))
+
+    # Memory system (Redis, when enabled)
+    if config.memory_enabled:
+        checks.append(check_redis(config))
 
     # Langfuse (optional)
     checks.append(check_langfuse(config))

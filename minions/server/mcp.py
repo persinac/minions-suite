@@ -154,7 +154,7 @@ async def _label_mr(config: Config | None, job_id: str, service: str, pr_url: st
         logger.warning("Could not label MR %s: %s", pr_url, e)
 
 
-def create_server(db: AbstractDatabase, config: Config | None = None) -> FastMCP:
+def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace=None, memory_enabled: bool = False) -> FastMCP:
     """Create and return the FastMCP server with review + job orchestration tools."""
     mcp = FastMCP("Minion Suite", instructions="AI agent suite — composable, vendor-agnostic agents. Code review + multi-agent job orchestration.")
 
@@ -943,5 +943,64 @@ def create_server(db: AbstractDatabase, config: Config | None = None) -> FastMCP
         if not log_path.exists():
             return json.dumps({"error": "Log file not found"})
         return log_path.read_text()
+
+    # =========================================================================
+    # Memory Tools (gated on memory_enabled)
+    # =========================================================================
+
+    if memory_enabled and tuplespace:
+
+        @mcp.tool()
+        async def publish_fact(
+            project: str,
+            category: str,
+            key: str,
+            value: str,
+            tags: list[str] | None = None,
+            job_id: str | None = None,
+            agent_role: str | None = None,
+        ) -> str:
+            """Publish a fact to the project's shared tuplespace memory."""
+            fact_id = await tuplespace.out(
+                category=category,
+                key=key,
+                value=value,
+                tags=tags,
+                agent_role=agent_role,
+                job_id=job_id,
+            )
+            return json.dumps({"fact_id": fact_id, "project": project})
+
+        @mcp.tool()
+        async def query_facts(
+            project: str,
+            category: str | None = None,
+            key_pattern: str | None = None,
+            tags: list[str] | None = None,
+            limit: int = 20,
+        ) -> str:
+            """Query shared facts from the project's tuplespace memory."""
+            facts = await tuplespace.rd(category=category, key_pattern=key_pattern, tags=tags, limit=limit)
+            return json.dumps([f.model_dump() for f in facts])
+
+        @mcp.tool()
+        async def create_memory_note(
+            content: str,
+            tags: list[str] | None = None,
+            project: str | None = None,
+            links: list[str] | None = None,
+            job_id: str | None = None,
+            agent_role: str | None = None,
+        ) -> str:
+            """Create a persistent memory note. Writes to L2 and queues for L3 archival."""
+            fact_id = await tuplespace.out(
+                category="memory_note",
+                key=f"note-{job_id or 'manual'}",
+                value=content,
+                tags=tags,
+                agent_role=agent_role,
+                job_id=job_id,
+            )
+            return json.dumps({"fact_id": fact_id, "queued_for_archival": True})
 
     return mcp

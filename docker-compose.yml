@@ -16,10 +16,24 @@ services:
         condition: service_healthy
       nats:
         condition: service_started
+      redis:
+        condition: service_healthy
     restart: unless-stopped
 
+  redis:
+    image: redis/redis-stack:latest
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+
   postgres:
-    image: postgres:17
+    image: apache/age:PG17_latest
     environment:
       POSTGRES_USER: minion
       POSTGRES_PASSWORD: minion
@@ -47,4 +61,5 @@ services:
 volumes:
   pgdata:
   natsdata:
+  redisdata:
   logs:

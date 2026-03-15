@@ -66,6 +66,10 @@ class TestStateToolInjections:
             "get_messages",
             "get_job_status",
             "report_review_complete",
+            # Memory tools (gated on memory_enabled at runtime)
+            "publish_fact",
+            "query_facts",
+            "create_memory_note",
         }
         assert expected_tools == set(_STATE_TOOL_INJECTIONS.keys())
 

@@ -377,12 +377,24 @@ async def run_engineer(engine: JobEngine, job: Job, task: Task, is_revision: boo
     await engine._nats_agent_status(job.id, agent.id, str(task.agent_role), "launched")
     await engine._trello_comment(job, f"{task.agent_role} started {action} on {task.service} (agent={agent.id[:8]})")
 
+    # Build knowledge context from memory system (when enabled)
+    knowledge_ctx = None
+    if engine.memory_store and engine.config.memory_enabled:
+        try:
+            from agent_memory.context import build_knowledge_context
+
+            knowledge_ctx = await build_knowledge_context(
+                engine.memory_store, task.service, task.description, max_tokens=engine.config.memory_l3_token_budget
+            )
+        except Exception as e:
+            logger.warning("Failed to build knowledge context: %s", e)
+
     if engine._k8s_enabled:
-        prompt = engine._maybe_dry_run(build_agent_prompt(job, task, project, service, context))
+        prompt = engine._maybe_dry_run(build_agent_prompt(job, task, project, service, context, knowledge_context=knowledge_ctx))
         await engine._dispatch_k8s(job, agent, str(task.agent_role), prompt, service.repo_path, service=service)
         return
 
-    result_agent = await engine._run_in_process(job, task, agent, project, service, context)
+    result_agent = await engine._run_in_process(job, task, agent, project, service, context, knowledge_context=knowledge_ctx)
 
     if result_agent.status == "done":
         if is_revision:

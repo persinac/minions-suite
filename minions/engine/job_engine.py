@@ -37,6 +37,9 @@ class JobEngine:
         nats_client: NatsClient | None = None,
         artifact_uploader: ArtifactUploader | None = None,
         mcp_server=None,
+        memory_store=None,
+        tuplespace=None,
+        archiver=None,
     ):
         self.db = db
         self.config = config
@@ -48,6 +51,10 @@ class JobEngine:
         self._artifact_uploader = artifact_uploader
         self._mcp_server = mcp_server
         self._advance_errors: dict[str, int] = {}  # job_id -> consecutive error count
+        # Memory system (optional, gated on config.memory_enabled)
+        self.memory_store = memory_store
+        self.tuplespace = tuplespace
+        self.archiver = archiver
 
     # Dry-run instructions appended to agent prompts when config.dry_run is True
     DRY_RUN_SUFFIX = """
@@ -109,18 +116,26 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
             logger.debug("Failed to post Trello comment for job %s", job.id, exc_info=True)
 
     async def _on_job_terminal(self, job_id: str):
-        """Upload artifacts to S3 when a job reaches a terminal state."""
-        if not self._artifact_uploader or not self._artifact_uploader.is_enabled():
-            return
-        try:
-            prefix = await self._artifact_uploader.upload_job_artifacts(job_id)
-            if prefix:
-                bucket = self.config.s3_artifact_bucket
-                await self.db.record_event(job_id, "artifacts_uploaded", "job_engine", f"s3://{bucket}/{prefix}")
-            else:
-                await self.db.record_event(job_id, "artifacts_upload_failed", "job_engine", "uploader returned None")
-        except Exception:
-            logger.exception("Failed to upload artifacts for job %s", job_id)
+        """Upload artifacts to S3 and archive memory when a job reaches a terminal state."""
+        if self._artifact_uploader and self._artifact_uploader.is_enabled():
+            try:
+                prefix = await self._artifact_uploader.upload_job_artifacts(job_id)
+                if prefix:
+                    bucket = self.config.s3_artifact_bucket
+                    await self.db.record_event(job_id, "artifacts_uploaded", "job_engine", f"s3://{bucket}/{prefix}")
+                else:
+                    await self.db.record_event(job_id, "artifacts_upload_failed", "job_engine", "uploader returned None")
+            except Exception:
+                logger.exception("Failed to upload artifacts for job %s", job_id)
+
+        # Archive L2 facts to L3 knowledge graph (when memory is enabled)
+        if self.config.memory_enabled and self.archiver and self.tuplespace and self.memory_store:
+            try:
+                archived = await self.archiver.archive_job(self.tuplespace, self.memory_store, job_id, self.tuplespace.project)
+                if archived > 0:
+                    await self.db.record_event(job_id, "memory_archived", "job_engine", f"archived {archived} facts to L3")
+            except Exception:
+                logger.exception("Failed to archive memory for job %s", job_id)
 
     @property
     def _k8s_enabled(self) -> bool:
@@ -573,6 +588,7 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
         project: ProjectConfig | None,
         service: ServiceTarget | None,
         context: str | None = None,
+        knowledge_context: str | None = None,
     ):
         """Run an agent in-process using the LiteLLM tool-use loop."""
         # Create the appropriate tool executor for non-reviewer roles
@@ -602,6 +618,7 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
             tool_executor=tool_executor,
             context=context,
             agent=agent,
+            knowledge_context=knowledge_context,
         )
 
         if result_agent.status == "done":
