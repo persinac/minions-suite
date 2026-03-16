@@ -7,6 +7,7 @@ services:
     ports:
       - "${MCP_PORT:-8321}:8321"
     volumes:
+      - ./settings.toml:/app/settings.toml:ro
       - ./projects.yaml:/app/projects.yaml:ro
       - ./projects.local.yaml:/app/projects.local.yaml:ro
       - ./prompts:/app/prompts:ro
@@ -26,6 +27,7 @@ services:
     command: ["python", "-m", "minions", "--pollers"]
     env_file: .env
     volumes:
+      - ./settings.toml:/app/settings.toml:ro
       - ./projects.yaml:/app/projects.yaml:ro
       - ./projects.local.yaml:/app/projects.local.yaml:ro
       - ./prompts:/app/prompts:ro

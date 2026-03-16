@@ -27,6 +27,7 @@ dependencies = [
     "agent-memory",
     "redis[hiredis]>=5.0",
     "prometheus-client>=0.20",
+    "dynaconf>=3.2",
 ]
 
 [tool.uv.sources]

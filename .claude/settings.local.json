@@ -17,7 +17,8 @@
       "Bash(cd:*)",
       "Bash(uv run:*)",
       "Bash(python3:*)",
-      "Bash(task:*)"
+      "Bash(task:*)",
+      "Bash(uv lock:*)"
     ]
   }
 }

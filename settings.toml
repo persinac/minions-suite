@@ -1,0 +1,105 @@
+# Minions Suite — Configuration Settings
+# Secrets (API keys, tokens, passwords) belong in .env, not here.
+# Override any value locally via settings.local.toml (gitignored).
+# Override per-environment via [development] or [production] sections.
+
+[default]
+model = "gpt-4o"
+log_level = "INFO"
+projects_file = "projects.yaml"
+dry_run = false
+
+[default.server]
+mcp_port = 8321
+mcp_host = "localhost"
+mcp_connect_host = "localhost"
+repo_base_dir = "/repos"
+
+[default.engine]
+poll_interval = 10
+job_poll_interval = 5
+max_concurrent_reviews = 3
+max_concurrent_jobs = 3
+max_revisions = 3
+agent_timeout = 600
+agent_log_dir = "logs/agents"
+agent_dispatch_mode = "in_process"
+
+[default.database]
+backend = "sqlite"
+db_path = "reviews.db"
+pool_min = 2
+pool_max = 10
+
+[default.nats]
+enabled = false
+stream = "minions"
+
+[default.arbiter]
+enabled = false
+
+[default.pollers.gitlab_issues]
+enabled = false
+poll_interval = 120
+
+[default.pollers.trello]
+poll_interval = 180
+
+[default.pollers.renovate]
+enabled = false
+poll_interval = 60
+max_concurrent = 2
+
+[default.memory]
+enabled = false
+l3_token_budget = 2000
+log_level = "INFO"
+
+[default.langfuse]
+host = "https://cloud.langfuse.com"
+
+[default.langgraph]
+use_agent = true
+use_engine = true
+
+[default.k8s]
+dispatch = false
+namespace = "minion-suite"
+agent_image = ""
+agent_sa = "minion-suite-agent"
+job_ttl = 3600
+secrets_name = "minion-suite-secrets"
+
+[default.artifacts]
+bucket = ""
+region = "us-east-1"
+prefix = "minions"
+
+[default.git]
+provider = "gitlab"
+gitlab_url = ""
+
+[default.aws]
+profile = "mcp-minions"
+
+# ── Per-environment overrides ────────────────────────────────────────────────
+# Activate with ENV_FOR_DYNACONF=development (or production)
+
+[development]
+log_level = "DEBUG"
+
+[development.database]
+backend = "postgres"
+
+[development.nats]
+enabled = true
+
+[development.arbiter]
+enabled = true
+
+[development.memory]
+enabled = true
+log_level = "DEBUG"
+
+[development.pollers.gitlab_issues]
+enabled = true
