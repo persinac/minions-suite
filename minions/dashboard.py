@@ -7,7 +7,6 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
-import aiosqlite
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
@@ -17,8 +16,6 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Minions Suite Dashboard")
 
-_db_path: str = ""
-_db_backend: str = "sqlite"
 _postgres_url: str = ""
 
 
@@ -138,19 +135,15 @@ def _esc(s) -> str:
 
 
 async def _get_db():
-    if _db_backend in ("postgres", "dual") and _postgres_url:
-        import psycopg
-        from psycopg.rows import dict_row
+    import psycopg
+    from psycopg.rows import dict_row
 
-        conn = await psycopg.AsyncConnection.connect(
-            _postgres_url,
-            row_factory=dict_row,
-            autocommit=True,
-        )
-        return _PgConnectionWrapper(conn)
-    db = await aiosqlite.connect(_db_path)
-    db.row_factory = aiosqlite.Row
-    return db
+    conn = await psycopg.AsyncConnection.connect(
+        _postgres_url,
+        row_factory=dict_row,
+        autocommit=True,
+    )
+    return _PgConnectionWrapper(conn)
 
 
 # -- CSS --
@@ -1475,16 +1468,10 @@ def run_dashboard(port: int = 8322):
     """Start the dashboard web server."""
     import uvicorn
 
-    global _db_path, _db_backend, _postgres_url
+    global _postgres_url
     config = Config.from_env()
-    _db_path = config.db_path
-    _db_backend = config.db_backend
     _postgres_url = config.postgres_url
 
-    if _db_backend in ("postgres", "dual") and _postgres_url:
-        logger.info("Starting dashboard on http://localhost:%d", port)
-        logger.info("Reading from database: postgres (search_path=minions)")
-    else:
-        logger.info("Starting dashboard on http://localhost:%d", port)
-        logger.info("Reading from database: %s", _db_path)
+    logger.info("Starting dashboard on http://localhost:%d", port)
+    logger.info("Reading from database: postgres (search_path=minions)")
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")

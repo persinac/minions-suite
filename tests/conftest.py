@@ -1,18 +1,83 @@
-"""Shared fixtures for all tests."""
+"""Shared fixtures for all tests.
 
+Uses a real PostgreSQL database (from docker-compose.local.yml) for test/prod parity.
+Requires: postgres running on localhost:5434 (user=minion, password=minion, db=minion).
+"""
+
+import asyncio
+import os
+import sys
+from pathlib import Path
+
+import psycopg
 import pytest
 
 from minions.core.models import AgentRole, Task
-from minions.db import SQLiteDatabase
+from minions.db.postgres import PostgresDatabase
+
+# Windows: psycopg async requires SelectorEventLoop, not ProactorEventLoop
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+# Test database connection — uses the same postgres from docker-compose.local.yml
+TEST_PG_URL = os.getenv(
+    "TEST_POSTGRES_URL",
+    "postgresql://minion:minion@localhost:5434/minion",
+)
+TEST_SCHEMA = "minions_test"
+
+_SCHEMA_SQL = (Path(__file__).parent / "conftest_pg_schema.sql").read_text(encoding="utf-8")
+
+# All tables in dependency-safe truncation order (children before parents)
+_TABLES = [
+    "state_transitions",
+    "heartbeats",
+    "subtasks",
+    "message_log",
+    "events",
+    "tool_calls",
+    "messages",
+    "agents",
+    "tasks",
+    "jobs",
+]
+
+
+@pytest.fixture(scope="session")
+def pg_schema():
+    """Create a test schema once per session, drop on teardown."""
+    with psycopg.connect(TEST_PG_URL, autocommit=True) as conn:
+        conn.execute(f"DROP SCHEMA IF EXISTS {TEST_SCHEMA} CASCADE")
+        conn.execute(f"CREATE SCHEMA {TEST_SCHEMA}")
+        conn.execute(f"SET search_path TO {TEST_SCHEMA}")
+        conn.execute(_SCHEMA_SQL)
+    yield TEST_SCHEMA
+    with psycopg.connect(TEST_PG_URL, autocommit=True) as conn:
+        conn.execute(f"DROP SCHEMA IF EXISTS {TEST_SCHEMA} CASCADE")
 
 
 @pytest.fixture
-async def db():
-    """In-memory SQLite database, schema applied."""
-    database = SQLiteDatabase(":memory:")
+async def db(pg_schema):
+    """Per-test PostgresDatabase — truncates all tables for isolation."""
+    import minions.db.postgres as pg_mod
+
+    original_schema = pg_mod.JOB_SCHEMA
+    pg_mod.JOB_SCHEMA = TEST_SCHEMA
+
+    database = PostgresDatabase(TEST_PG_URL, pool_min=1, pool_max=3)
     await database.connect()
+
     yield database
+
     await database.close()
+
+    # Truncate all tables for next test
+    with psycopg.connect(TEST_PG_URL, autocommit=True) as conn:
+        conn.execute(f"SET search_path TO {TEST_SCHEMA}")
+        for table in _TABLES:
+            conn.execute(f"TRUNCATE {TEST_SCHEMA}.{table} CASCADE")
+
+    pg_mod.JOB_SCHEMA = original_schema
 
 
 @pytest.fixture

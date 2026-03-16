@@ -151,8 +151,6 @@ class Config:
     mcp_host: str = "localhost"
 
     # Database
-    db_backend: str = "sqlite"  # sqlite, postgres
-    db_path: str = "reviews.db"
     postgres_url: str = ""
     postgres_pool_min: int = 2
     postgres_pool_max: int = 10
@@ -277,8 +275,6 @@ class Config:
             agent_log_dir=_env_or("AGENT_LOG_DIR", _get("engine", "agent_log_dir"), str(base / "logs" / "agents")),
             agent_dispatch_mode=_env_or("AGENT_DISPATCH_MODE", _get("engine", "agent_dispatch_mode"), "in_process"),
             # -- Database --
-            db_backend=_env_or("DB_BACKEND", _get("database", "backend"), "sqlite"),
-            db_path=_env_or("DB_PATH", _get("database", "db_path"), str(base / "reviews.db")),
             postgres_url=_build_postgres_url(),  # secret — always from env
             postgres_pool_min=_env_or_int("PG_POOL_MIN", _get("database", "pool_min"), 2),
             postgres_pool_max=_env_or_int("PG_POOL_MAX", _get("database", "pool_max"), 10),

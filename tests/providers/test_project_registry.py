@@ -1,10 +1,8 @@
 """Tests for project registry and profile inference."""
 
-import pytest
 import yaml
 
 from minions.project_registry import (
-    ProjectRegistryError,
     build_registry,
     infer_profile,
 )

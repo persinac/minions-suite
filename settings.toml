@@ -26,8 +26,6 @@ agent_log_dir = "logs/agents"
 agent_dispatch_mode = "in_process"
 
 [default.database]
-backend = "sqlite"
-db_path = "reviews.db"
 pool_min = 2
 pool_max = 10
 
@@ -87,9 +85,6 @@ profile = "mcp-minions"
 
 [development]
 log_level = "DEBUG"
-
-[development.database]
-backend = "postgres"
 
 [development.nats]
 enabled = true

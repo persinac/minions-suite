@@ -241,8 +241,7 @@ def check_k8s(config: Config) -> Check:
 def check_postgres(config: Config) -> Check:
     """Check if Postgres is reachable and the minions schema exists."""
     if not config.postgres_url:
-        required = config.db_backend == "postgres"
-        return Check("postgres", FAIL if required else WARN, "POSTGRES_URL not set (and no DB_HOST)", required=required)
+        return Check("postgres", FAIL, "POSTGRES_URL not set (and no DB_HOST)", required=True)
     try:
         import psycopg
 
@@ -250,7 +249,7 @@ def check_postgres(config: Config) -> Check:
             cur.execute("SELECT 1 FROM information_schema.schemata WHERE schema_name = 'minions'")
             row = cur.fetchone()
             if row:
-                return Check("postgres", PASS, f"connected, minions schema found (backend={config.db_backend})")
+                return Check("postgres", PASS, "connected, minions schema found")
             return Check("postgres", WARN, "connected, but minions schema not found -- run dbmate up")
     except ImportError:
         return Check("postgres", FAIL, "psycopg not installed -- run: uv add psycopg[binary]")
@@ -300,15 +299,10 @@ def check_nats(config: Config) -> Check:
 
 
 def check_arbiter(config: Config) -> Check:
-    """Validate arbiter prerequisites: NATS enabled, Postgres backend."""
-    issues = []
+    """Validate arbiter prerequisites: NATS enabled."""
     if not config.nats_enabled:
-        issues.append("NATS_ENABLED must be true")
-    if config.db_backend == "sqlite":
-        issues.append("DB_BACKEND must be postgres or dual (heartbeats table is Postgres-only)")
-    if issues:
-        return Check("arbiter", FAIL, "; ".join(issues))
-    return Check("arbiter", PASS, f"prerequisites met (nats={config.nats_enabled}, db={config.db_backend})")
+        return Check("arbiter", FAIL, "NATS_ENABLED must be true")
+    return Check("arbiter", PASS, f"prerequisites met (nats={config.nats_enabled})")
 
 
 def check_redis(config: Config) -> Check:
@@ -381,8 +375,7 @@ def run_preflight(config: Config | None = None) -> list[Check]:
         checks.append(check_s3_artifact_bucket(config))
 
     # Database backend check
-    if config.db_backend in ("postgres", "dual"):
-        checks.append(check_postgres(config))
+    checks.append(check_postgres(config))
 
     # NATS check (required when enabled)
     if config.nats_enabled:

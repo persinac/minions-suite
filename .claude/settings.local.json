@@ -18,7 +18,9 @@
       "Bash(uv run:*)",
       "Bash(python3:*)",
       "Bash(task:*)",
-      "Bash(uv lock:*)"
+      "Bash(uv lock:*)",
+      "Bash(docker compose:*)",
+      "Bash(docker pull:*)"
     ]
   }
 }

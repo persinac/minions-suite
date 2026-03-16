@@ -28,9 +28,6 @@ def settings_dir(tmp_path, monkeypatch):
         poll_interval = 77
         max_concurrent_reviews = 7
 
-        [default.database]
-        backend = "postgres"
-
         [default.nats]
         enabled = true
 
@@ -111,7 +108,6 @@ def test_load_reads_from_toml(settings_dir):
     assert config.agent_timeout == 999
     assert config.engine_poll_interval == 77
     assert config.max_concurrent_reviews == 7
-    assert config.db_backend == "postgres"
     assert config.nats_enabled is True
     assert config.gitlab_issues_enabled is True
     assert config.gitlab_issues_poll_interval == 42

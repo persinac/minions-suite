@@ -1,48 +1,78 @@
 """Tests for the dashboard memory page and API endpoints."""
 
+import os
+
+import psycopg
 import pytest
 from fastapi.testclient import TestClient
 
 from minions.dashboard import app
 
+TEST_PG_URL = os.getenv(
+    "TEST_POSTGRES_URL",
+    "postgresql://minion:minion@localhost:5434/minion",
+)
+TEST_SCHEMA = "minions_dashboard_test"
+
 
 @pytest.fixture
-def client(tmp_path):
-    """Test client with a temporary SQLite database."""
+def client():
+    """Test client backed by a temporary Postgres schema."""
     import minions.dashboard as dash
 
-    db_path = str(tmp_path / "test.db")
-    dash._db_path = db_path
-    dash._db_backend = "sqlite"
-    dash._postgres_url = ""
+    # Create test schema with minimal tables
+    with psycopg.connect(TEST_PG_URL, autocommit=True) as conn:
+        conn.execute(f"DROP SCHEMA IF EXISTS {TEST_SCHEMA} CASCADE")
+        conn.execute(f"CREATE SCHEMA {TEST_SCHEMA}")
+        conn.execute(f"SET search_path TO {TEST_SCHEMA}")
+        conn.execute("""
+            CREATE TABLE jobs (id TEXT, status TEXT, spec TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), error TEXT, job_type TEXT, mr_url TEXT);
+            CREATE TABLE tasks (id TEXT, job_id TEXT, status TEXT, title TEXT, service TEXT, agent_role TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), pr_url TEXT, pr_number TEXT, error TEXT, verdict TEXT, comments_posted INTEGER DEFAULT 0, mr_url TEXT, revision_count INTEGER DEFAULT 0);
+            CREATE TABLE agents (id TEXT, job_id TEXT, task_id TEXT, role TEXT, status TEXT, started_at TIMESTAMPTZ DEFAULT NOW(), finished_at TIMESTAMPTZ, log_file TEXT, error TEXT, input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0, cost_usd REAL DEFAULT 0, num_turns INTEGER DEFAULT 0, model TEXT);
+            CREATE TABLE events (id SERIAL, job_id TEXT, event_type TEXT, detail TEXT, created_at TIMESTAMPTZ DEFAULT NOW());
+            CREATE TABLE tool_calls (id SERIAL, job_id TEXT, tool_name TEXT, params JSONB, duration_ms REAL, error TEXT, created_at TIMESTAMPTZ DEFAULT NOW());
+            CREATE TABLE messages (id TEXT, job_id TEXT, from_role TEXT, to_role TEXT, content TEXT, created_at TIMESTAMPTZ DEFAULT NOW());
+            CREATE TABLE subtasks (id TEXT, task_id TEXT, description TEXT, status TEXT, sequence_num INTEGER, error TEXT);
+            CREATE TABLE reviews (id TEXT);
+            CREATE TABLE state_transitions (id SERIAL);
+            CREATE TABLE heartbeats (agent_id TEXT);
+            CREATE TABLE message_log (id SERIAL);
+        """)
 
-    # Create minimal schema — memory tables don't exist in SQLite so
-    # the memory page should handle that gracefully.
-    import sqlite3
+    # Point dashboard at test postgres
+    dash._postgres_url = TEST_PG_URL
 
-    conn = sqlite3.connect(db_path)
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS jobs (id TEXT, status TEXT, spec TEXT, created_at TEXT, updated_at TEXT, error TEXT, job_type TEXT, mr_url TEXT)"
+    # Patch _MINION_TABLES to use test schema
+    original_tables = dash._PgConnectionWrapper._MINION_TABLES
+    dash._PgConnectionWrapper._MINION_TABLES = tuple(
+        list(original_tables) + [TEST_SCHEMA.replace("_", "")]
     )
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS tasks (id TEXT, job_id TEXT, status TEXT, title TEXT, service TEXT, agent_role TEXT, created_at TEXT, pr_url TEXT, pr_number TEXT, error TEXT, verdict TEXT, comments_posted INTEGER, mr_url TEXT, revision_count INTEGER)"
-    )
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS agents (id TEXT, job_id TEXT, task_id TEXT, role TEXT, status TEXT, started_at TEXT, finished_at TEXT, log_file TEXT, error TEXT, input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0, cost_usd REAL DEFAULT 0, num_turns INTEGER DEFAULT 0, model TEXT)"
-    )
-    conn.execute("CREATE TABLE IF NOT EXISTS events (id TEXT, job_id TEXT, event_type TEXT, detail TEXT, created_at TEXT)")
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS tool_calls (id TEXT, job_id TEXT, tool_name TEXT, params TEXT, duration_ms REAL, error TEXT, created_at TEXT)"
-    )
-    conn.execute("CREATE TABLE IF NOT EXISTS messages (id TEXT, job_id TEXT, from_role TEXT, to_role TEXT, content TEXT, created_at TEXT)")
-    conn.execute("CREATE TABLE IF NOT EXISTS subtasks (id TEXT, task_id TEXT, description TEXT, status TEXT, sequence_num INTEGER, error TEXT)")
-    conn.execute("CREATE TABLE IF NOT EXISTS reviews (id TEXT)")
-    conn.execute("CREATE TABLE IF NOT EXISTS state_transitions (id TEXT)")
-    conn.execute("CREATE TABLE IF NOT EXISTS heartbeats (id TEXT)")
-    conn.execute("CREATE TABLE IF NOT EXISTS message_log (id TEXT)")
-    conn.close()
 
-    return TestClient(app)
+    # Override schema qualification to use test schema
+    original_execute = dash._PgConnectionWrapper.execute
+
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def patched_execute(self, sql, params=None):
+        pg_sql = sql.replace("?", "%s")
+        # Qualify with test schema instead of minions
+        for tbl in original_tables:
+            pg_sql = pg_sql.replace(f"FROM {tbl}", f"FROM {TEST_SCHEMA}.{tbl}")
+            pg_sql = pg_sql.replace(f"JOIN {tbl}", f"JOIN {TEST_SCHEMA}.{tbl}")
+        cursor = self._conn.cursor()
+        await cursor.execute(pg_sql, params)
+        yield dash._PgCursorWrapper(cursor)
+
+    dash._PgConnectionWrapper.execute = patched_execute
+
+    yield TestClient(app)
+
+    dash._PgConnectionWrapper.execute = original_execute
+    dash._PgConnectionWrapper._MINION_TABLES = original_tables
+
+    with psycopg.connect(TEST_PG_URL, autocommit=True) as conn:
+        conn.execute(f"DROP SCHEMA IF EXISTS {TEST_SCHEMA} CASCADE")
 
 
 def test_index_returns_200(client):
@@ -63,7 +93,6 @@ def test_memory_page_graceful_without_memory_tables(client):
     """Memory page should not crash when memory_* tables don't exist."""
     resp = client.get("/memory")
     assert resp.status_code == 200
-    # Should show fallback message
     assert "not available" in resp.text or "Memory" in resp.text
 
 
