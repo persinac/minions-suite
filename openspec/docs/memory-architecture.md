@@ -6,35 +6,7 @@ The agent-memory system is a three-tier memory architecture that gives agents pe
 
 The system is vendor-agnostic (backends are pluggable), fully observable (every operation emits trace events), and designed for multi-project isolation.
 
-```
-                  Agent Prompt
-                      |
-              +-------v--------+
-              | Context Builder |  (context.py)
-              | Obsidian-style  |
-              | markdown inject |
-              +---+--------+---+
-                  |        |
-          +-------v--+  +--v----------+
-          | Retrieval |  | File        |
-          | MAGMA     |  | Backlinks   |  (retrieval.py)
-          | scoring   |  |             |
-          +-----+-----+  +------+------+
-                |               |
-        +-------v---------------v-------+
-        |         MemoryStore (L3)      |
-        |   Postgres + pgvector + AGE   |  (store.py)
-        |   Nodes, Entities, Links      |
-        +---------------^--------------+
-                        |
-                   Archive (L2 -> L3)
-                        |              (archiver.py)
-        +---------------v--------------+
-        |       TupleSpace (L2)        |
-        |     Redis + RediSearch       |  (tuplespace.py)
-        |    Facts, TTL, Categories    |
-        +------------------------------+
-```
+![Tier Model](tier-model.excalidraw)
 
 ## Tier Model
 
@@ -105,28 +77,7 @@ Link(from_node="node-ghi", to_entity="node-abc", link_type="CAUSED_BY", confiden
 
 ### During a Job
 
-```
-1. Spec Analyst runs
-   |-- publishes findings to L2 via tuplespace.out()
-
-2. Arbiter runs
-   |-- reads L2 facts via tuplespace.rd()
-   |-- decides on engineer allocation
-
-3. Engineers run
-   |-- L3 knowledge injected into prompt via build_knowledge_context()
-   |-- publish new findings to L2 during execution
-
-4. Code Reviewer runs
-   |-- L3 file-linked knowledge injected via build_file_context()
-   |-- posts inline comments
-
-5. Job completes (DONE or FAILED)
-   |-- archiver.archive_job() promotes L2 facts to L3 nodes
-   |-- entity extraction creates file/module entities
-   |-- temporal edges (FOLLOWS) link consecutive observations
-   |-- L2 facts deleted (cleanup)
-```
+![Data Flow](data-flow.excalidraw)
 
 ### Archival Pipeline (L2 -> L3)
 
@@ -148,19 +99,7 @@ When a job reaches terminal state, the `MemoryArchiver` runs:
 
 When building an agent prompt, the retrieval system scores and ranks candidates:
 
-1. **Gather candidates** — query L3 by tags and/or embedding similarity (up to 30 each)
-2. **Score each candidate** using composite MAGMA-style formula:
-
-```
-score = 0.35 * sim_score      # semantic similarity (placeholder: 0.5)
-      + 0.20 * tag_score      # Jaccard overlap with query tags
-      + 0.20 * recency_score  # exp(-age_days / 30), half-life ~21 days
-      + 0.15 * access_score   # log1p(access_count) / log1p(100), capped at 1.0
-      + 0.10 * link_score     # min(1.0, num_links / 5), density proxy
-```
-
-3. **Token budget** — greedily select top-scored nodes until `max_tokens * 4` characters consumed
-4. **Format as markdown** — Obsidian-style with `### Title`, `#tags`, `[[entity links]]`
+![Retrieval Scoring](retrieval-scoring.excalidraw)
 
 ### Context Injection
 
