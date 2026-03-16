@@ -8,14 +8,15 @@ from ..config import Config
 logger = logging.getLogger(__name__)
 
 
-def create_langfuse_logger(config: Config) -> Any | None:
+def create_langfuse_logger(config: Config) -> tuple[Any, Any] | tuple[None, None]:
     """Create a LangfuseOtelLogger with a dedicated TracerProvider.
 
-    Returns None when Langfuse is not configured (empty public key) or when
-    initialization fails for any reason. LLM calls proceed unaffected.
+    Returns (logger, TracerProvider) tuple. Both are None when Langfuse is not
+    configured (empty public key) or when initialization fails for any reason.
+    LLM calls proceed unaffected.
     """
     if not config.langfuse_public_key:
-        return None
+        return None, None
 
     try:
         from litellm.integrations.langfuse.langfuse_otel import LangfuseOtelLogger
@@ -56,8 +57,8 @@ def create_langfuse_logger(config: Config) -> Any | None:
         langfuse_logger.tracer = provider.get_tracer("litellm")
 
         logger.info("Langfuse OTEL logger created (endpoint: %s)", config.langfuse_host)
-        return langfuse_logger
+        return langfuse_logger, provider
 
     except Exception:
         logger.warning("Failed to initialize Langfuse OTEL logger — continuing without tracing", exc_info=True)
-        return None
+        return None, None

@@ -5,6 +5,7 @@ import math
 import time
 
 from .store import MemoryStore
+from .tracing import MemoryTraceEvent, TraceOp, emit
 from .types import MemoryNode
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,7 @@ async def get_relevant_memories(
     weights: dict[str, float] | None = None,
 ) -> list[MemoryNode]:
     """Retrieve and rank memories using MAGMA-style composite scoring."""
+    t0 = time.monotonic()
     w = weights or DEFAULT_WEIGHTS
     candidates: dict[str, MemoryNode] = {}
 
@@ -46,14 +48,48 @@ async def get_relevant_memories(
             candidates[node.id] = node
 
     if not candidates:
+        emit(
+            MemoryTraceEvent(
+                op=TraceOp.RETRIEVAL_RESULT,
+                project=project,
+                tier="retrieval",
+                duration_ms=(time.monotonic() - t0) * 1000,
+                details={"query_tags": tags or [], "has_embedding": query_embedding is not None, "result_count": 0, "candidates": 0},
+            )
+        )
         return []
 
     # Score each candidate
     query_tags = set(tags or [])
-    scored = _score_and_rank(list(candidates.values()), query_tags, w)
+    scored = _score_and_rank(list(candidates.values()), query_tags, w, project)
 
     # Budget-constrain
-    return _budget_tokens(scored, max_tokens)
+    result = _budget_tokens(scored, max_tokens)
+
+    emit(
+        MemoryTraceEvent(
+            op=TraceOp.RETRIEVAL_BUDGET,
+            project=project,
+            tier="retrieval",
+            details={"candidates": len(candidates), "selected": len(result), "max_tokens": max_tokens, "dropped": len(candidates) - len(result)},
+        )
+    )
+    emit(
+        MemoryTraceEvent(
+            op=TraceOp.RETRIEVAL_RESULT,
+            project=project,
+            tier="retrieval",
+            duration_ms=(time.monotonic() - t0) * 1000,
+            details={
+                "query_tags": tags or [],
+                "has_embedding": query_embedding is not None,
+                "candidates": len(candidates),
+                "result_count": len(result),
+                "top_node_ids": [n.id for n in result[:5]],
+            },
+        )
+    )
+    return result
 
 
 async def get_file_backlinks(
@@ -81,6 +117,7 @@ def _score_and_rank(
     nodes: list[MemoryNode],
     query_tags: set[str],
     weights: dict[str, float],
+    project: str = "",
 ) -> list[MemoryNode]:
     """Score nodes with weighted composite and return sorted (highest first)."""
     now = time.time()
@@ -118,6 +155,28 @@ def _score_and_rank(
             + weights.get("access_frequency", 0.15) * access_score
             + weights.get("link_density", 0.10) * link_score
         )
+
+        # Emit per-node scoring at DEBUG level
+        emit(
+            MemoryTraceEvent(
+                op=TraceOp.RETRIEVAL_SCORE,
+                project=project,
+                tier="retrieval",
+                details={
+                    "node_id": node.id,
+                    "composite": round(composite, 4),
+                    "tag_score": round(tag_score, 4),
+                    "recency_score": round(recency_score, 4),
+                    "access_score": round(access_score, 4),
+                    "link_score": round(link_score, 4),
+                    "sim_score": round(sim_score, 4),
+                    "access_count": node.access_count,
+                    "tag_count": len(node.tags),
+                    "link_count": len(node.links),
+                },
+            )
+        )
+
         scored.append((composite, node))
 
     scored.sort(key=lambda x: x[0], reverse=True)

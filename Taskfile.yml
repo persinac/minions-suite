@@ -9,6 +9,8 @@ includes:
     taskfile: tasks/docker.yaml
   db:
     taskfile: tasks/db.yaml
+  memory:
+    taskfile: tasks/memory.yaml
 
 tasks:
   default:
@@ -55,3 +57,87 @@ tasks:
     cmds:
       - uv run ruff format --check .
       - uv run ruff check .
+
+  # =============================================================================
+  # Full Stack — one-stop-shop
+  # =============================================================================
+
+  up:
+    desc: "Spin up EVERYTHING — infra, DB, migrations, dashboard, server"
+    vars:
+      LANGFUSE: '{{.LANGFUSE | default "false"}}'
+      COMPOSE_FILES:
+        sh: |
+          if [ "{{.LANGFUSE}}" = "true" ]; then
+            echo "-f docker-compose.local.yml -f docker-compose.langfuse.yml"
+          else
+            echo "-f docker-compose.local.yml"
+          fi
+    cmds:
+      # 1. Start infra containers
+      - echo "==> Starting infrastructure (postgres, redis, nats{{if eq .LANGFUSE "true"}}, langfuse{{end}})..."
+      - docker compose {{.COMPOSE_FILES}} up -d
+
+      # 2. Wait for Postgres to be healthy
+      - echo "==> Waiting for Postgres..."
+      - |
+        for i in $(seq 1 30); do
+          if docker compose {{.COMPOSE_FILES}} exec -T postgres pg_isready -U minion -d minion > /dev/null 2>&1; then
+            break
+          fi
+          sleep 1
+        done
+
+      # 3. Wait for Redis to be healthy
+      - echo "==> Waiting for Redis..."
+      - |
+        for i in $(seq 1 20); do
+          if docker compose {{.COMPOSE_FILES}} exec -T redis redis-cli ping > /dev/null 2>&1; then
+            break
+          fi
+          sleep 1
+        done
+
+      # 4. Init infra (DB role + NATS stream) — idempotent
+      - echo "==> Running init-infra (DB roles, NATS streams)..."
+      - scripts/init-infra.sh --postgres-url "postgresql://minion:minion@localhost:5434/minion" --nats-url "nats://localhost:4222" --app-user minion_app --app-password localdev --skip-nats
+
+      # 5. Run DB migrations
+      - echo "==> Running database migrations..."
+      - task db:migrate
+
+      # 6. Start dashboard (background)
+      - echo "==> Starting dashboard on http://localhost:8322 ..."
+      - uv run python -m minions --dashboard &
+
+      # 7. Start input source pollers (background)
+      - echo "==> Starting input source pollers..."
+      - uv run python -m minions --pollers &
+
+      # 8. Print status
+      - |
+        echo ""
+        echo "============================================"
+        echo "  Minions Suite — EVERYTHING IS UP"
+        echo "============================================"
+        echo "  Postgres   : localhost:5434"
+        echo "  Redis      : localhost:6379"
+        echo "  NATS       : localhost:4222 (monitor :8222)"
+        echo "  Dashboard  : http://localhost:8322"
+        echo "  Memory     : http://localhost:8322/memory"
+        echo "  Metrics    : http://localhost:8322/metrics"
+        echo "  Pollers    : gitlab-issues, trello, renovate (if configured)"
+        {{if eq .LANGFUSE "true"}}echo "  Langfuse   : http://localhost:3000"{{end}}
+        echo ""
+        echo "  Starting MCP server on :8321 ..."
+        echo "============================================"
+        echo ""
+
+      # 9. Start the MCP server (foreground — Ctrl+C stops everything)
+      - uv run python -m minions --server
+
+  down:
+    desc: "Stop everything — containers + background processes"
+    cmds:
+      - docker compose -f docker-compose.local.yml -f docker-compose.langfuse.yml down 2>/dev/null || true
+      - echo "Infrastructure stopped."

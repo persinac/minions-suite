@@ -38,6 +38,30 @@ def _create_db(config: Config):
     return SQLiteDatabase(config.db_path)
 
 
+def _wire_memory_callbacks(otel_provider, config: Config) -> None:
+    """Set up agent-memory trace callbacks (OTEL spans, Prometheus, Postgres persistence)."""
+    from .observability.memory_metrics import make_metrics_callback
+    from .observability.memory_otel import make_composite_callback, make_otel_callback, make_persistence_callback
+
+    callbacks = []
+
+    metrics_cb = make_metrics_callback()
+    if metrics_cb:
+        callbacks.append(metrics_cb)
+
+    if otel_provider:
+        callbacks.append(make_otel_callback(otel_provider))
+
+    if config.postgres_url:
+        callbacks.append(make_persistence_callback(config.postgres_url))
+
+    if callbacks:
+        from agent_memory.tracing import set_trace_callback
+
+        set_trace_callback(make_composite_callback(*callbacks))
+        logger.info("Memory trace callbacks wired: %d callbacks", len(callbacks))
+
+
 def _parse_mr_url(url: str) -> tuple[str, str, str]:
     """Extract MR/PR ID, provider hint, and project path from a URL.
 
@@ -85,12 +109,15 @@ async def _run_one_shot(url: str, project_name: str, config: Config) -> int:
     from .project_registry import build_registry
 
     # Optional Langfuse tracing
-    langfuse_logger = create_langfuse_logger(config)
+    langfuse_logger, otel_provider = create_langfuse_logger(config)
     if langfuse_logger:
         import litellm
 
         litellm.callbacks = [langfuse_logger]
         logger.info("Langfuse tracing enabled")
+
+    # Wire memory trace callbacks
+    _wire_memory_callbacks(otel_provider, config)
 
     db = _create_db(config)
     await db.connect()
@@ -253,12 +280,15 @@ async def _run_server(config: Config) -> None:
     # Optional Langfuse tracing
     from .observability.langfuse import create_langfuse_logger
 
-    langfuse_logger = create_langfuse_logger(config)
+    langfuse_logger, otel_provider = create_langfuse_logger(config)
     if langfuse_logger:
         import litellm
 
         litellm.callbacks = [langfuse_logger]
         logger.info("Langfuse tracing enabled")
+
+    # Wire memory trace callbacks
+    _wire_memory_callbacks(otel_provider, config)
 
     db = _create_db(config)
     await db.connect()
@@ -293,6 +323,13 @@ async def _run_server(config: Config) -> None:
     memory_store = None
     memory_archiver = None
     if config.memory_enabled:
+        # Configure memory trace logging
+        import logging as _logging
+
+        mem_log_level = getattr(_logging, config.memory_log_level.upper(), _logging.INFO)
+        _logging.getLogger("agent_memory.trace").setLevel(mem_log_level)
+        _logging.getLogger("agent_memory").setLevel(mem_log_level)
+
         try:
             from agent_memory.archiver import MemoryArchiver
             from agent_memory.backends.redis import RedisTupleSpaceBackend
@@ -487,6 +524,111 @@ async def _run_gitlab_issues_only(config: Config) -> None:
     finally:
         await poller.stop()
         poller_task.cancel()
+        await db.close()
+
+
+async def _run_pollers(config: Config) -> None:
+    """Run all configured input source pollers + job engine.
+
+    Starts every poller whose keys/flags are set, skips the rest.
+    Designed to run as a standalone container or via `task up`.
+    """
+    from .engine import JobEngine
+    from .project_registry import build_registry
+
+    db = _create_db(config)
+    await db.connect()
+
+    try:
+        projects = build_registry(config.projects_file)
+    except Exception as e:
+        logger.error("Failed to load projects: %s", e)
+        projects = {}
+
+    # Optional NATS
+    nats_client = None
+    if config.nats_enabled:
+        from .connectors.nats_client import NatsClient
+        from .connectors.nats_config import NatsConfig
+
+        nats_client = NatsClient()
+        await nats_client.connect(NatsConfig.from_env())
+
+    # Optional K8s launcher
+    k8s_launcher = None
+    if config.k8s_dispatch:
+        from .providers.k8s import K8sJobLauncher
+
+        k8s_launcher = K8sJobLauncher(
+            namespace=config.k8s_namespace,
+            agent_image=config.k8s_agent_image,
+            agent_sa=config.k8s_agent_sa,
+            job_ttl=config.k8s_job_ttl,
+            secrets_name=config.k8s_secrets_name,
+        )
+
+    from .artifact_uploader import ArtifactUploader
+    from .server.mcp import create_server
+
+    artifact_uploader = ArtifactUploader(db, config)
+    mcp = create_server(db, config)
+    job_engine = JobEngine(db, config, k8s_launcher=k8s_launcher, nats_client=nats_client, artifact_uploader=artifact_uploader, mcp_server=mcp)
+
+    tasks = []
+    sources_started = []
+
+    # Job engine (always)
+    tasks.append(asyncio.create_task(job_engine.start(), name="job-engine"))
+
+    # GitLab Issues
+    if config.gitlab_issues_enabled and config.gitlab_token:
+        from .providers.gitlab_issues import GitLabIssuesPoller
+
+        gitlab_poller = GitLabIssuesPoller(config, db, projects)
+        tasks.append(asyncio.create_task(gitlab_poller.start(), name="gitlab-issues-poller"))
+        sources_started.append("gitlab-issues")
+    else:
+        gitlab_poller = None
+
+    # Trello
+    if config.trello_api_key and config.trello_token and config.trello_board_id:
+        from .providers.trello import TrelloPoller
+
+        trello_poller = TrelloPoller(config, db)
+        tasks.append(asyncio.create_task(trello_poller.start(), name="trello-poller"))
+        sources_started.append("trello")
+    else:
+        trello_poller = None
+
+    # Renovate
+    if config.renovate_enabled:
+        from .renovate.engine import RenovateEngine
+
+        renovate_engine = RenovateEngine(db, config, projects, nats_client=nats_client)
+        tasks.append(asyncio.create_task(renovate_engine.start(), name="renovate-engine"))
+        sources_started.append("renovate")
+    else:
+        renovate_engine = None
+
+    if sources_started:
+        logger.info("Input sources started: %s", ", ".join(sources_started))
+    else:
+        logger.warning("No input sources configured — job engine running but no pollers active")
+
+    try:
+        await asyncio.Event().wait()
+    finally:
+        await job_engine.stop()
+        if gitlab_poller:
+            await gitlab_poller.stop()
+        if trello_poller:
+            await trello_poller.stop()
+        if renovate_engine:
+            await renovate_engine.stop()
+        for t in tasks:
+            t.cancel()
+        if nats_client:
+            await nats_client.close()
         await db.close()
 
 
@@ -735,6 +877,7 @@ def main():
     # Global flags
     parser.add_argument("--server", action="store_true", help="Run MCP server + review engine + job engine + arbiter")
     parser.add_argument("--dashboard", action="store_true", help="Run web dashboard (read-only job viewer)")
+    parser.add_argument("--pollers", action="store_true", help="Run all configured input source pollers + job engine")
     parser.add_argument("--trello-only", action="store_true", help="Run Trello poller + job engine only")
     parser.add_argument("--gitlab-issues-only", action="store_true", help="Run GitLab issues poller + job engine only")
     parser.add_argument("--preflight", action="store_true", help="Run health checks")
@@ -786,6 +929,10 @@ def main():
         from .dashboard import run_dashboard
 
         run_dashboard()
+        return
+
+    if args.pollers:
+        asyncio.run(_run_pollers(config))
         return
 
     if args.trello_only:

@@ -26,6 +26,7 @@ dependencies = [
     "langfuse>=4.0.0",
     "agent-memory",
     "redis[hiredis]>=5.0",
+    "prometheus-client>=0.20",
 ]
 
 [tool.uv.sources]

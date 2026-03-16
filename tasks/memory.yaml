@@ -1,0 +1,58 @@
+version: '3'
+
+vars:
+  SECRETS_CMD:
+    sh: echo "${SECRETS_CMD:-}"
+
+tasks:
+  test:
+    desc: Run agent-memory package tests
+    dir: agent-memory
+    cmds:
+      - uv run python -m pytest tests/ -v {{.CLI_ARGS}}
+
+  sync:
+    desc: Sync agent-memory deps (run after changing pyproject.toml)
+    dir: agent-memory
+    cmds:
+      - uv sync --dev
+
+  inspect:
+    desc: Inspect memory system state — L2 facts, L3 nodes, entities, links
+    cmds:
+      - "{{.SECRETS_CMD}} uv run python -m agent_memory.cli inspect {{.CLI_ARGS}}"
+
+  inspect:l2:
+    desc: Show all L2 tuplespace facts in Redis
+    cmds:
+      - "{{.SECRETS_CMD}} uv run python -m agent_memory.cli inspect --tier l2 {{.CLI_ARGS}}"
+
+  inspect:l3:
+    desc: Show L3 knowledge graph nodes, entities, and links in Postgres
+    cmds:
+      - "{{.SECRETS_CMD}} uv run python -m agent_memory.cli inspect --tier l3 {{.CLI_ARGS}}"
+
+  inspect:graph:
+    desc: Show AGE graph structure (entities and relationships)
+    cmds:
+      - "{{.SECRETS_CMD}} uv run python -m agent_memory.cli inspect --graph {{.CLI_ARGS}}"
+
+  trace:
+    desc: Trace a memory retrieval — shows scoring, ranking, tier hits
+    cmds:
+      - "{{.SECRETS_CMD}} uv run python -m agent_memory.cli trace {{.CLI_ARGS}}"
+
+  stats:
+    desc: Show memory system statistics per project
+    cmds:
+      - "{{.SECRETS_CMD}} uv run python -m agent_memory.cli stats {{.CLI_ARGS}}"
+
+  flush:l2:
+    desc: Flush all L2 facts for a project (WARNING — destructive)
+    cmds:
+      - "{{.SECRETS_CMD}} uv run python -m agent_memory.cli flush --tier l2 --project {{.CLI_ARGS}}"
+
+  flush:all:
+    desc: Flush all memory for a project (WARNING — destructive, both tiers)
+    cmds:
+      - "{{.SECRETS_CMD}} uv run python -m agent_memory.cli flush --all --project {{.CLI_ARGS}}"

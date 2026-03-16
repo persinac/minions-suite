@@ -20,6 +20,25 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  input-sources:
+    build: .
+    image: minion-suite:dev
+    command: ["python", "-m", "minions", "--pollers"]
+    env_file: .env
+    volumes:
+      - ./projects.yaml:/app/projects.yaml:ro
+      - ./projects.local.yaml:/app/projects.local.yaml:ro
+      - ./prompts:/app/prompts:ro
+      - logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
   redis:
     image: redis/redis-stack:latest
     healthcheck:

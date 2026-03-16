@@ -6,6 +6,7 @@ import uuid
 
 from .protocols import TupleSpaceBackend
 from .tags import normalize_tags
+from .tracing import MemoryTraceEvent, TraceOp, emit
 from .types import Fact
 
 logger = logging.getLogger(__name__)
@@ -73,6 +74,17 @@ class TupleSpace:
         }
         redis_key = _fact_key(self._project, fact_id)
         await self._backend.put(redis_key, doc, ttl=ttl)
+
+        emit(
+            MemoryTraceEvent(
+                op=TraceOp.L2_PUT,
+                project=self._project,
+                job_id=job_id or "",
+                agent_role=agent_role or "",
+                tier="l2",
+                details={"fact_id": fact_id, "category": category, "key": key, "ttl": ttl, "value_len": len(value)},
+            )
+        )
         return fact_id
 
     async def rd(
@@ -83,6 +95,7 @@ class TupleSpace:
         limit: int = 20,
     ) -> list[Fact]:
         """Non-destructive query for matching facts (Linda RD)."""
+        t0 = time.monotonic()
         query_parts = [f"@project:{{{self._project}}}"]
         if category:
             query_parts.append(f"@category:{{{category}}}")
@@ -95,7 +108,18 @@ class TupleSpace:
 
         query = " ".join(query_parts)
         results = await self._backend.search(INDEX_NAME, query, limit=limit)
-        return [_doc_to_fact(doc) for doc in results]
+        facts = [_doc_to_fact(doc) for doc in results]
+
+        emit(
+            MemoryTraceEvent(
+                op=TraceOp.L2_READ,
+                project=self._project,
+                tier="l2",
+                duration_ms=(time.monotonic() - t0) * 1000,
+                details={"category": category, "key_pattern": key_pattern, "tags": tags, "result_count": len(facts)},
+            )
+        )
+        return facts
 
     async def in_(
         self,
@@ -103,6 +127,7 @@ class TupleSpace:
         key_pattern: str | None = None,
     ) -> Fact | None:
         """Atomically read and delete a matching fact (Linda IN)."""
+        t0 = time.monotonic()
         query_parts = [f"@project:{{{self._project}}}"]
         if category:
             query_parts.append(f"@category:{{{category}}}")
@@ -111,6 +136,18 @@ class TupleSpace:
 
         query = " ".join(query_parts)
         doc = await self._backend.atomic_pop(INDEX_NAME, query)
+        found = doc is not None
+
+        emit(
+            MemoryTraceEvent(
+                op=TraceOp.L2_CONSUME,
+                project=self._project,
+                tier="l2",
+                duration_ms=(time.monotonic() - t0) * 1000,
+                details={"category": category, "key_pattern": key_pattern, "found": found},
+            )
+        )
+
         if doc is None:
             return None
         return _doc_to_fact(doc)
@@ -121,9 +158,6 @@ class TupleSpace:
         if category:
             query_parts.append(f"@category:{{{category}}}")
         query = " ".join(query_parts)
-        results = await self._backend.search(INDEX_NAME, query, limit=0)
-        # For count, backends return search results; len gives count
-        # But with limit=0 we get nothing — use a high limit instead
         results = await self._backend.search(INDEX_NAME, query, limit=10000)
         return len(results)
 
@@ -131,11 +165,20 @@ class TupleSpace:
         """Remove all facts for this project. Returns count of removed facts."""
         pattern = _fact_key(self._project, "*")
         keys = await self._backend.keys(pattern)
-        count = 0
+        removed = 0
         for k in keys:
             if await self._backend.delete(k):
-                count += 1
-        return count
+                removed += 1
+
+        emit(
+            MemoryTraceEvent(
+                op=TraceOp.L2_EXPIRE,
+                project=self._project,
+                tier="l2",
+                details={"removed": removed},
+            )
+        )
+        return removed
 
 
 def _doc_to_fact(doc: dict) -> Fact:

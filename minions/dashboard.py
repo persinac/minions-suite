@@ -68,6 +68,10 @@ class _PgConnectionWrapper:
         "heartbeats",
         "message_log",
         "reviews",
+        "memory_nodes",
+        "memory_links",
+        "memory_entities",
+        "memory_operations",
     )
 
     @asynccontextmanager
@@ -178,7 +182,40 @@ td { padding:8px; border-bottom:1px solid #21262d; font-size:0.9em; vertical-ali
 .timeline-type { min-width:200px; }
 .timeline-detail { color:#8b949e; word-break:break-all; max-width:600px; }
 pre.spec { background:#0d1117; border:1px solid #30363d; border-radius:6px; padding:12px; white-space:pre-wrap; word-break:break-word; font-size:0.9em; color:#c9d1d9; max-height:400px; overflow-y:auto; }
+.nav { margin-bottom:20px; display:flex; gap:16px; align-items:center; border-bottom:1px solid #30363d; padding-bottom:12px; }
+.nav a { font-weight:600; padding:4px 12px; border-radius:6px; }
+.nav a.active { background:#58a6ff22; color:#58a6ff; }
 .back { margin-bottom:16px; display:inline-block; }
+
+/* Memory page */
+.memory-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:24px; }
+@media (max-width:900px) { .memory-grid { grid-template-columns:1fr; } }
+.tier-card { background:#161b22; border:1px solid #30363d; border-radius:8px; padding:16px; }
+.tier-card h3 { color:#f0f6fc; margin-bottom:8px; font-size:1em; }
+.tier-card .count { font-size:2em; font-weight:700; }
+.tier-l2 .count { color:#00bcd4; }
+.tier-l3 .count { color:#2196f3; }
+.tier-entity .count { color:#e040fb; }
+.tier-link .count { color:#ffc107; }
+.tier-ops .count { color:#4caf50; }
+.graph-container { background:#161b22; border:1px solid #30363d; border-radius:8px; padding:16px; margin-bottom:24px; }
+.graph-container h2 { margin-bottom:12px; }
+#memory-graph { width:100%; height:500px; }
+.ops-timeline { background:#161b22; border:1px solid #30363d; border-radius:8px; padding:16px; }
+.ops-timeline h2 { margin-bottom:12px; }
+.op-row { display:flex; gap:12px; padding:6px 0; border-bottom:1px solid #21262d; font-size:0.9em; align-items:center; }
+.op-ts { color:#8b949e; font-family:monospace; white-space:nowrap; min-width:80px; }
+.op-tier { padding:2px 8px; border-radius:4px; font-weight:600; font-size:0.85em; min-width:80px; text-align:center; }
+.op-tier.l2 { background:#00bcd422; color:#00bcd4; }
+.op-tier.l3 { background:#2196f322; color:#2196f3; }
+.op-tier.retrieval { background:#ffc10722; color:#ffc107; }
+.op-tier.context { background:#4caf5022; color:#4caf50; }
+.op-tier.archive { background:#e040fb22; color:#e040fb; }
+.op-tier.unknown { background:#88888822; color:#888; }
+.op-name { color:#c9d1d9; font-weight:600; min-width:160px; }
+.op-detail { color:#8b949e; flex:1; word-break:break-word; }
+.op-dur { color:#8b949e; font-family:monospace; min-width:60px; text-align:right; }
+.project-select { background:#0d1117; color:#c9d1d9; border:1px solid #30363d; border-radius:6px; padding:6px 12px; font-size:0.9em; }
 .msg { background:#161b22; border:1px solid #30363d; border-radius:6px; padding:10px; margin:6px 0; }
 .msg-header { font-size:0.8em; color:#8b949e; margin-bottom:4px; }
 .msg-content { white-space:pre-wrap; word-break:break-word; }
@@ -228,7 +265,9 @@ pre.spec { background:#0d1117; border:1px solid #30363d; border-radius:6px; padd
 # -- Page shell --
 
 
-def _page(title: str, body: str) -> str:
+def _page(title: str, body: str, active: str = "jobs") -> str:
+    jobs_cls = ' class="active"' if active == "jobs" else ""
+    mem_cls = ' class="active"' if active == "memory" else ""
     return f"""<!DOCTYPE html>
 <html><head>
 <meta charset="utf-8"><title>{_esc(title)}</title>
@@ -237,6 +276,7 @@ def _page(title: str, body: str) -> str:
 <script src="https://unpkg.com/idiomorph@0.3.0/dist/idiomorph-ext.min.js"></script>
 </head><body hx-ext="morph">
 <h1>Minions Suite Dashboard</h1>
+<nav class="nav"><a href="/"{jobs_cls}>Jobs</a><a href="/memory"{mem_cls}>Memory</a></nav>
 {body}
 </body></html>"""
 
@@ -1069,6 +1109,366 @@ async def events_stream():
             yield f'data: {{"error": "{str(e)[:200]}"}}\n\n'
 
     return StreamingResponse(_generate(), media_type="text/event-stream")
+
+
+# -- Memory Page --
+
+
+@app.get("/memory", response_class=HTMLResponse)
+async def memory_page():
+    db = await _get_db()
+    try:
+        summary_html = await _render_memory_summary(db)
+        ops_html = await _render_memory_operations(db)
+
+        body = f"""
+        <div id="memory-summary" hx-get="/api/memory/summary-html" hx-trigger="every 10s" hx-swap="morph:innerHTML">
+        {summary_html}
+        </div>
+
+        <div class="graph-container">
+            <h2>Knowledge Graph</h2>
+            <div style="margin-bottom:8px">
+                <select id="graph-project" class="project-select" onchange="loadGraph()">
+                    <option value="">All projects</option>
+                </select>
+                <select id="graph-limit" class="project-select" onchange="loadGraph()">
+                    <option value="100">100 nodes</option>
+                    <option value="200" selected>200 nodes</option>
+                    <option value="500">500 nodes</option>
+                </select>
+            </div>
+            <div id="memory-graph"></div>
+        </div>
+
+        <div class="ops-timeline" id="ops-timeline" hx-get="/api/memory/operations-html" hx-trigger="every 10s" hx-swap="morph:innerHTML">
+            <h2>Operations Timeline</h2>
+            {ops_html}
+        </div>
+
+        <script src="https://unpkg.com/vis-network@9.1.9/dist/vis-network.min.js"></script>
+        <script>
+        let network = null;
+        async function loadProjects() {{
+            try {{
+                const resp = await fetch('/api/memory/graph?limit=1');
+                const data = await resp.json();
+                const sel = document.getElementById('graph-project');
+                const projects = [...new Set(data.nodes.map(n => n.project).filter(Boolean))];
+                projects.forEach(p => {{
+                    const opt = document.createElement('option');
+                    opt.value = p;
+                    opt.textContent = p;
+                    sel.appendChild(opt);
+                }});
+            }} catch(e) {{}}
+        }}
+        async function loadGraph() {{
+            const project = document.getElementById('graph-project').value;
+            const limit = document.getElementById('graph-limit').value;
+            let url = '/api/memory/graph?limit=' + limit;
+            if (project) url += '&project=' + encodeURIComponent(project);
+            try {{
+                const resp = await fetch(url);
+                const data = await resp.json();
+                const container = document.getElementById('memory-graph');
+                const nodes = new vis.DataSet(data.nodes);
+                const edges = new vis.DataSet(data.edges);
+                const options = {{
+                    nodes: {{
+                        shape: 'dot',
+                        font: {{ color: '#c9d1d9', size: 12 }},
+                        borderWidth: 2,
+                    }},
+                    edges: {{
+                        color: {{ color: '#30363d', highlight: '#58a6ff' }},
+                        font: {{ color: '#8b949e', size: 10, align: 'middle' }},
+                        arrows: 'to',
+                    }},
+                    groups: {{
+                        knowledge: {{ color: {{ background: '#2196f3', border: '#1565c0' }} }},
+                        entity: {{ color: {{ background: '#e040fb', border: '#aa00ff' }}, shape: 'diamond' }},
+                    }},
+                    physics: {{
+                        forceAtlas2Based: {{
+                            gravitationalConstant: -30,
+                            centralGravity: 0.005,
+                            springLength: 150,
+                            springConstant: 0.02,
+                        }},
+                        solver: 'forceAtlas2Based',
+                        stabilization: {{ iterations: 100 }},
+                    }},
+                    interaction: {{ hover: true, tooltipDelay: 200 }},
+                    layout: {{ improvedLayout: true }},
+                }};
+                if (network) network.destroy();
+                network = new vis.Network(container, {{ nodes, edges }}, options);
+            }} catch(e) {{
+                document.getElementById('memory-graph').innerHTML =
+                    '<p style="color:#8b949e;padding:40px;text-align:center">No memory data available (Postgres required)</p>';
+            }}
+        }}
+        loadProjects();
+        loadGraph();
+        </script>"""
+
+        return _page("Memory", body, active="memory")
+    finally:
+        await db.close()
+
+
+async def _render_memory_summary(db) -> str:
+    """Render summary cards for memory tiers."""
+    try:
+        async with db.execute("SELECT COUNT(*) as c FROM memory_nodes") as cur:
+            node_count = (await cur.fetchone())["c"]
+        async with db.execute("SELECT COUNT(*) as c FROM memory_entities") as cur:
+            entity_count = (await cur.fetchone())["c"]
+        async with db.execute("SELECT COUNT(*) as c FROM memory_links") as cur:
+            link_count = (await cur.fetchone())["c"]
+
+        ops_count = 0
+        try:
+            async with db.execute("SELECT COUNT(*) as c FROM memory_operations") as cur:
+                ops_count = (await cur.fetchone())["c"]
+        except Exception:
+            pass
+
+        # Per-project breakdown
+        project_rows = ""
+        try:
+            async with db.execute("SELECT project, COUNT(*) as c FROM memory_nodes GROUP BY project ORDER BY c DESC LIMIT 10") as cur:
+                projects = await cur.fetchall()
+            for p in projects:
+                project_rows += f'<div style="display:flex;justify-content:space-between;padding:2px 0"><span>{_esc(p["project"])}</span><span style="color:#f0f6fc;font-weight:600">{p["c"]}</span></div>'
+        except Exception:
+            pass
+
+        project_section = ""
+        if project_rows:
+            project_section = f'<div class="tier-card"><h3>By Project</h3>{project_rows}</div>'
+
+        return f"""<div class="memory-grid">
+            <div class="tier-card tier-l3"><h3>Knowledge Nodes</h3><div class="count">{node_count}</div></div>
+            <div class="tier-card tier-entity"><h3>Entities</h3><div class="count">{entity_count}</div></div>
+            <div class="tier-card tier-link"><h3>Links</h3><div class="count">{link_count}</div></div>
+            <div class="tier-card tier-ops"><h3>Operations</h3><div class="count">{ops_count}</div></div>
+            {project_section}
+        </div>"""
+    except Exception:
+        return '<div class="memory-grid"><div class="tier-card"><h3>Memory</h3><p style="color:#8b949e">Memory tables not available (Postgres required)</p></div></div>'
+
+
+async def _render_memory_operations(db, project: str = "", limit: int = 50) -> str:
+    """Render recent memory operations timeline."""
+    try:
+        if project:
+            async with db.execute(
+                "SELECT * FROM memory_operations WHERE project = ? ORDER BY created_at DESC LIMIT ?",
+                (project, limit),
+            ) as cur:
+                ops = await cur.fetchall()
+        else:
+            async with db.execute(
+                "SELECT * FROM memory_operations ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ) as cur:
+                ops = await cur.fetchall()
+
+        if not ops:
+            return '<p style="color:#8b949e">No memory operations recorded yet.</p>'
+
+        parts = []
+        for op in ops:
+            op = dict(op)
+            tier = op.get("tier", "unknown")
+            tier_class = tier if tier in ("l2", "l3", "retrieval", "context", "archive") else "unknown"
+            ts = str(op.get("created_at", ""))[:19]
+            dur = f"{op.get('duration_ms', 0):.0f}ms" if op.get("duration_ms") else ""
+
+            detail = ""
+            if op.get("details"):
+                try:
+                    d = json.loads(op["details"]) if isinstance(op["details"], str) else op["details"]
+                    detail_parts = []
+                    for k, v in d.items():
+                        if isinstance(v, (list, int, float)):
+                            detail_parts.append(f"{k}={v}")
+                        else:
+                            detail_parts.append(f"{k}={str(v)[:60]}")
+                    detail = " ".join(detail_parts[:5])
+                except Exception:
+                    pass
+
+            parts.append(
+                f'<div class="op-row">'
+                f'<span class="op-ts">{_esc(ts)}</span>'
+                f'<span class="op-tier {tier_class}">{_esc(tier)}</span>'
+                f'<span class="op-name">{_esc(op.get("op", ""))}</span>'
+                f'<span class="op-detail">{_esc(detail)}</span>'
+                f'<span class="op-dur">{_esc(dur)}</span>'
+                f"</div>"
+            )
+
+        return "\n".join(parts)
+    except Exception:
+        return '<p style="color:#8b949e">Memory operations not available (Postgres required)</p>'
+
+
+@app.get("/api/memory/summary-html", response_class=HTMLResponse)
+async def api_memory_summary_html():
+    """HTMX endpoint for memory summary cards refresh."""
+    db = await _get_db()
+    try:
+        return await _render_memory_summary(db)
+    finally:
+        await db.close()
+
+
+@app.get("/api/memory/operations-html", response_class=HTMLResponse)
+async def api_memory_operations_html(project: str = "", limit: int = 50):
+    """HTMX endpoint for operations timeline refresh."""
+    db = await _get_db()
+    try:
+        return await _render_memory_operations(db, project=project, limit=limit)
+    finally:
+        await db.close()
+
+
+@app.get("/api/memory/graph")
+async def api_memory_graph(project: str = "", limit: int = 200):
+    """JSON endpoint for vis.js knowledge graph visualization."""
+    db = await _get_db()
+    try:
+        nodes = []
+        edges = []
+
+        # Fetch knowledge nodes
+        if project:
+            async with db.execute(
+                "SELECT id, title, tags, project, content FROM memory_nodes WHERE project = ? ORDER BY created_at DESC LIMIT ?",
+                (project, limit),
+            ) as cur:
+                node_rows = await cur.fetchall()
+        else:
+            async with db.execute(
+                "SELECT id, title, tags, project, content FROM memory_nodes ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ) as cur:
+                node_rows = await cur.fetchall()
+
+        node_ids = set()
+        for row in node_rows:
+            row = dict(row)
+            node_id = row["id"]
+            node_ids.add(node_id)
+            tags = row.get("tags", [])
+            if isinstance(tags, str):
+                try:
+                    tags = json.loads(tags)
+                except Exception:
+                    tags = [tags]
+            label = row.get("title") or str(row.get("content", ""))[:40]
+            nodes.append(
+                {
+                    "id": node_id,
+                    "label": label,
+                    "group": "knowledge",
+                    "title": f"tags: {', '.join(str(t) for t in tags)}\nproject: {row.get('project', '')}",
+                    "project": row.get("project", ""),
+                }
+            )
+
+        if not node_ids:
+            return JSONResponse({"nodes": [], "edges": []})
+
+        # Fetch links from those nodes to entities
+        placeholders = ",".join(["?" for _ in node_ids])
+        async with db.execute(
+            f"SELECT from_node, to_entity, link_type, confidence FROM memory_links WHERE from_node IN ({placeholders})",
+            tuple(node_ids),
+        ) as cur:
+            link_rows = await cur.fetchall()
+
+        entity_ids = set()
+        for row in link_rows:
+            row = dict(row)
+            entity_ids.add(row["to_entity"])
+            edges.append(
+                {
+                    "from": row["from_node"],
+                    "to": f"entity-{row['to_entity']}",
+                    "label": row.get("link_type", ""),
+                    "value": row.get("confidence", 1.0),
+                }
+            )
+
+        # Fetch entity details
+        if entity_ids:
+            ent_placeholders = ",".join(["?" for _ in entity_ids])
+            async with db.execute(
+                f"SELECT id, name, entity_type, project FROM memory_entities WHERE id IN ({ent_placeholders})",
+                tuple(entity_ids),
+            ) as cur:
+                entity_rows = await cur.fetchall()
+
+            for row in entity_rows:
+                row = dict(row)
+                nodes.append(
+                    {
+                        "id": f"entity-{row['id']}",
+                        "label": row.get("name", row["id"]),
+                        "group": "entity",
+                        "title": f"type: {row.get('entity_type', '?')}\nproject: {row.get('project', '')}",
+                        "project": row.get("project", ""),
+                    }
+                )
+
+        return JSONResponse({"nodes": nodes, "edges": edges})
+    except Exception as e:
+        logger.debug("Memory graph query failed: %s", e)
+        return JSONResponse({"nodes": [], "edges": []})
+    finally:
+        await db.close()
+
+
+@app.get("/api/memory/operations")
+async def api_memory_operations(project: str = "", limit: int = 50):
+    """JSON endpoint for memory operations."""
+    db = await _get_db()
+    try:
+        if project:
+            async with db.execute(
+                "SELECT * FROM memory_operations WHERE project = ? ORDER BY created_at DESC LIMIT ?",
+                (project, limit),
+            ) as cur:
+                ops = [dict(r) for r in await cur.fetchall()]
+        else:
+            async with db.execute(
+                "SELECT * FROM memory_operations ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ) as cur:
+                ops = [dict(r) for r in await cur.fetchall()]
+        return JSONResponse(ops)
+    except Exception as e:
+        logger.debug("Memory operations query failed: %s", e)
+        return JSONResponse([])
+    finally:
+        await db.close()
+
+
+@app.get("/metrics")
+async def prometheus_metrics():
+    """Prometheus metrics endpoint."""
+    from fastapi.responses import Response
+
+    try:
+        from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+        return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+    except ImportError:
+        return Response(content="# prometheus_client not installed\n", media_type="text/plain")
 
 
 def run_dashboard(port: int = 8322):

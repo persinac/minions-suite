@@ -94,6 +94,11 @@ class Config:
     trello_board_id: str = ""
     trello_poll_interval: int = 180
 
+    # Renovate auto-merge (optional)
+    renovate_enabled: bool = False
+    renovate_poll_interval: int = 60
+    renovate_max_concurrent: int = 2
+
     # AWS
     aws_profile: str = "mcp-minions"
 
@@ -107,6 +112,7 @@ class Config:
     redis_url: str = "redis://localhost:6379"
     redis_password: str = ""
     memory_l3_token_budget: int = 2000
+    memory_log_level: str = "INFO"
 
     # LangGraph feature flags
     use_langgraph_agent: bool = True
@@ -165,6 +171,9 @@ class Config:
             trello_token=os.getenv("TRELLO_TOKEN", ""),
             trello_board_id=os.getenv("TRELLO_BOARD_ID", ""),
             trello_poll_interval=int(os.getenv("TRELLO_POLL_INTERVAL", "180")),
+            renovate_enabled=os.getenv("RENOVATE_ENABLED", "").lower() in ("1", "true", "yes"),
+            renovate_poll_interval=int(os.getenv("RENOVATE_POLL_INTERVAL", "60")),
+            renovate_max_concurrent=int(os.getenv("RENOVATE_MAX_CONCURRENT", "2")),
             aws_profile=os.getenv("AWS_PROFILE_NAME", "mcp-minions"),
             s3_artifact_bucket=os.getenv("S3_ARTIFACT_BUCKET", ""),
             s3_artifact_region=os.getenv("S3_ARTIFACT_REGION", "us-east-1"),
@@ -173,6 +182,7 @@ class Config:
             redis_url=os.getenv("REDIS_URL", "redis://localhost:6379"),
             redis_password=os.getenv("REDIS_PASSWORD", ""),
             memory_l3_token_budget=int(os.getenv("MEMORY_L3_TOKEN_BUDGET", "2000")),
+            memory_log_level=os.getenv("MEMORY_LOG_LEVEL", "INFO"),
             use_langgraph_agent=os.getenv("USE_LANGGRAPH_AGENT", "").lower() in ("1", "true", "yes"),
             use_langgraph_engine=os.getenv("USE_LANGGRAPH_ENGINE", "").lower() in ("1", "true", "yes"),
             langfuse_public_key=os.getenv("LANGFUSE_PUBLIC_KEY", ""),

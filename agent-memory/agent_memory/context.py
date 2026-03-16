@@ -3,6 +3,7 @@
 import logging
 
 from .store import MemoryStore
+from .tracing import MemoryTraceEvent, TraceOp, emit
 from .types import MemoryNode
 
 logger = logging.getLogger(__name__)
@@ -28,9 +29,19 @@ async def build_knowledge_context(
     nodes = await get_relevant_memories(store, project, query_embedding=embedding, tags=tags, max_tokens=max_tokens)
 
     if not nodes:
+        emit(MemoryTraceEvent(op=TraceOp.CONTEXT_KNOWLEDGE, project=project, tier="context", details={"chars": 0, "node_count": 0}))
         return ""
 
-    return _format_knowledge_section(nodes, max_tokens)
+    result = _format_knowledge_section(nodes, max_tokens)
+    emit(
+        MemoryTraceEvent(
+            op=TraceOp.CONTEXT_KNOWLEDGE,
+            project=project,
+            tier="context",
+            details={"chars": len(result), "node_count": len(nodes), "extracted_tags": tags, "node_ids": [n.id for n in nodes[:10]]},
+        )
+    )
+    return result
 
 
 async def build_file_context(
@@ -48,9 +59,23 @@ async def build_file_context(
     nodes = await get_file_backlinks(store, project, file_paths, max_tokens=max_tokens)
 
     if not nodes:
+        emit(
+            MemoryTraceEvent(
+                op=TraceOp.CONTEXT_FILE, project=project, tier="context", details={"chars": 0, "node_count": 0, "file_count": len(file_paths)}
+            )
+        )
         return ""
 
-    return _format_file_section(nodes, file_paths, max_tokens)
+    result = _format_file_section(nodes, file_paths, max_tokens)
+    emit(
+        MemoryTraceEvent(
+            op=TraceOp.CONTEXT_FILE,
+            project=project,
+            tier="context",
+            details={"chars": len(result), "node_count": len(nodes), "file_count": len(file_paths), "files": file_paths[:10]},
+        )
+    )
+    return result
 
 
 def _format_knowledge_section(nodes: list[MemoryNode], max_tokens: int) -> str:

@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:arxiv.org)",
+      "WebSearch",
+      "WebFetch(domain:www.researchgate.net)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:a2a-protocol.org)",
+      "WebFetch(domain:google.github.io)",
+      "Bash(find:*)",
+      "Bash(openspec init:*)",
+      "Bash(openspec list:*)",
+      "Bash(openspec new:*)",
+      "Bash(openspec status:*)",
+      "Bash(openspec instructions:*)",
+      "Bash(cd agent-memory:*)",
+      "Bash(cd:*)",
+      "Bash(uv run:*)",
+      "Bash(python3:*)",
+      "Bash(task:*)"
+    ]
+  }
+}
