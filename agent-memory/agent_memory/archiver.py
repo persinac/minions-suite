@@ -187,7 +187,7 @@ Output only JSON lines, no other text."""
                             reasoning=edge.get("reasoning"),
                         )
                         edges_created += 1
-                    except json.JSONDecodeError, KeyError:
+                    except (json.JSONDecodeError, KeyError):
                         continue
 
             logger.info("Processed causal batch %s: %d edges created", batch_id, edges_created)

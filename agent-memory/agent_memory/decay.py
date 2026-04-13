@@ -29,7 +29,7 @@ async def apply_decay(store: MemoryStore, project: str, threshold_days: int = 60
     for node in all_nodes:
         try:
             age_seconds = now - float(node.created_at)
-        except ValueError, TypeError:
+        except (ValueError, TypeError):
             continue
 
         if age_seconds < threshold_seconds:
