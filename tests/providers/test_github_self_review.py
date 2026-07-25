@@ -191,9 +191,9 @@ class TestReviewerConfigIsActuallyWired:
     def test_reviewer_app_env_vars_reach_config(self, monkeypatch):
         from minions.config import Config
 
-        monkeypatch.setenv("GITHUB_REVIEWER_APP_ID", "5555555")
-        monkeypatch.setenv("GITHUB_REVIEWER_APP_PRIVATE_KEY", "-----BEGIN RSA PRIVATE KEY-----\nk\n-----END RSA PRIVATE KEY-----")
-        monkeypatch.setenv("GITHUB_REVIEWER_APP_INSTALLATION_ID", "222")
+        monkeypatch.setenv("GITHUB_APP_REVIEWER_ID", "5555555")
+        monkeypatch.setenv("GITHUB_APP_REVIEWER_PRIVATE_KEY", "-----BEGIN RSA PRIVATE KEY-----\nk\n-----END RSA PRIVATE KEY-----")
+        monkeypatch.setenv("GITHUB_APP_REVIEWER_INSTALLATION_ID", "222")
 
         config = Config.from_env()
 
@@ -207,9 +207,9 @@ class TestReviewerConfigIsActuallyWired:
         from minions.providers.github_app import build_reviewer_token_provider
 
         monkeypatch.setenv("GITHUB_APP_ID", "4393069")
-        monkeypatch.setenv("GITHUB_REVIEWER_APP_ID", "5555555")
-        monkeypatch.setenv("GITHUB_REVIEWER_APP_PRIVATE_KEY", "-----BEGIN RSA PRIVATE KEY-----\nk\n-----END RSA PRIVATE KEY-----")
-        monkeypatch.setenv("GITHUB_REVIEWER_APP_INSTALLATION_ID", "222")
+        monkeypatch.setenv("GITHUB_APP_REVIEWER_ID", "5555555")
+        monkeypatch.setenv("GITHUB_APP_REVIEWER_PRIVATE_KEY", "-----BEGIN RSA PRIVATE KEY-----\nk\n-----END RSA PRIVATE KEY-----")
+        monkeypatch.setenv("GITHUB_APP_REVIEWER_INSTALLATION_ID", "222")
 
         provider = build_reviewer_token_provider(Config.from_env())
 
@@ -226,3 +226,96 @@ class TestReviewerConfigIsActuallyWired:
 
         assert config.github_app_id == "4393069"
         assert config.github_app_installation_id == "148993220"
+
+
+class TestMintDoesNotStealTheGitIdentity:
+    """GH_TOKEN is the identity that clones, commits and pushes.
+
+    _mint() is shared by both providers and wrote os.environ["GH_TOKEN"]
+    unconditionally, so the reviewer minting a token silently reattributed every
+    subsequent git operation to the reviewer App. Confirmed against the live
+    credentials before the fix: after a reviewer mint, GH_TOKEN held the
+    reviewer's token.
+
+    The earlier no-clobber test passed throughout, because it exercised the
+    unconfigured path that returns None without ever minting. These mint for real.
+    """
+
+    @staticmethod
+    def _provider(monkeypatch, token_value: str, **kwargs):
+        from minions.providers.github_app import GitHubAppTokenProvider
+
+        p = GitHubAppTokenProvider(
+            app_id="123",
+            private_key="-----BEGIN RSA PRIVATE KEY-----\nk\n-----END RSA PRIVATE KEY-----",
+            installation_id="456",
+            **kwargs,
+        )
+
+        class _Resp:
+            status_code = 201
+
+            @staticmethod
+            def json():
+                return {"token": token_value, "expires_at": "2099-01-01T00:00:00Z"}
+
+        class _Client:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def post(self, *a, **kw):
+                return _Resp()
+
+        monkeypatch.setattr(p, "_build_jwt", lambda: "jwt")
+        monkeypatch.setattr("minions.providers.github_app.httpx.AsyncClient", lambda **kw: _Client())
+        return p
+
+    async def test_engineer_mint_sets_gh_token(self, monkeypatch):
+        """The engineer App must keep exporting — ambient `gh` callers rely on it."""
+        import os
+
+        monkeypatch.setenv("GH_TOKEN", "stale")
+        p = self._provider(monkeypatch, "ghs_engineer", export_env=True)
+
+        await p.token()
+
+        assert os.environ["GH_TOKEN"] == "ghs_engineer"
+
+    async def test_reviewer_mint_leaves_gh_token_alone(self, monkeypatch):
+        """The bug: a reviewer mint used to overwrite the engineer's identity."""
+        import os
+
+        monkeypatch.setenv("GH_TOKEN", "ghs_engineer")
+        p = self._provider(monkeypatch, "ghs_reviewer", export_env=False)
+
+        token = await p.token()
+
+        assert token == "ghs_reviewer", "the caller still gets the reviewer token"
+        assert os.environ["GH_TOKEN"] == "ghs_engineer", "GH_TOKEN was hijacked by the reviewer"
+
+    def test_the_reviewer_factory_disables_export(self):
+        """Guards the wiring, not just the capability."""
+        from minions.config import Config
+        from minions.providers.github_app import build_reviewer_token_provider
+
+        config = Config.from_env()
+        config.github_app_id = "4393069"
+        config.github_reviewer_app_id = "4394037"
+        config.github_reviewer_app_private_key = "-----BEGIN RSA PRIVATE KEY-----\nk\n-----END RSA PRIVATE KEY-----"
+        config.github_reviewer_app_installation_id = "222"
+
+        assert build_reviewer_token_provider(config).export_env is False
+
+    def test_the_engineer_factory_keeps_export(self):
+        from minions.config import Config
+        from minions.providers.github_app import build_token_provider
+
+        config = Config.from_env()
+        config.github_app_id = "4393069"
+        config.github_app_private_key = "-----BEGIN RSA PRIVATE KEY-----\nk\n-----END RSA PRIVATE KEY-----"
+        config.github_app_installation_id = "148993220"
+
+        assert build_token_provider(config).export_env is True

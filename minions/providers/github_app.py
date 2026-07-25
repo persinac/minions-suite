@@ -71,9 +71,17 @@ class GitHubAppError(RuntimeError):
 class GitHubAppTokenProvider:
     """Mints and caches GitHub App installation tokens."""
 
-    def __init__(self, app_id: str, private_key: str, installation_id: str):
+    def __init__(self, app_id: str, private_key: str, installation_id: str, export_env: bool = True):
         if not app_id or not private_key or not installation_id:
             raise ValueError("app_id, private_key and installation_id are all required")
+
+        # Whether minting also writes os.environ["GH_TOKEN"]. True for the
+        # engineer App — see the module docstring for why the environment is the
+        # only thing that reaches every `gh` call site. False for the reviewer
+        # App: GH_TOKEN is the identity that clones, commits and pushes, so a
+        # reviewer mint landing there would silently reattribute every later git
+        # operation to the wrong App.
+        self.export_env = export_env
 
         self.app_id = str(app_id).strip()
         self.installation_id = str(installation_id).strip()
@@ -142,8 +150,11 @@ class GitHubAppTokenProvider:
         expires_at = self._parse_expiry(body.get("expires_at"))
         self._cached = _CachedToken(value=token, expires_at=expires_at)
 
-        # See the module docstring: this is what makes ambient-env `gh` callers work.
-        os.environ["GH_TOKEN"] = token
+        # See the module docstring: this is what makes ambient-env `gh` callers
+        # work. Guarded, because the reviewer App shares this method and must not
+        # take over the identity used for clone/commit/push.
+        if self.export_env:
+            os.environ["GH_TOKEN"] = token
 
         logger.info(
             "Minted GitHub App installation token for installation %s (expires in %ds)",
@@ -202,7 +213,13 @@ def build_reviewer_token_provider(config) -> GitHubAppTokenProvider | None:
         logger.warning("Reviewer App id matches the engineer App — reviews will still be refused; configure a distinct App")
         return None
 
-    return GitHubAppTokenProvider(app_id=app_id, private_key=private_key, installation_id=installation_id)
+    return GitHubAppTokenProvider(
+        app_id=app_id,
+        private_key=private_key,
+        installation_id=installation_id,
+        # Never let a reviewer mint become the ambient git identity.
+        export_env=False,
+    )
 
 
 _reviewer_provider: GitHubAppTokenProvider | None = None
