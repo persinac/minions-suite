@@ -69,3 +69,76 @@ class TestConcurrency:
         source = inspect.getsource(TrelloPoller._poll)
         assert "max_concurrent_jobs" in source
         assert "cards[:slots]" in source, "the poll batch must be sliced by available slots"
+
+
+class TestLabelGate:
+    """on-deck is the team's backlog, not a minions queue.
+
+    The `minion` label was written on pickup and never read, so every card in the
+    column was fair game. Combined with the launch-order bug that drained all 24;
+    without it, the poller would instead have *worked* all 24 — including firmware,
+    LoRa and KMS tickets it has no toolchain for, at one ceiling each.
+    """
+
+    @staticmethod
+    def _poller():
+        from unittest.mock import MagicMock
+
+        from minions.providers.trello import TrelloPoller
+
+        config = Config.from_env()
+        return TrelloPoller(config, MagicMock())
+
+    async def _cards(self, poller, monkeypatch, require: bool):
+        payload = [
+            {"id": "1", "name": "labelled", "desc": "", "labels": [{"name": "minion"}]},
+            {"id": "2", "name": "unlabelled backlog item", "desc": "", "labels": []},
+            {"id": "3", "name": "other label", "desc": "", "labels": [{"name": "bug"}]},
+        ]
+
+        class _Resp:
+            @staticmethod
+            def raise_for_status():
+                return None
+
+            @staticmethod
+            def json():
+                return payload
+
+        async def _api(method, path, params=None):
+            return _Resp()
+
+        monkeypatch.setattr(poller, "_api", _api)
+        return await poller._get_cards("list-id", require_minion_label=require)
+
+    async def test_gate_on_returns_only_labelled_cards(self, monkeypatch):
+        cards = await self._cards(self._poller(), monkeypatch, require=True)
+
+        assert [c["id"] for c in cards] == ["1"]
+
+    async def test_gate_off_returns_everything(self, monkeypatch):
+        """Escape hatch stays available for a board that is a dedicated queue."""
+        cards = await self._cards(self._poller(), monkeypatch, require=False)
+
+        assert len(cards) == 3
+
+    def test_the_gate_is_on_by_default(self):
+        assert Config.from_env().trello_require_label is True
+
+    def test_poll_passes_the_config_through(self):
+        """A gate that exists but is never wired is not a gate."""
+        import inspect
+
+        from minions.providers.trello import TrelloPoller
+
+        source = inspect.getsource(TrelloPoller._poll)
+        assert "require_minion_label=self.config.trello_require_label" in source
+
+    def test_labels_are_requested_from_the_api(self):
+        """The filter needs the field; omitting it silently matches nothing."""
+        import inspect
+
+        from minions.providers.trello import TrelloPoller
+
+        source = inspect.getsource(TrelloPoller._get_cards)
+        assert "labels" in source.split('params={"fields"')[1].split("}")[0]

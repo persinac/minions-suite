@@ -32,6 +32,10 @@ LIST_FAILED = "fucked"
 
 REQUIRED_LISTS = [LIST_ONDECK, LIST_IN_PROGRESS, LIST_DONE, LIST_FAILED]
 
+# Opt-in gate: a card is only eligible for pickup if it carries this label.
+# The on-deck column is the team's shared backlog, not a minions queue.
+MINION_LABEL = "minion"
+
 TERMINAL_STATUSES = {JobStatus.DONE, JobStatus.FAILED, JobStatus.NO_WORK_NEEDED}
 
 
@@ -97,14 +101,14 @@ class TrelloPoller:
         labels = resp.json()
 
         for label in labels:
-            if label.get("name", "").strip().lower() == "minion":
+            if label.get("name", "").strip().lower() == MINION_LABEL:
                 self._minion_label_id = label["id"]
                 return
 
         resp = await self._api(
             "POST",
             f"/boards/{self.config.trello_board_id}/labels",
-            params={"name": "minion", "color": "purple"},
+            params={"name": MINION_LABEL, "color": "purple"},
         )
         resp.raise_for_status()
         self._minion_label_id = resp.json()["id"]
@@ -132,7 +136,7 @@ class TrelloPoller:
         if active_count >= self.config.max_concurrent_jobs:
             return
 
-        cards = await self._get_cards(self._list_ids[LIST_ONDECK])
+        cards = await self._get_cards(self._list_ids[LIST_ONDECK], require_minion_label=self.config.trello_require_label)
         if not cards:
             return
 
@@ -140,11 +144,26 @@ class TrelloPoller:
         for card in cards[:slots]:
             await self._launch_job(card)
 
-    async def _get_cards(self, list_id: str) -> list:
-        """Fetch cards from a Trello list."""
-        resp = await self._api("GET", f"/lists/{list_id}/cards", params={"fields": "name,desc,id"})
+    async def _get_cards(self, list_id: str, require_minion_label: bool = False) -> list:
+        """Fetch cards from a Trello list.
+
+        With require_minion_label, only cards carrying the `minion` label are
+        returned — an opt-in gate on what minions is allowed to pick up.
+
+        This matters because the on-deck list is the team's shared backlog, not a
+        minions queue. The label was previously written on pickup and never read,
+        so every card in the column was fair game: the poller took the whole
+        backlog, including firmware, LoRa and KMS tickets it has no toolchain for
+        and could only fail at, one ceiling's worth of spend at a time.
+        """
+        resp = await self._api("GET", f"/lists/{list_id}/cards", params={"fields": "name,desc,id,labels"})
         resp.raise_for_status()
-        return resp.json()
+        cards = resp.json()
+
+        if not require_minion_label:
+            return cards
+
+        return [c for c in cards if any((label.get("name") or "").lower() == MINION_LABEL for label in c.get("labels", []))]
 
     async def _move_card(self, card_id: str, list_name: str):
         """Move a card to a different list."""
