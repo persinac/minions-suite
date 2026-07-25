@@ -488,7 +488,7 @@ async def get_review_feedback(engine: JobEngine, job_id: str, task: Task) -> str
 
 async def run_task_review(engine: JobEngine, job: Job, task: Task):
     """Launch a code reviewer for a single task's PR."""
-    from .review import _create_provider_for_project, create_reviewer_provider
+    from .review import _create_provider_for_project, create_engineer_provider, create_reviewer_provider
 
     # Only one reviewer per engineer task. This is reached from the arbiter's
     # `advance_job` remediation, which re-fires every monitor pass while the job
@@ -624,10 +624,17 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
     approved = verdict == "approve" or (verdict is None)
 
     if approved:
-        # Auto-merge if project is configured for it
-        if project and project.auto_merge and provider and mr_id:
+        # Auto-merge if project is configured for it.
+        #
+        # Deliberately NOT `provider` — that carries the reviewer identity, which
+        # has read-only Contents. Merging writes to the base branch and
+        # --delete-branch removes a ref, so it would 403. The engineer App
+        # already has write (it pushed the branch), and GitHub only forbids an
+        # identity *approving* its own PR, never merging one.
+        if project and project.auto_merge and mr_id:
             try:
-                merge_result = await provider.merge_mr(project.project_id, mr_id)
+                merge_provider = await create_engineer_provider(project, engine.config)
+                merge_result = await merge_provider.merge_mr(project.project_id, mr_id)
                 if merge_result.get("merged"):
                     logger.info("Auto-merged MR %s for task %s", mr_id, task.id)
                 else:

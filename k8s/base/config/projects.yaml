@@ -17,9 +17,19 @@
 # clone_url is HTTPS, not SSH. Nothing mounts an SSH key into these pods, and
 # authentication is the GitHub App installation token, which is a bearer token.
 #
-# auto_merge: false everywhere. Note this is minions' own guard, NOT a GitHub
-# restriction: the App holds `Pull requests: read and write`, which permits
-# merging. GitHub will not stop a misconfiguration here.
+# auto_merge: true everywhere. Once the code reviewer approves, minions squash-
+# merges and deletes the branch with no human in the loop.
+#
+# The merge runs as the ENGINEER App, not the reviewer. Merging writes to the
+# base branch and --delete-branch removes a ref, so it needs `Contents: read and
+# write`, which only the engineer holds; the reviewer App is deliberately
+# read-only on Contents because its only job is to approve. `Pull requests: read
+# and write` alone is NOT sufficient to merge. GitHub permits an identity to
+# merge a PR it opened — it only forbids it *approving* one.
+#
+# The reviewer's verdict is therefore the only gate. Nothing here consults
+# branch protection; if a repo needs a human approval or green CI before merge,
+# configure that on the GitHub side, because minions will not stop itself.
 #
 # ── Known gap ──
 #
@@ -37,7 +47,7 @@ projects:
   flashback-android:
     project_id: flippin-balls/Flashback-Android
     repo_path: /repos/flashback-android
-    auto_merge: false
+    auto_merge: true
     review_profile:
       roles: [frontend]
     engineer_profile:
@@ -55,7 +65,7 @@ projects:
   flashback-apple:
     project_id: flippin-balls/Flashback-Apple
     repo_path: /repos/flashback-apple
-    auto_merge: false
+    auto_merge: true
     review_profile:
       roles: [frontend]
     engineer_profile:
@@ -73,7 +83,7 @@ projects:
   appwrite-functions:
     project_id: flippin-balls/appwrite-functions
     repo_path: /repos/appwrite-functions
-    auto_merge: false
+    auto_merge: true
     review_profile:
       roles: [backend]
       languages: [python]
@@ -96,7 +106,7 @@ projects:
   aws-utils:
     project_id: flippin-balls/aws-utils
     repo_path: /repos/aws-utils
-    auto_merge: false
+    auto_merge: true
     review_profile:
       roles: [backend]
       languages: [python]
@@ -119,7 +129,7 @@ projects:
   database:
     project_id: flippin-balls/database
     repo_path: /repos/database
-    auto_merge: false
+    auto_merge: true
     review_profile:
       roles: [backend]
     engineer_profile:
@@ -137,7 +147,7 @@ projects:
   device-config-management:
     project_id: flippin-balls/device-config-management
     repo_path: /repos/device-config-management
-    auto_merge: false
+    auto_merge: true
     review_profile:
       roles: [backend]
       languages: [python]
@@ -160,7 +170,7 @@ projects:
   device-requisition:
     project_id: flippin-balls/device-requisition
     repo_path: /repos/device-requisition
-    auto_merge: false
+    auto_merge: true
     review_profile:
       roles: [backend]
       languages: [python]
@@ -183,7 +193,7 @@ projects:
   directory-api:
     project_id: flippin-balls/directory-api
     repo_path: /repos/directory-api
-    auto_merge: false
+    auto_merge: true
     review_profile:
       roles: [backend]
       languages: [python]
@@ -206,7 +216,7 @@ projects:
   directory-ui:
     project_id: flippin-balls/directory-ui
     repo_path: /repos/directory-ui
-    auto_merge: false
+    auto_merge: true
     review_profile:
       roles: [frontend]
       languages: [typescript]
@@ -229,7 +239,7 @@ projects:
   esp-cryptoauthlib:
     project_id: flippin-balls/esp-cryptoauthlib
     repo_path: /repos/esp-cryptoauthlib
-    auto_merge: false
+    auto_merge: true
     review_profile:
       roles: [backend]
       languages: [shell]
@@ -250,7 +260,7 @@ projects:
   flashback-cns:
     project_id: flippin-balls/flashback-cns
     repo_path: /repos/flashback-cns
-    auto_merge: false
+    auto_merge: true
     review_profile:
       roles: [backend]
       languages: [python]
@@ -273,7 +283,7 @@ projects:
   flashback-fleet-esp-common:
     project_id: flippin-balls/flashback-fleet-esp-common
     repo_path: /repos/flashback-fleet-esp-common
-    auto_merge: false
+    auto_merge: true
     review_profile:
       roles: [backend]
       languages: [shell]
@@ -294,7 +304,7 @@ projects:
   flashback-heatmap:
     project_id: flippin-balls/flashback-heatmap
     repo_path: /repos/flashback-heatmap
-    auto_merge: false
+    auto_merge: true
     review_profile:
       roles: [frontend]
       languages: [typescript]
@@ -317,7 +327,7 @@ projects:
   flashback-plugins:
     project_id: flippin-balls/flashback-plugins
     repo_path: /repos/flashback-plugins
-    auto_merge: false
+    auto_merge: true
     review_profile:
       roles: [backend]
     engineer_profile:
@@ -335,7 +345,7 @@ projects:
   healthcheck:
     project_id: flippin-balls/healthcheck
     repo_path: /repos/healthcheck
-    auto_merge: false
+    auto_merge: true
     review_profile:
       roles: [backend]
       languages: [python]
@@ -358,7 +368,7 @@ projects:
   hermes-bridge:
     project_id: flippin-balls/hermes-bridge
     repo_path: /repos/hermes-bridge
-    auto_merge: false
+    auto_merge: true
     review_profile:
       roles: [backend]
       languages: [shell]
@@ -379,7 +389,7 @@ projects:
   infrastructure:
     project_id: flippin-balls/infrastructure
     repo_path: /repos/infrastructure
-    auto_merge: false
+    auto_merge: true
     review_profile:
       roles: [backend]
       languages: [python]
@@ -402,7 +412,7 @@ projects:
   integration-tests:
     project_id: flippin-balls/integration-tests
     repo_path: /repos/integration-tests
-    auto_merge: false
+    auto_merge: true
     review_profile:
       roles: [backend]
       languages: [python]
@@ -425,7 +435,7 @@ projects:
   kagent-agents:
     project_id: flippin-balls/kagent-agents
     repo_path: /repos/kagent-agents
-    auto_merge: false
+    auto_merge: true
     review_profile:
       roles: [backend]
     engineer_profile:
@@ -443,7 +453,7 @@ projects:
   log-analyzer:
     project_id: flippin-balls/log-analyzer
     repo_path: /repos/log-analyzer
-    auto_merge: false
+    auto_merge: true
     review_profile:
       roles: [backend]
     engineer_profile:
@@ -461,7 +471,7 @@ projects:
   lora-nodes:
     project_id: flippin-balls/lora-nodes
     repo_path: /repos/lora-nodes
-    auto_merge: false
+    auto_merge: true
     review_profile:
       roles: [backend]
       languages: [shell]
@@ -482,7 +492,7 @@ projects:
   lora-pi-monitor:
     project_id: flippin-balls/lora-pi-monitor
     repo_path: /repos/lora-pi-monitor
-    auto_merge: false
+    auto_merge: true
     review_profile:
       roles: [backend]
       languages: [python]
@@ -505,7 +515,7 @@ projects:
   management-api:
     project_id: flippin-balls/management-api
     repo_path: /repos/management-api
-    auto_merge: false
+    auto_merge: true
     review_profile:
       roles: [backend]
       languages: [python]
@@ -528,7 +538,7 @@ projects:
   management-dashboard:
     project_id: flippin-balls/management-dashboard
     repo_path: /repos/management-dashboard
-    auto_merge: false
+    auto_merge: true
     review_profile:
       roles: [frontend]
       languages: [typescript]
@@ -551,7 +561,7 @@ projects:
   mcp-minions:
     project_id: flippin-balls/mcp-minions
     repo_path: /repos/mcp-minions
-    auto_merge: false
+    auto_merge: true
     review_profile:
       roles: [backend]
       languages: [python]
@@ -574,7 +584,7 @@ projects:
   parts-db:
     project_id: flippin-balls/parts-db
     repo_path: /repos/parts-db
-    auto_merge: false
+    auto_merge: true
     review_profile:
       roles: [devops]
       languages: [shell]
@@ -595,7 +605,7 @@ projects:
   pinball-db:
     project_id: flippin-balls/pinball-db
     repo_path: /repos/pinball-db
-    auto_merge: false
+    auto_merge: true
     review_profile:
       roles: [backend]
       languages: [python]
@@ -618,7 +628,7 @@ projects:
   playfield-relay:
     project_id: flippin-balls/playfield-relay
     repo_path: /repos/playfield-relay
-    auto_merge: false
+    auto_merge: true
     review_profile:
       roles: [backend]
       languages: [shell]
@@ -639,7 +649,7 @@ projects:
   requisition-device-cli:
     project_id: flippin-balls/requisition-device-cli
     repo_path: /repos/requisition-device-cli
-    auto_merge: false
+    auto_merge: true
     review_profile:
       roles: [backend]
       languages: [python]
@@ -662,7 +672,7 @@ projects:
   store-front:
     project_id: flippin-balls/store-front
     repo_path: /repos/store-front
-    auto_merge: false
+    auto_merge: true
     review_profile:
       roles: [frontend]
       languages: [typescript]
@@ -685,7 +695,7 @@ projects:
   storefront-api:
     project_id: flippin-balls/storefront-api
     repo_path: /repos/storefront-api
-    auto_merge: false
+    auto_merge: true
     review_profile:
       roles: [backend]
       languages: [python]
@@ -708,7 +718,7 @@ projects:
   ui-integration-tests:
     project_id: flippin-balls/ui-integration-tests
     repo_path: /repos/ui-integration-tests
-    auto_merge: false
+    auto_merge: true
     review_profile:
       roles: [frontend]
       languages: [typescript]
@@ -731,7 +741,7 @@ projects:
   wallet-api:
     project_id: flippin-balls/wallet-api
     repo_path: /repos/wallet-api
-    auto_merge: false
+    auto_merge: true
     review_profile:
       roles: [backend]
       languages: [python]

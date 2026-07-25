@@ -161,6 +161,36 @@ async def check_review_tasks(engine: JobEngine, job: Job):
         logger.info("Review job %s completed", job.id)
 
 
+async def create_engineer_provider(project, config):
+    """Git provider carrying the *engineer* identity — the one that can write.
+
+    Merging is a write to the base branch, and `--delete-branch` removes a ref,
+    so it needs Contents: Read & write. The reviewer App deliberately has
+    read-only Contents: its whole job is to approve, and giving it write to every
+    repo purely so it can press a button defeats the point of splitting the
+    identities. GitHub never blocks an identity from merging a PR it opened — it
+    only blocks it from *approving* one — so the engineer is the right principal
+    here and needs no extra grant.
+
+    Uses the App installation token explicitly rather than relying on the ambient
+    GH_TOKEN that ensure_token happens to leave in os.environ: config.github_token
+    is empty in this deployment, so an implicit path would work only by accident
+    and would break silently the moment the process environment changed.
+    """
+    from ..providers.git import create_provider
+    from ..providers.github_app import ensure_token
+
+    provider_type = project.git_provider or config.git_provider
+    if provider_type != "github":
+        return _create_provider_for_project(project, config)
+
+    token = await ensure_token(config)
+    if not token:
+        return _create_provider_for_project(project, config)
+
+    return create_provider("github", token=token)
+
+
 async def create_reviewer_provider(project, config):
     """Git provider for the code reviewer, using the reviewer App if configured.
 

@@ -319,3 +319,85 @@ class TestMintDoesNotStealTheGitIdentity:
         config.github_app_installation_id = "148993220"
 
         assert build_token_provider(config).export_env is True
+
+
+class TestMergeUsesTheEngineerIdentity:
+    """Merging needs Contents: write, which only the engineer App has.
+
+    The reviewer App is read-only on Contents on purpose — its job is to approve,
+    and granting it write to every repo just to press merge defeats the point of
+    splitting the identities. GitHub permits an identity to merge a PR it opened;
+    it only forbids it approving one. So the engineer is the correct principal
+    and needs no extra grant.
+
+    Using the reviewer provider here would 403 at merge time, after the review
+    had already been posted — a late, confusing failure.
+    """
+
+    def test_the_merge_call_site_does_not_reuse_the_reviewer_provider(self):
+        import inspect
+
+        from minions.engine import dev
+
+        source = inspect.getsource(dev.run_task_review)
+        assert "create_engineer_provider" in source, "merge must build the engineer identity"
+        # The old form was `await provider.merge_mr(...)`, where `provider` is the
+        # reviewer. Match that exactly — `merge_provider.merge_mr` is the fix and
+        # contains the same substring.
+        assert "await provider.merge_mr" not in source, "merge_mr must not run on the reviewer provider"
+
+    async def test_engineer_provider_carries_the_app_token(self, monkeypatch):
+        from minions.config import Config
+        from minions.engine.review import create_engineer_provider
+        from minions.project_registry import ProjectConfig
+
+        async def _fake_ensure_token(cfg):
+            return "ghs_engineer_token"
+
+        monkeypatch.setattr("minions.providers.github_app.ensure_token", _fake_ensure_token)
+
+        project = ProjectConfig(name="p", project_id="org/repo", git_provider="github")
+        provider = await create_engineer_provider(project, Config.from_env())
+
+        assert provider.token == "ghs_engineer_token"
+
+    async def test_engineer_and_reviewer_providers_are_different_identities(self, monkeypatch):
+        """The whole design rests on these two never being the same token."""
+        from minions.config import Config
+        from minions.engine.review import create_engineer_provider, create_reviewer_provider
+        from minions.project_registry import ProjectConfig
+
+        async def _eng(cfg):
+            return "ghs_engineer"
+
+        async def _rev(cfg):
+            return "ghs_reviewer"
+
+        monkeypatch.setattr("minions.providers.github_app.ensure_token", _eng)
+        monkeypatch.setattr("minions.providers.github_app.reviewer_token", _rev)
+
+        project = ProjectConfig(name="p", project_id="org/repo", git_provider="github")
+        config = Config.from_env()
+
+        engineer = await create_engineer_provider(project, config)
+        reviewer = await create_reviewer_provider(project, config)
+
+        assert engineer.token == "ghs_engineer"
+        assert reviewer.token == "ghs_reviewer"
+        assert engineer.token != reviewer.token
+
+    def test_merge_is_squash_and_deletes_the_branch(self, monkeypatch):
+        """Guards the merge shape the user asked for against a silent change."""
+        import asyncio
+
+        from minions.providers.git import GitHubProvider
+
+        p = GitHubProvider(token="t")
+        calls = []
+        monkeypatch.setattr(p, "_run_gh", lambda args, timeout=30: calls.append(args) or "")
+
+        result = asyncio.run(p.merge_mr("org/repo", "23"))
+
+        assert result["merged"] is True
+        assert "--squash" in calls[0]
+        assert "--delete-branch" in calls[0]
