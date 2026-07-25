@@ -9,7 +9,7 @@ from ..agents.prompt import build_agent_prompt
 from ..agents.runner import run_agent
 from ..core.models import Agent, AgentRole, Job, JobStatus, Task, TaskStatus
 from ..classifier import classify_difficulty, resolve_model
-from ..core.state_transitions import InvalidTransitionError
+from ..core.state_transitions import InvalidTransitionError, PreconditionError
 
 if TYPE_CHECKING:
     from .job_engine import JobEngine
@@ -125,6 +125,39 @@ async def _try_complete_task(engine: JobEngine, task: Task, label: str) -> None:
                 logger.warning("%s: task %s — %s and no retries left, marking FAILED", label, task.id, reason)
             except InvalidTransitionError as e:
                 logger.warning("%s: could not fail task %s: %s", label, task.id, e)
+
+
+async def _retry_or_fail_review(engine: JobEngine, task: Task, reason: str) -> None:
+    """Send a task back for another review attempt, or fail it for a human.
+
+    Used when a review did not produce a usable result. Never advances the task
+    toward merge — the point is that no one has actually approved this code.
+    """
+    if task.attempt < task.max_attempts:
+        # Bump the counter WITHOUT a status change first. update_task validates
+        # transitions and pr_open -> pr_open is illegal, so folding both into one
+        # call meant the whole update — including the attempt increment — was
+        # rejected and swallowed by the handler below. The retry then looked like
+        # it happened and did nothing.
+        try:
+            await engine.db.update_task(task.id, agent_role="", attempt=task.attempt + 1, error=reason)
+        except (InvalidTransitionError, PreconditionError) as e:
+            logger.warning("Could not record review retry for task %s: %s", task.id, e)
+
+        if task.status != TaskStatus.PR_OPEN:
+            try:
+                await engine.db.update_task(task.id, status=TaskStatus.PR_OPEN, agent_role="")
+            except (InvalidTransitionError, PreconditionError) as e:
+                logger.warning("Could not return task %s to PR_OPEN: %s", task.id, e)
+
+        logger.info("Task %s queued for review attempt %d: %s", task.id, task.attempt + 1, reason)
+        return
+
+    try:
+        await engine.db.update_task(task.id, status=TaskStatus.FAILED, agent_role="", error=f"{reason} (no review attempts left)")
+        logger.error("Task %s FAILED — %s, and no attempts remain", task.id, reason)
+    except (InvalidTransitionError, PreconditionError) as e:
+        logger.warning("Could not fail task %s: %s", task.id, e)
 
 
 async def _within_rate_caps(engine: JobEngine, job: Job) -> bool:
@@ -631,8 +664,28 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
         return
 
     # Handle successful review — check verdict
+    # A missing verdict is a review that did not happen, not an approval.
+    #
+    # This previously read `verdict == "approve" or verdict is None`, so any
+    # reviewer that crashed, timed out, hit the cost ceiling, or simply never
+    # called submit_review was treated as having approved. It is not
+    # hypothetical: on job f6451f44 submit_review raised (GitHub refuses a
+    # self-authored review), _review_verdict was never set, and the task
+    # advanced to MERGED with no review recorded anywhere. With auto_merge on
+    # across every project, that same path now merges to main.
+    #
+    # Fail closed. An absent verdict is treated exactly like a failed review:
+    # retry if attempts remain, otherwise stop and leave it for a human.
     verdict = getattr(result_agent, "_review_verdict", None)
-    approved = verdict == "approve" or (verdict is None)
+
+    if verdict is None:
+        message = "Reviewer produced no verdict — refusing to treat that as approval"
+        logger.error("%s (task %s, PR %s)", message, task.id, task.pr_url or "unknown")
+        await engine.db.record_event(job.id, "review_verdict_missing", "engine", f"task={task.id}")
+        await _retry_or_fail_review(engine, task, message)
+        return
+
+    approved = verdict == "approve"
 
     if approved:
         # Auto-merge if project is configured for it.
