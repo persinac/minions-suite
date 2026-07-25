@@ -46,6 +46,33 @@ max_revisions = 3
 agent_cost_limit_usd = 8.0
 job_cost_limit_usd = 25.0
 agent_max_turns = 60
+
+# --- Job admission rate caps ------------------------------------------------
+# The cost ceilings bound what one job spends; these bound how many jobs get to
+# spend at all — the difference between one bad job and a bad afternoon. Set
+# high on purpose: a backstop against a runaway intake loop, not a quota.
+# Over-cap jobs are deferred at spec_received, not failed, so they start on
+# their own once the window clears.
+max_jobs_per_hour = 20
+max_jobs_per_month = 500
+
+# --- Difficulty-based model tiers -------------------------------------------
+# One cheap Haiku call scores the four RICE factors per job; difficulty =
+# effort / confidence picks the tier, and every agent on that job uses it.
+# Reach x Impact >= 15 floors an otherwise-easy ticket at medium, so a one-line
+# billing change never runs on the cheapest model.
+#
+# Routing deliberately does NOT use the classic (R*I*C)/E priority score: that
+# ranks value, not difficulty, and would send a typo fix (0.5) to the most
+# expensive model precisely because it is trivial and low-impact.
+#
+# Fail-open: an unclassifiable spec leaves difficulty unset and uses `model`.
+classifier_enabled = true
+classifier_model = "claude-haiku-4-5"
+classifier_max_chars = 6000
+model_easy = "claude-haiku-4-5"
+model_medium = "claude-sonnet-5"
+model_hard = "claude-opus-5"
 agent_timeout = 600
 agent_log_dir = "logs/agents"
 agent_dispatch_mode = "in_process"

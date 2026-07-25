@@ -180,6 +180,30 @@ class PostgresDatabase:
         await self.record_event(job.id, "job_created", "db", f"status={job.status}")
         return job
 
+    async def count_jobs_since(self, since_iso: str) -> int:
+        """Development jobs created since `since_iso`. Backs the rate caps.
+
+        Review jobs are excluded: they are cheap, single-agent, and triggered by
+        MR activity rather than by intake, so counting them would let ordinary
+        review traffic starve the dev-job budget.
+        """
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                f"SELECT COUNT(*) AS n FROM {JOB_SCHEMA}.jobs WHERE created_at >= %s AND job_type = 'development'",
+                (since_iso,),
+            )
+            row = await cur.fetchone()
+            return int(row["n"]) if row else 0
+
+    async def update_job_difficulty(self, job_id: str, difficulty: str | None) -> None:
+        """Record the classifier's verdict. Drives model tier selection for every agent."""
+        async with self._pool.connection() as conn:
+            await conn.execute(
+                f"UPDATE {JOB_SCHEMA}.jobs SET difficulty = %s, updated_at = %s WHERE id = %s",
+                (difficulty, _now(), job_id),
+            )
+        logger.info("Job %s difficulty=%s", job_id, difficulty)
+
     async def create_review_job(self, project: str, mr_url: str, mr_id: str, model: str | None = None) -> tuple[Job, Task]:
         """Create a review-type job with a single CODE_REVIEWER task atomically."""
         job = Job(spec=mr_url, status=JobStatus.TASKS_CREATED, job_type="review", mr_url=mr_url)
@@ -802,6 +826,7 @@ def _dict_to_job(d: dict) -> Job:
         mr_url=d.get("mr_url"),
         error=d.get("error"),
         external_id=d.get("external_id"),
+        difficulty=d.get("difficulty"),
         created_at=_ts(d["created_at"]) or "",
         updated_at=_ts(d["updated_at"]) or "",
     )

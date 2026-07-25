@@ -81,7 +81,8 @@ CREATE TABLE jobs (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     job_type text DEFAULT 'development'::text NOT NULL,
     mr_url text,
-    gitlab_issue_id text
+    gitlab_issue_id text,
+    difficulty text
 );
 CREATE TABLE memory_entities (
     id text NOT NULL,

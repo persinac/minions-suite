@@ -31,6 +31,15 @@ def _mock_engine(db):
     engine.config.model = "test-model"
     engine.config.arbiter_enabled = False
     engine.config.max_revisions = 3
+    # Real numbers, not MagicMocks: launch_spec_analyst compares these against
+    # int/float, and a MagicMock silently satisfies attribute access while
+    # raising on comparison.
+    engine.config.max_jobs_per_hour = 1000
+    engine.config.max_jobs_per_month = 10000
+    engine.config.classifier_enabled = False
+    engine.config.model_easy = "test-easy"
+    engine.config.model_medium = "test-medium"
+    engine.config.model_hard = "test-hard"
     engine.registry = {}
     engine._k8s_enabled = False
     engine._has_running_agent = AsyncMock(return_value=False)

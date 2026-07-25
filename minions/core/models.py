@@ -137,6 +137,10 @@ class Job(BaseModel):
     mr_url: str | None = Field(default=None, description="MR/PR URL (for review jobs)")
     error: str | None = None
     external_id: str | None = None
+    difficulty: str | None = Field(
+        default=None,
+        description="easy | medium | hard, set by the classifier; selects the model tier for every agent on this job. None = unclassified, use the default model.",
+    )
     created_at: str = Field(default_factory=_now)
     updated_at: str = Field(default_factory=_now)
 

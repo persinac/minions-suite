@@ -52,6 +52,10 @@ class AbstractDatabase(Protocol):
 
     async def update_job_spec(self, job_id: str, spec: str) -> None: ...
 
+    async def update_job_difficulty(self, job_id: str, difficulty: str | None) -> None: ...
+
+    async def count_jobs_since(self, since_iso: str) -> int: ...
+
     async def update_job_status(
         self,
         job_id: str,

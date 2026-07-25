@@ -184,6 +184,26 @@ class Config:
     job_cost_limit_usd: float = 25.0
     agent_max_turns: int = 60
 
+    # Difficulty-based model tiers. One cheap classifier call per job picks the
+    # tier, and every agent on that job uses it. Easy vs hard is a 5x difference
+    # on both input and output pricing, so a single correct "easy" verdict pays
+    # for several hundred classifications.
+    # Job admission rate caps. The cost ceilings bound what one job can spend;
+    # these bound how many jobs can spend at all, which is the difference
+    # between one bad job and a bad afternoon. Deliberately set high — they are
+    # a backstop against a runaway intake loop, not a workload quota.
+    # An over-cap job is deferred (left at spec_received), not failed, so it
+    # starts on its own once the window clears.
+    max_jobs_per_hour: int = 20
+    max_jobs_per_month: int = 500
+
+    classifier_enabled: bool = True
+    classifier_model: str = "claude-haiku-4-5"
+    classifier_max_chars: int = 6000
+    model_easy: str = "claude-haiku-4-5"
+    model_medium: str = "claude-sonnet-5"
+    model_hard: str = "claude-opus-5"
+
     # Git provider defaults
     git_provider: str = "gitlab"
     gitlab_url: str = ""
@@ -314,6 +334,14 @@ class Config:
             agent_cost_limit_usd=_env_or_float("AGENT_COST_LIMIT_USD", _get("engine", "agent_cost_limit_usd"), 8.0),
             job_cost_limit_usd=_env_or_float("JOB_COST_LIMIT_USD", _get("engine", "job_cost_limit_usd"), 25.0),
             agent_max_turns=_env_or_int("AGENT_MAX_TURNS", _get("engine", "agent_max_turns"), 60),
+            max_jobs_per_hour=_env_or_int("MAX_JOBS_PER_HOUR", _get("engine", "max_jobs_per_hour"), 20),
+            max_jobs_per_month=_env_or_int("MAX_JOBS_PER_MONTH", _get("engine", "max_jobs_per_month"), 500),
+            classifier_enabled=_env_or_bool("CLASSIFIER_ENABLED", _get("engine", "classifier_enabled"), True),
+            classifier_model=_env_or("CLASSIFIER_MODEL", _get("engine", "classifier_model"), "claude-haiku-4-5"),
+            classifier_max_chars=_env_or_int("CLASSIFIER_MAX_CHARS", _get("engine", "classifier_max_chars"), 6000),
+            model_easy=_env_or("MODEL_EASY", _get("engine", "model_easy"), "claude-haiku-4-5"),
+            model_medium=_env_or("MODEL_MEDIUM", _get("engine", "model_medium"), "claude-sonnet-5"),
+            model_hard=_env_or("MODEL_HARD", _get("engine", "model_hard"), "claude-opus-5"),
             agent_log_dir=_env_or("AGENT_LOG_DIR", _get("engine", "agent_log_dir"), str(base / "logs" / "agents")),
             agent_dispatch_mode=_env_or("AGENT_DISPATCH_MODE", _get("engine", "agent_dispatch_mode"), "in_process"),
             # -- Database --

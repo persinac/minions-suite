@@ -62,7 +62,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     error TEXT,
-    external_id TEXT
+    external_id TEXT,
+    difficulty TEXT
 );
 
 CREATE TABLE IF NOT EXISTS tasks (
@@ -368,6 +369,25 @@ class SQLiteDatabase:
         await self._db.commit()
         logger.info("Updated spec for job %s (%d chars)", job_id, len(spec))
         await self.record_event(job_id, "spec_refined", "db", f"spec_length={len(spec)}")
+
+    async def update_job_difficulty(self, job_id: str, difficulty: str | None) -> None:
+        """Record the classifier's verdict. Drives model tier selection for every agent."""
+        await self._db.execute("UPDATE jobs SET difficulty = ?, updated_at = ? WHERE id = ?", (difficulty, _now(), job_id))
+        await self._db.commit()
+        logger.info("Job %s difficulty=%s", job_id, difficulty)
+
+    async def count_jobs_since(self, since_iso: str) -> int:
+        """Development jobs created since `since_iso`. Backs the rate caps.
+
+        Review jobs are excluded: they are cheap, single-agent and driven by MR
+        activity rather than intake, so counting them would let ordinary review
+        traffic starve the dev-job budget.
+        """
+        cur = await self._db.execute(
+            "SELECT COUNT(*) AS n FROM jobs WHERE created_at >= ? AND job_type = 'development'", (since_iso,)
+        )
+        row = await cur.fetchone()
+        return int(row["n"]) if row else 0
 
     async def update_job_status(
         self,
@@ -803,6 +823,7 @@ def _row_to_job(row) -> Job:
         mr_url=row["mr_url"],
         error=row["error"],
         external_id=row["external_id"],
+        difficulty=row["difficulty"] if "difficulty" in row.keys() else None,
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )

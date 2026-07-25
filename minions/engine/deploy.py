@@ -5,6 +5,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from ..agents.prompt import build_agent_prompt
+from ..classifier import resolve_model
 from ..core.models import Agent, AgentRole, Job, JobStatus, Task, TaskStatus
 from ..core.state_transitions import InvalidTransitionError
 
@@ -54,7 +55,7 @@ async def launch_deploy_monitor(engine: JobEngine, job: Job):
     )
     deploy_task = await engine.db.create_task(deploy_task)
 
-    agent = Agent(job_id=job.id, role=AgentRole.DEPLOY_MONITOR, task_id=deploy_task.id, model=engine.config.model)
+    agent = Agent(job_id=job.id, role=AgentRole.DEPLOY_MONITOR, task_id=deploy_task.id, model=resolve_model(engine.config, job.difficulty))
     agent = await engine.db.create_agent(agent)
 
     deploy_info = json.dumps([{"task_id": t.id, "title": t.title, "service": t.service, "branch": t.branch_name} for t in merged_tasks], indent=2)

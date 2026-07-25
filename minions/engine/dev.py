@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from ..agents.prompt import build_agent_prompt
 from ..agents.runner import run_agent
 from ..core.models import Agent, AgentRole, Job, JobStatus, Task, TaskStatus
+from ..classifier import classify_difficulty, resolve_model
 from ..core.state_transitions import InvalidTransitionError
 
 if TYPE_CHECKING:
@@ -126,10 +127,54 @@ async def _try_complete_task(engine: JobEngine, task: Task, label: str) -> None:
                 logger.warning("%s: could not fail task %s: %s", label, task.id, e)
 
 
+async def _within_rate_caps(engine: JobEngine, job: Job) -> bool:
+    """True if starting this job stays inside the hourly and monthly caps.
+
+    Counts jobs *created* in the window rather than jobs started, so a burst of
+    intake cannot slip through by being admitted faster than it is counted.
+    """
+    from datetime import datetime, timedelta
+
+    windows = (
+        ("hour", engine.config.max_jobs_per_hour, timedelta(hours=1)),
+        ("month", engine.config.max_jobs_per_month, timedelta(days=30)),
+    )
+
+    for label, cap, delta in windows:
+        if cap <= 0:
+            continue
+        since = (datetime.now(UTC) - delta).isoformat()
+        count = await engine.db.count_jobs_since(since)
+        if count > cap:
+            message = f"Job rate cap reached: {count} jobs in the last {label} exceeds the cap of {cap} — deferring job {job.id}"
+            logger.warning(message)
+            await engine.db.record_event(job.id, "job_rate_cap_deferred", "engine", message)
+            return False
+
+    return True
+
+
 async def launch_spec_analyst(engine: JobEngine, job: Job):
     """Launch the spec analyst agent to refine the raw spec."""
     if await engine._has_running_agent(job.id, AgentRole.SPEC_ANALYST):
         return
+
+    # Admission control. This is the first agent on a job, so gating here gates
+    # the whole job — the cost ceilings bound what one job spends, the rate caps
+    # bound how many get to spend at all. Over-cap jobs are left at
+    # spec_received and start on their own once the window clears.
+    if not await _within_rate_caps(engine, job):
+        return
+
+    # Classify once, before any expensive agent runs, and reuse the verdict for
+    # every agent on this job. A failed classification returns None, which
+    # resolve_model treats as "use the default model".
+    if job.difficulty is None and engine.config.classifier_enabled:
+        difficulty, reason = await classify_difficulty(job.spec, engine.config)
+        if difficulty is not None:
+            job.difficulty = difficulty
+            await engine.db.update_job_difficulty(job.id, difficulty)
+            await engine.db.record_event(job.id, "difficulty_classified", "classifier", reason)
 
     # Create a virtual task for the spec analyst
     task = Task(
@@ -142,7 +187,7 @@ async def launch_spec_analyst(engine: JobEngine, job: Job):
     )
     task = await engine.db.create_task(task)
 
-    agent = Agent(job_id=job.id, role=AgentRole.SPEC_ANALYST, task_id=task.id, model=engine.config.model)
+    agent = Agent(job_id=job.id, role=AgentRole.SPEC_ANALYST, task_id=task.id, model=resolve_model(engine.config, job.difficulty))
     agent = await engine.db.create_agent(agent)
 
     logger.info("Launching spec analyst for job %s", job.id)
@@ -194,7 +239,7 @@ async def launch_arbiter(engine: JobEngine, job: Job):
     )
     task = await engine.db.create_task(task)
 
-    agent = Agent(job_id=job.id, role=AgentRole.ARBITER, task_id=task.id, model=engine.config.model)
+    agent = Agent(job_id=job.id, role=AgentRole.ARBITER, task_id=task.id, model=resolve_model(engine.config, job.difficulty))
     agent = await engine.db.create_agent(agent)
 
     logger.info("Launching arbiter for job %s", job.id)
@@ -379,7 +424,7 @@ async def run_engineer(engine: JobEngine, job: Job, task: Task, is_revision: boo
         else:
             await engine.db.update_task(task.id, **update_kwargs)
 
-    agent = Agent(job_id=job.id, role=task.agent_role, task_id=task.id, model=engine.config.model)
+    agent = Agent(job_id=job.id, role=task.agent_role, task_id=task.id, model=resolve_model(engine.config, job.difficulty))
     agent = await engine.db.create_agent(agent)
 
     action = "retry" if is_retry else ("revision" if is_revision else "development")
@@ -505,7 +550,7 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
     project, service = engine._resolve_service(task.service)
 
     # Use project model if available, otherwise fall back to engine config
-    model = project.model if project and project.model else engine.config.model
+    model = resolve_model(engine.config, job.difficulty, project.model if project else "")
     agent = Agent(job_id=job.id, role=AgentRole.CODE_REVIEWER, task_id=reviewer_task.id, model=model)
     agent = await engine.db.create_agent(agent)
 
