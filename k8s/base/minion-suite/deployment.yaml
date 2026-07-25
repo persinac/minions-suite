@@ -80,6 +80,11 @@ spec:
       containers:
         - name: minion-suite
           image: minion-suite
+          # The image declares CMD, not ENTRYPOINT, so a bare `args:` would
+          # REPLACE the whole command and k8s would try to exec "--server" as a
+          # binary. Give the interpreter explicitly, matching the fleet house
+          # style (flashback-cns uses `command: [".venv/bin/python", ...]`).
+          command: ["/app/.venv/bin/python", "-m", "minions"]
           args: ["--server"]
           securityContext:
             allowPrivilegeEscalation: false

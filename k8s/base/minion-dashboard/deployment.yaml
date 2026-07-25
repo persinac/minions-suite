@@ -33,6 +33,11 @@ spec:
           # The dashboard is a SEPARATE uvicorn process — `--server` does not
           # serve it. cli.py:927 calls run_dashboard() with no argument, so the
           # port is hardcoded to 8322 in dashboard.py:1467 with no env override.
+          # The image declares CMD, not ENTRYPOINT, so a bare `args:` would
+          # REPLACE the whole command and k8s would try to exec "--dashboard" as a
+          # binary. Give the interpreter explicitly, matching the fleet house
+          # style (flashback-cns uses `command: [".venv/bin/python", ...]`).
+          command: ["/app/.venv/bin/python", "-m", "minions"]
           args: ["--dashboard"]
           securityContext:
             allowPrivilegeEscalation: false
