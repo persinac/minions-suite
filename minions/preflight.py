@@ -82,6 +82,25 @@ def check_litellm() -> Check:
     return Check("litellm", WARN, f"v{version}, no API key found in env (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)")
 
 
+def _run_async(coro_factory, timeout: int = 30):
+    """Call an async function from a sync one that may itself be inside a loop.
+
+    run_preflight is synchronous but has two callers with different contexts:
+    `minion --preflight` (no running loop) and _run_server (already inside
+    asyncio.run). A bare asyncio.run() works in the first and raises
+    "asyncio.run() cannot be called from a running event loop" in the second —
+    which crashed the server on every start.
+
+    A worker thread gets its own event loop, so this is correct in both. The
+    coroutine is constructed inside the thread rather than passed across, so it
+    is never created on a loop it will not run on.
+    """
+    import concurrent.futures
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(lambda: asyncio.run(coro_factory())).result(timeout=timeout)
+
+
 def check_git_provider(config: Config) -> Check:
     """Check git provider credentials."""
     container = _in_container()
@@ -101,7 +120,7 @@ def check_git_provider(config: Config) -> Check:
 
             try:
                 provider = build_token_provider(config)
-                asyncio.run(provider.token())
+                _run_async(provider.token)
                 return Check("github auth", PASS, f"GitHub App {config.github_app_id} installation {config.github_app_installation_id}")
             except (GitHubAppError, ValueError) as e:
                 return Check("github auth", FAIL, f"GitHub App: {e}")
