@@ -71,3 +71,19 @@ or printed locally. `dbmate` is baked into the image (pinned in the Dockerfile)
 alongside `database/`, so no install step is needed there.
 
 Override the namespace with `NS=<namespace>` if it is not `minion-suite`.
+
+## Ordering: deploy the image, then migrate
+
+Migrations ship *inside* the image, so a new migration file is not visible to
+`task db:migrate:k8s` until the pod is running an image that contains it.
+Running the migrate task first is not an error — dbmate simply reports
+`Pending: 0`, because from the pod's point of view the migration does not exist.
+
+    task docker:build && task docker:ecr:push   # image now carries the migration
+    # ...ArgoCD rolls the new tag...
+    task db:migrate:k8s                          # now it applies
+
+This is the trade for having no in-cluster migration path that depends on a
+workstation. If a migration ever needs to land ahead of the code that uses it,
+ship the image first anyway — a nullable column added early is harmless, and the
+alternative is hand-applied SQL plus a hand-maintained schema_migrations row.
