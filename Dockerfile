@@ -78,6 +78,14 @@ COPY --chown=minions:minions pyproject.toml uv.lock* /app/
 COPY --chown=minions:minions minions/ /app/minions/
 COPY --chown=minions:minions prompts/ /app/prompts/
 COPY --chown=minions:minions projects.yaml /app/
+# agent-memory is an editable path dependency: `uv sync` in the builder writes
+# __editable__.agent_memory-0.1.0.pth pointing at /app/agent-memory, and the
+# runtime stage inherits that .pth when it copies the venv. Without the source
+# here the link dangles and `import agent_memory` raises ModuleNotFoundError —
+# which cli.py:354-358 catches and downgrades to "continuing without it", so the
+# memory tier would be silently dead in production with one log line as the only
+# signal. Copying the venv is not enough; the target directory must exist too.
+COPY --chown=minions:minions agent-memory/ /app/agent-memory/
 # settings.toml was previously only bind-mounted by docker-compose, so it was
 # absent from the image entirely. Without it dynaconf has no file to read and
 # every [production] override silently falls back to the in-code defaults —
