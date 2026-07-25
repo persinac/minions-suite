@@ -18,6 +18,7 @@ from ..core.timeout_config import TimeoutConfig
 from ..db import AbstractDatabase
 from ..project_registry import ProjectConfig, ServiceTarget, build_registry
 from ..providers.github_app import ensure_token
+from ..repos import ensure_checkout
 from . import deploy, dev, review
 from .job_graph import advance_job_via_graph
 
@@ -609,6 +610,19 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
             working_dir = service.repo_path
         elif project and project.repo_path:
             working_dir = project.repo_path
+
+        # Nothing else creates this checkout on the in-process path — K8s
+        # dispatch gets one from its init container, but that path is off here.
+        # Without it every file and shell tool runs against a directory that
+        # does not exist.
+        if working_dir != "." and service and service.clone_url:
+            ok = await ensure_checkout(service.clone_url, working_dir, service.default_branch)
+            if not ok:
+                logger.error(
+                    "Could not prepare checkout at %s for task %s — agent would run against an empty directory",
+                    working_dir,
+                    task.id,
+                )
 
         tool_executor = create_mcp_tool_executor(
             mcp_server=self._mcp_server,
