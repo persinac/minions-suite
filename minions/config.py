@@ -364,6 +364,9 @@ class Config:
             github_app_id=os.getenv("GITHUB_APP_ID", ""),
             github_app_private_key=os.getenv("GITHUB_APP_PRIVATE_KEY", ""),  # SECRET
             github_app_installation_id=os.getenv("GITHUB_APP_INSTALLATION_ID", ""),
+            github_reviewer_app_id=os.getenv("GITHUB_REVIEWER_APP_ID", ""),
+            github_reviewer_app_private_key=os.getenv("GITHUB_REVIEWER_APP_PRIVATE_KEY", ""),  # SECRET
+            github_reviewer_app_installation_id=os.getenv("GITHUB_REVIEWER_APP_INSTALLATION_ID", ""),
             # -- NATS --
             nats_enabled=_env_or_bool("NATS_ENABLED", _get("nats", "enabled"), False),
             nats_stream=_env_or("NATS_STREAM", _get("nats", "stream"), "minions"),

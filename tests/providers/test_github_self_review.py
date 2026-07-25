@@ -176,3 +176,53 @@ class TestReviewerIdentity:
         assert os.environ["GH_TOKEN"] == "engineer-token"
 
         reset_token_provider()
+
+
+class TestReviewerConfigIsActuallyWired:
+    """A dataclass field with no from_env mapping is dead config.
+
+    Shipped exactly that in 0.2.1: the three reviewer fields existed on Config
+    but nothing read the environment into them, so build_reviewer_token_provider
+    always saw "" and returned None. The second App could have been created,
+    installed and its secrets set, and reviews would still have silently fallen
+    back to comments with nothing to indicate why.
+    """
+
+    def test_reviewer_app_env_vars_reach_config(self, monkeypatch):
+        from minions.config import Config
+
+        monkeypatch.setenv("GITHUB_REVIEWER_APP_ID", "5555555")
+        monkeypatch.setenv("GITHUB_REVIEWER_APP_PRIVATE_KEY", "-----BEGIN RSA PRIVATE KEY-----\nk\n-----END RSA PRIVATE KEY-----")
+        monkeypatch.setenv("GITHUB_REVIEWER_APP_INSTALLATION_ID", "222")
+
+        config = Config.from_env()
+
+        assert config.github_reviewer_app_id == "5555555"
+        assert "BEGIN RSA PRIVATE KEY" in config.github_reviewer_app_private_key
+        assert config.github_reviewer_app_installation_id == "222"
+
+    def test_the_env_wiring_produces_a_working_provider(self, monkeypatch):
+        """End to end: env -> Config -> provider, the path that was broken."""
+        from minions.config import Config
+        from minions.providers.github_app import build_reviewer_token_provider
+
+        monkeypatch.setenv("GITHUB_APP_ID", "4393069")
+        monkeypatch.setenv("GITHUB_REVIEWER_APP_ID", "5555555")
+        monkeypatch.setenv("GITHUB_REVIEWER_APP_PRIVATE_KEY", "-----BEGIN RSA PRIVATE KEY-----\nk\n-----END RSA PRIVATE KEY-----")
+        monkeypatch.setenv("GITHUB_REVIEWER_APP_INSTALLATION_ID", "222")
+
+        provider = build_reviewer_token_provider(Config.from_env())
+
+        assert provider is not None
+        assert provider.app_id == "5555555"
+
+    def test_engineer_app_env_wiring_still_works(self, monkeypatch):
+        from minions.config import Config
+
+        monkeypatch.setenv("GITHUB_APP_ID", "4393069")
+        monkeypatch.setenv("GITHUB_APP_INSTALLATION_ID", "148993220")
+
+        config = Config.from_env()
+
+        assert config.github_app_id == "4393069"
+        assert config.github_app_installation_id == "148993220"
