@@ -108,6 +108,12 @@ spec:
             - secretRef: {name: minion-suite-config}
             # POSTGRES_URL, composed by Pulumi from the DO-generated password
             - secretRef: {name: minion-suite-db}
+            # REDIS_URL + REDIS_PASSWORD for the in-cluster Redis Stack.
+            # MUST come after minion-suite-config: that secret still carries the
+            # managed-Redis REDIS_PASSWORD from Doppler, and later envFrom entries
+            # win. Without this entry REDIS_URL is unset and config.py:318 falls
+            # back to redis://localhost:6379 — which is what preflight reported.
+            - secretRef: {name: minion-suite-redis}
           env:
             - name: PYTHONUNBUFFERED
               value: "1"
