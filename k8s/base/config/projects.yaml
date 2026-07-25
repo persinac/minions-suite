@@ -1,0 +1,54 @@
+# Project registry for the flashback-fleet deployment.
+#
+# Mounted over /app/projects.yaml by the ConfigMap, replacing the copy baked into
+# the image (which targets a GitLab project over SSH and is the local-dev config).
+#
+# ── Two things that differ from the repo-root file, deliberately ──
+#
+# 1. model is claude-opus-5, not gpt-4o. There is no OPENAI_API_KEY in
+#    Doppler mcp-minions/prd — only ANTHROPIC_API_KEY and MOONSHOT_API_KEY — so a
+#    gpt-4o default fails on the first agent call.
+#
+# 2. clone_url is HTTPS, not SSH. Nothing mounts an SSH key into these pods, and
+#    the K8s-dispatch git-clone init container gets no credentials at all
+#    (providers/k8s.py:146-159). GH_TOKEN + HTTPS is the path that works.
+
+defaults:
+  model: claude-opus-5
+  git_provider: github
+
+projects:
+  # STARTER TARGET — minions working on its own repository.
+  #
+  # Chosen because it is unambiguously safe: public (so the HTTPS clone needs no
+  # token to read), owned by you, and a natural first job. Replace or extend with
+  # the flippin-balls repos you actually want worked on; this is a placeholder for
+  # a real target list, not a recommendation to keep it.
+  minions-suite:
+    project_id: persinac/minions-suite
+    repo_path: /repos/minions-suite
+    auto_merge: false
+    review_profile:
+      roles: [backend]
+      languages: [python]
+    engineer_profile:
+      roles: [backend]
+      languages: [python]
+      timeout: 1800
+    issues:
+      enabled: true
+      label: minions
+    ignore_paths:
+      - "uv.lock"
+      - "tests/conftest_pg_schema.sql"   # generated; see its header
+    services:
+      app:
+        project_id: persinac/minions-suite
+        git_provider: github
+        clone_url: https://github.com/persinac/minions-suite.git
+        repo_path: /repos/minions-suite
+        language: python
+        test_command: pytest
+        lint_command: ruff check .
+        default_branch: main
+        deploy_target: none

@@ -15,6 +15,9 @@ docker-compose.local.yml
 .idea
 dnc
 .env.local
-projects.yaml
+# Anchored to the repo root: the bare pattern matched at any depth and
+# silently swallowed k8s/base/config/projects.yaml, which must be committed
+# for the ArgoCD kustomize build to resolve.
+/projects.yaml
 settings.local.toml
 .secrets.toml
