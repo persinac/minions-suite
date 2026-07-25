@@ -369,8 +369,27 @@ class SQLiteDatabase:
         logger.info("Updated spec for job %s (%d chars)", job_id, len(spec))
         await self.record_event(job_id, "spec_refined", "db", f"spec_length={len(spec)}")
 
-    async def update_job_status(self, job_id: str, status: JobStatus, error: str | None = None) -> None:
+    async def update_job_status(
+        self,
+        job_id: str,
+        status: JobStatus,
+        error: str | None = None,
+        expected_status: JobStatus | None = None,
+    ) -> bool:
+        """See PostgresDatabase.update_job_status. Returns True if this call wrote.
+
+        SQLite is the single-process development backend, so the compare-and-swap
+        is not load-bearing here — it is implemented to keep the two backends
+        behaviourally identical against the AbstractDatabase protocol.
+        """
         job = await self.get_job(job_id)
+
+        # Losing a CAS is expected, not an error — bail before validation, which
+        # would otherwise raise on a now-illegal edge. See the Postgres backend.
+        if expected_status is not None and job is not None and job.status != expected_status:
+            logger.info("Job %s -> %s skipped: in %s, expected %s", job_id, status, job.status, expected_status)
+            return False
+
         if job:
             try:
                 validate_job_transition(job_id, job.status, status)
@@ -379,16 +398,28 @@ class SQLiteDatabase:
                 await self.record_state_transition("job", job_id, job.status, status, False, str(e), job_id=job_id)
                 raise
 
-        await self._db.execute(
-            "UPDATE jobs SET status = ?, updated_at = ?, error = COALESCE(?, error) WHERE id = ?",
-            (status, _now(), error, job_id),
-        )
+        if expected_status is None:
+            cur = await self._db.execute(
+                "UPDATE jobs SET status = ?, updated_at = ?, error = COALESCE(?, error) WHERE id = ?",
+                (status, _now(), error, job_id),
+            )
+        else:
+            cur = await self._db.execute(
+                "UPDATE jobs SET status = ?, updated_at = ?, error = COALESCE(?, error) WHERE id = ? AND status = ?",
+                (status, _now(), error, job_id, expected_status),
+            )
         await self._db.commit()
+
+        if cur.rowcount == 0:
+            logger.info("Job %s -> %s skipped: no longer in %s", job_id, status, expected_status)
+            return False
+
         logger.info("Job %s -> %s", job_id, status)
         detail = f"status={status}"
         if error:
             detail += f" error={error[:200]}"
         await self.record_event(job_id, "job_status_changed", "db", detail)
+        return True
 
     async def get_job_usage(self, job_id: str) -> dict:
         cursor = await self._db.execute(
@@ -809,7 +840,7 @@ def _row_to_subtask(row) -> Subtask:
     if d.get("result") and isinstance(d["result"], str):
         try:
             d["result"] = json.loads(d["result"])
-        except json.JSONDecodeError, ValueError:
+        except (json.JSONDecodeError, ValueError):
             d["result"] = {"output": d["result"]}
     if d.get("result") is not None and not isinstance(d["result"], dict):
         d["result"] = {"output": d["result"]}

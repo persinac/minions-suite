@@ -1,0 +1,119 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: input-sources
+  labels:
+    app.kubernetes.io/name: input-sources
+    app.kubernetes.io/component: intake
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: input-sources
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: input-sources
+        app.kubernetes.io/component: intake
+    spec:
+      imagePullSecrets:
+        - name: ecr-creds
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: {type: RuntimeDefault}
+      initContainers:
+        # `--pollers` skips preflight entirely and connects to NATS at startup.
+        # An unreachable server raises NoServersError out of the startup path with
+        # nothing catching it -> CrashLoopBackOff. Gate on it instead.
+        - name: wait-for-nats
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              # NATS_SERVER_IP may be a bare host ("18.191.42.210"), host:port,
+              # or scheme-prefixed. Mirrors connectors/nats_config.py
+              # _normalize_server, which defaults the port to 4222 when absent.
+              #
+              # Do NOT parse this with `sed 's#.*:##'`: with no colon present that
+              # is a no-op, and stripping non-digits then turns 18.191.42.210 into
+              # the port "1819142210" — non-empty, so a ${port:-4222} default never
+              # fires and the probe spins forever on a bad port.
+              addr=${NATS_SERVER_IP#nats://}; addr=${addr#tls://}; addr=${addr%%/*}
+              case "$addr" in
+                *:*) host=${addr%:*}; port=${addr##*:} ;;
+                *)   host=$addr;      port=4222 ;;
+              esac
+              until nc -z -w 5 "$host" "$port"; do
+                echo "waiting for nats at $host:$port..."; sleep 3
+              done
+          envFrom:
+            - secretRef: {name: minion-suite-config}
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities: {drop: ["ALL"]}
+          resources:
+            requests: {memory: "16Mi", cpu: "10m"}
+            limits: {memory: "32Mi", cpu: "100m"}
+      containers:
+        - name: input-sources
+          image: minion-suite
+          # The image declares CMD, not ENTRYPOINT, so a bare `args:` would
+          # REPLACE the whole command and k8s would try to exec "--pollers" as a
+          # binary. Give the interpreter explicitly, matching the fleet house
+          # style (flashback-cns uses `command: [".venv/bin/python", ...]`).
+          command: ["/app/.venv/bin/python", "-m", "minions"]
+          args: ["--pollers"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities: {drop: ["ALL"]}
+          envFrom:
+            - secretRef: {name: minion-suite-config}
+            - secretRef: {name: minion-suite-db}
+            - secretRef: {name: minion-suite-redis}
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: HOME
+              value: "/tmp"
+            - name: ENV_FOR_DYNACONF
+              value: "production"
+            # THE load-bearing setting on this Deployment.
+            #
+            # `--pollers` builds a JobEngine just like `--server` does, and job
+            # advancement has no cross-process lock: two engines each dispatch
+            # their own agents for the same job. launch_spec_analyst never even
+            # flips job status, so its _has_running_agent() guard lets both
+            # through. The pollers only write jobs to the DB — they never touch
+            # the engine — so this process does not need one.
+            #
+            # Removing this line silently double-dispatches every job.
+            - name: ENGINE_ENABLED
+              value: "false"
+          # No probes: `--pollers` opens no listening socket at all. It builds an
+          # MCP server object purely as an in-process tool router and never serves
+          # it, then blocks on asyncio.Event().wait(). There is nothing to probe.
+          volumeMounts:
+            # settings.toml is baked into the image; only projects.yaml is mounted.
+            - name: config
+              mountPath: /app/projects.yaml
+              subPath: projects.yaml
+              readOnly: true
+          resources:
+            requests: {memory: "256Mi", cpu: "100m"}
+            limits: {memory: "1Gi", cpu: "500m"}
+      volumes:
+        - name: config
+          configMap:
+            name: minion-suite-config-files
+      restartPolicy: Always

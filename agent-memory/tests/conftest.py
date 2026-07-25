@@ -32,6 +32,26 @@ class InMemoryTupleSpaceBackend:
             return True
         return False
 
+    @staticmethod
+    def _unescape(value: str) -> str:
+        """Undo TAG escaping, as RediSearch does when it evaluates the filter.
+
+        TupleSpace escapes RediSearch TAG metacharacters, so `wallet-api` reaches
+        the backend as `wallet\\-api`. A real server interprets the escape and
+        matches the raw stored value; this fake has to do the same, or it will
+        disagree with production about every hyphenated project — the exact bug
+        the escaping was added to fix.
+        """
+        out, i = [], 0
+        while i < len(value):
+            if value[i] == chr(92) and i + 1 < len(value):
+                out.append(value[i + 1])
+                i += 2
+            else:
+                out.append(value[i])
+                i += 1
+        return "".join(out)
+
     async def search(self, index: str, query: str, limit: int = 20) -> list[dict]:
         """Basic query parsing for @field:{value} patterns."""
         filters = {}
@@ -39,7 +59,7 @@ class InMemoryTupleSpaceBackend:
             if part.startswith("@") and ":{" in part:
                 field = part[1 : part.index(":")]
                 value = part[part.index("{") + 1 : part.index("}")]
-                filters[field] = value
+                filters[field] = self._unescape(value)
 
         results = []
         for doc in self._store.values():
@@ -48,7 +68,7 @@ class InMemoryTupleSpaceBackend:
                 if field == "tags":
                     # Tags are stored comma-separated; OR semantics
                     doc_tags = set(doc.get("tags", "").split(","))
-                    query_tags = set(value.split("|"))
+                    query_tags = {self._unescape(x) for x in value.split("|")}
                     if not doc_tags & query_tags:
                         match = False
                 else:

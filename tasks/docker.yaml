@@ -13,20 +13,48 @@ tasks:
       - docker build --no-cache -t minion-suite:dev .
 
   ecr:push:
-    desc: "Login to ECR and push full + slim images  [AWS_ACCOUNT=..., AWS_REGION=..., ECR_FULL=..., ECR_SLIM=...]"
+    desc: "Build, tag from VERSION, and push to the flashback-fleet ECR  [VERSION=..., AWS_ACCOUNT=..., AWS_REGION=...]"
     deps: [build]
     vars:
-      AWS_ACCOUNT: '{{.AWS_ACCOUNT | default "059039070213"}}'
+      # The flashback-fleet account — the one the cluster's `ecr-creds` pull
+      # secret is scoped to. Previously pointed at the sandbox account
+      # (059039070213) with profile `sandbox`, whose images the cluster cannot
+      # pull; the repository there belongs to the separate mcp-minions repo.
+      AWS_ACCOUNT: '{{.AWS_ACCOUNT | default "162756281464"}}'
       AWS_REGION: '{{.AWS_REGION | default "us-east-1"}}'
-      ECR_FULL: '{{.ECR_FULL | default "mcp-minions-mcpm-cackalacky"}}'
-      ECR_SLIM: '{{.ECR_SLIM | default "mcp-minions-mcpm-cackalacky-slim"}}'
+      AWS_PROFILE: '{{.AWS_PROFILE | default "flashback-fleet"}}'
+      ECR_REPO: '{{.ECR_REPO | default "minion-suite"}}'
+      # Read from the VERSION file so the pushed tag and the tag the prod overlay
+      # references can never disagree. scripts/ci-update-manifests.sh writes the
+      # same value into the kustomization.
+      VERSION:
+        sh: cat VERSION | tr -d '[:space:]'
       REGISTRY: "{{.AWS_ACCOUNT}}.dkr.ecr.{{.AWS_REGION}}.amazonaws.com"
     cmds:
-      - aws ecr get-login-password --region {{.AWS_REGION}} --profile {{.AWS_PROFILE | default "sandbox"}} | docker login --username AWS --password-stdin {{.REGISTRY}}
-      - docker tag minion-suite:dev {{.REGISTRY}}/{{.ECR_FULL}}:latest
-      - docker push {{.REGISTRY}}/{{.ECR_FULL}}:latest
-      - docker tag minion-suite:dev {{.REGISTRY}}/{{.ECR_SLIM}}:latest
-      - docker push {{.REGISTRY}}/{{.ECR_SLIM}}:latest
+      - aws ecr get-login-password --region {{.AWS_REGION}} --profile {{.AWS_PROFILE}} | docker login --username AWS --password-stdin {{.REGISTRY}}
+      - docker tag minion-suite:dev {{.REGISTRY}}/{{.ECR_REPO}}:{{.VERSION}}
+      - docker push {{.REGISTRY}}/{{.ECR_REPO}}:{{.VERSION}}
+      # `latest` is a convenience pointer only. The overlay pins an immutable
+      # X.Y.Z tag — never `latest` — so a rollback is a manifest change rather
+      # than a re-push, and two pods of the same Deployment cannot end up on
+      # different code.
+      - docker tag minion-suite:dev {{.REGISTRY}}/{{.ECR_REPO}}:latest
+      - docker push {{.REGISTRY}}/{{.ECR_REPO}}:latest
+      - echo "pushed {{.REGISTRY}}/{{.ECR_REPO}}:{{.VERSION}}"
+
+  release:
+    desc: "Bump patch VERSION, build+push, and rewrite the prod overlay tag"
+    cmds:
+      # Mirrors the flashback-cns CI flow: bump-version.sh -> build+push ->
+      # ci-update-manifests.sh -> commit. The commit is left to you (or CI) so
+      # this stays safe to run locally.
+      - ./scripts/bump-version.sh
+      - task: ecr:push
+      - ./scripts/ci-update-manifests.sh "$(cat VERSION | tr -d '[:space:]')"
+      - |
+        echo ""
+        echo "VERSION and the prod overlay now read $(cat VERSION | tr -d '[:space:]')."
+        echo "Commit VERSION + k8s/ and push; ArgoCD picks it up on its next poll."
 
   up:
     desc: Start minion-suite container (detached)

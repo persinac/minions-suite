@@ -134,7 +134,7 @@ def _score_and_rank(
         # Recency: exponential decay over 30 days
         try:
             age_seconds = now - float(node.created_at)
-        except ValueError, TypeError:
+        except (ValueError, TypeError):
             age_seconds = 86400 * 30  # default to 30 days old
         recency_score = math.exp(-age_seconds / (86400 * 30))
 

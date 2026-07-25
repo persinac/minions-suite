@@ -124,7 +124,7 @@ def _elapsed(start_str, end_str=None) -> str:
         elif secs < 3600:
             return f"{secs // 60}m {secs % 60}s"
         return f"{secs // 3600}h {(secs % 3600) // 60}m"
-    except ValueError, TypeError:
+    except (ValueError, TypeError):
         return "?"
 
 
@@ -365,7 +365,7 @@ async def _build_review_rounds(db, job_id: str) -> list[dict]:
                     if tc.get("params"):
                         try:
                             params = json.loads(tc["params"]) if isinstance(tc["params"], str) else tc["params"]
-                        except json.JSONDecodeError, TypeError:
+                        except (json.JSONDecodeError, TypeError):
                             pass
                     if tc["tool_name"] == "post_inline_comment":
                         threads.append(
@@ -842,7 +842,7 @@ async def job_detail(job_id: str):
                         if len(ps) > 120:
                             ps = ps[:120] + "..."
                         detail_parts.append(ps)
-                    except json.JSONDecodeError, TypeError:
+                    except (json.JSONDecodeError, TypeError):
                         pass
                 if tc.get("duration_ms") is not None:
                     detail_parts.append(f"{tc['duration_ms']:.0f}ms")
@@ -1008,7 +1008,7 @@ async def api_job_detail_html(job_id: str):
                         if len(ps) > 120:
                             ps = ps[:120] + "..."
                         detail_parts.append(ps)
-                    except json.JSONDecodeError, TypeError:
+                    except (json.JSONDecodeError, TypeError):
                         pass
                 if tc.get("duration_ms") is not None:
                     detail_parts.append(f"{tc['duration_ms']:.0f}ms")

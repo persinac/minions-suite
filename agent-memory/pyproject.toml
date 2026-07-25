@@ -7,6 +7,9 @@ dependencies = [
     "pydantic>=2.0",
 ]
 
+[tool.setuptools.packages.find]
+include = ["agent_memory*"]
+
 [project.scripts]
 agent-memory = "agent_memory.cli:main"
 agent-memory-serve = "agent_memory.server.mcp_server:main"

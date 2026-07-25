@@ -69,7 +69,7 @@ class RedisTupleSpaceBackend:
                 else:
                     parsed = raw
                 docs.append(parsed)
-            except json.JSONDecodeError, AttributeError:
+            except (json.JSONDecodeError, AttributeError):
                 # Try to build from individual fields
                 d = {}
                 for field in ("project", "category", "key", "value", "tags", "agent_role", "job_id", "timestamp"):
@@ -116,10 +116,14 @@ class RedisTupleSpaceBackend:
         """Create a RediSearch index if it doesn't already exist."""
         from redis.commands.search.field import NumericField, TagField, TextField
 
+        # Every factory must accept the same keywords as the call site below.
+        # The NUMERIC SORTABLE lambda previously took only a positional name, so
+        # `factory(path, as_name=...)` raised TypeError and no index was ever
+        # created — the whole memory tier then failed to initialise.
         field_map = {
             "TAG": TagField,
             "TEXT": TextField,
-            "NUMERIC SORTABLE": lambda n: NumericField(n, sortable=True),
+            "NUMERIC SORTABLE": lambda n, **kw: NumericField(n, sortable=True, **kw),
         }
 
         fields = []
@@ -132,7 +136,11 @@ class RedisTupleSpaceBackend:
             await self._client.ft(name).info()
             logger.debug("Index '%s' already exists", name)
         except Exception:
-            from redis.commands.search.indexDefinition import IndexDefinition, IndexType
+            # redis-py renamed this module to snake_case; the camelCase path was
+            # removed by 7.x. Imported lazily inside the except branch, so it only
+            # raised when an index actually had to be created — i.e. on a fresh
+            # Redis, which is exactly the first-run path.
+            from redis.commands.search.index_definition import IndexDefinition, IndexType
 
             definition = IndexDefinition(prefix=["fact:"], index_type=IndexType.JSON)
             await self._client.ft(name).create_index(fields, definition=definition)

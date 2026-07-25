@@ -426,7 +426,7 @@ async def _agent_loop_generic(
                         parsed = json.loads(result)
                         if isinstance(parsed, dict) and "error" in parsed:
                             tc_error = str(parsed["error"])[:200]
-                    except json.JSONDecodeError, TypeError:
+                    except (json.JSONDecodeError, TypeError):
                         pass
 
                 # Record tool call to DB for dashboard visibility

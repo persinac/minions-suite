@@ -52,7 +52,13 @@ class AbstractDatabase(Protocol):
 
     async def update_job_spec(self, job_id: str, spec: str) -> None: ...
 
-    async def update_job_status(self, job_id: str, status: JobStatus, error: str | None = None) -> None: ...
+    async def update_job_status(
+        self,
+        job_id: str,
+        status: JobStatus,
+        error: str | None = None,
+        expected_status: JobStatus | None = None,
+    ) -> bool: ...
 
     async def get_job_usage(self, job_id: str) -> dict: ...
 

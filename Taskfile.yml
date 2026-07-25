@@ -48,9 +48,18 @@ tasks:
       - uv run ruff check --fix .
 
   test:
-    desc: Run unit tests
+    desc: Run unit tests (both suites)
     cmds:
+      # Two invocations, not one testpaths entry. Both directories are named
+      # `tests` and both have a conftest.py, which collides in pytest's plugin
+      # manager regardless of --import-mode. Running them separately is the
+      # boring fix that actually works.
+      #
+      # agent-memory was excluded from the default run entirely, which is why the
+      # memory tier shipped broken twice — a SyntaxError, then a create_index
+      # TypeError — each caught by cli.py and downgraded to "continuing without it".
       - uv run pytest {{.CLI_ARGS}}
+      - uv run pytest agent-memory/tests {{.CLI_ARGS}}
 
   lint:
     desc: Check formatting and lint without modifying files

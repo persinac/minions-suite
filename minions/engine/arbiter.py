@@ -160,7 +160,7 @@ class Arbiter:
         """Handle a heartbeat message from an agent."""
         try:
             payload = json.loads(msg.data.decode("utf-8"))
-        except json.JSONDecodeError, UnicodeDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             return
 
         agent_id = payload.get("agent_id", "")
@@ -232,7 +232,7 @@ class Arbiter:
                 if started.tzinfo is None:
                     started = started.replace(tzinfo=UTC)
                 elapsed = now - started.timestamp()
-            except ValueError, TypeError:
+            except (ValueError, TypeError):
                 continue
 
             # Look up task to get agent_role for timeout config

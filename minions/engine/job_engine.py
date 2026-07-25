@@ -17,6 +17,7 @@ from ..core.state_transitions import InvalidTransitionError
 from ..core.timeout_config import TimeoutConfig
 from ..db import AbstractDatabase
 from ..project_registry import ProjectConfig, ServiceTarget, build_registry
+from ..providers.github_app import ensure_token
 from . import deploy, dev, review
 from .job_graph import advance_job_via_graph
 
@@ -360,6 +361,17 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
 
         while self._running:
             try:
+                # Refresh the GitHub App installation token before advancing any
+                # job. No-op when App auth is not configured, and cached otherwise
+                # — it only calls GitHub inside the token's refresh margin.
+                #
+                # This is the single point that keeps os.environ["GH_TOKEN"]
+                # current, which is how BOTH `gh` call paths get a token: the
+                # explicit-env one in providers/git.py:_run_gh, and the
+                # ambient-env one in agents/tools/mcp_executor.py that agents use
+                # to open PRs. Doing it here rather than per-call-site means a new
+                # `gh` invocation added later is covered for free.
+                await ensure_token(self.config)
                 await self._poll()
             except Exception:
                 logger.exception("Error in engine poll cycle")

@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
+from urllib.parse import urlparse, urlunparse
 
 from .config import Config
 
@@ -81,6 +82,25 @@ def check_litellm() -> Check:
     return Check("litellm", WARN, f"v{version}, no API key found in env (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)")
 
 
+def _run_async(coro_factory, timeout: int = 30):
+    """Call an async function from a sync one that may itself be inside a loop.
+
+    run_preflight is synchronous but has two callers with different contexts:
+    `minion --preflight` (no running loop) and _run_server (already inside
+    asyncio.run). A bare asyncio.run() works in the first and raises
+    "asyncio.run() cannot be called from a running event loop" in the second —
+    which crashed the server on every start.
+
+    A worker thread gets its own event loop, so this is correct in both. The
+    coroutine is constructed inside the thread rather than passed across, so it
+    is never created on a loop it will not run on.
+    """
+    import concurrent.futures
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(lambda: asyncio.run(coro_factory())).result(timeout=timeout)
+
+
 def check_git_provider(config: Config) -> Check:
     """Check git provider credentials."""
     container = _in_container()
@@ -91,6 +111,20 @@ def check_git_provider(config: Config) -> Check:
         return Check("gitlab auth", FAIL if not container else WARN, "GITLAB_TOKEN not set", required=not container)
 
     if config.git_provider == "github":
+        # GitHub App first — it supersedes a static PAT when configured.
+        # Actually mint a token rather than checking the vars are non-empty: a
+        # mismatched App ID, a mangled PEM, or an uninstalled App all look fine
+        # by presence and fail at the first `gh` call, hours into a job.
+        if config.github_app_id and config.github_app_private_key and config.github_app_installation_id:
+            from .providers.github_app import GitHubAppError, build_token_provider
+
+            try:
+                provider = build_token_provider(config)
+                _run_async(provider.token)
+                return Check("github auth", PASS, f"GitHub App {config.github_app_id} installation {config.github_app_installation_id}")
+            except (GitHubAppError, ValueError) as e:
+                return Check("github auth", FAIL, f"GitHub App: {e}")
+
         if config.github_token:
             return Check("github auth", PASS, "GH_TOKEN set")
         # Check gh CLI auth
@@ -290,7 +324,9 @@ def check_nats(config: Config) -> Check:
         else:
             asyncio.run(_probe())
 
-        servers_str = ", ".join(nats_config.servers)
+        # NATS_SERVER_IP is a bare host today, but the format permits
+        # nats://user:pass@host — redact so a future value cannot leak.
+        servers_str = ", ".join(_redact_url(s) for s in nats_config.servers)
         return Check("nats", PASS, f"connected to {servers_str} (stream={config.nats_stream})")
     except ImportError:
         return Check("nats", FAIL, "nats-py not installed -- run: uv add nats-py")
@@ -305,6 +341,26 @@ def check_arbiter(config: Config) -> Check:
     return Check("arbiter", PASS, f"prerequisites met (nats={config.nats_enabled})")
 
 
+def _redact_url(url: str) -> str:
+    """Strip userinfo from a URL so it is safe to log.
+
+    redis://:hunter2@host:6379/0  ->  redis://host:6379/0
+
+    Preflight output goes to stdout, which in Kubernetes means pod logs and every
+    log aggregator downstream of them. Connection strings carry credentials, so
+    they must never be printed verbatim.
+    """
+    try:
+        parsed = urlparse(url)
+        if not parsed.netloc or "@" not in parsed.netloc:
+            return url
+        host = parsed.netloc.rsplit("@", 1)[1]
+        return urlunparse(parsed._replace(netloc=host))
+    except Exception:
+        # Never let redaction failure surface the raw value.
+        return "<unparseable url>"
+
+
 def check_redis(config: Config) -> Check:
     """Check if Redis is reachable when memory is enabled."""
     try:
@@ -313,11 +369,13 @@ def check_redis(config: Config) -> Check:
         r = redis_lib.Redis.from_url(config.redis_url, password=config.redis_password or None, socket_connect_timeout=5)
         r.ping()
         r.close()
-        return Check("redis", PASS, f"connected ({config.redis_url})")
+        return Check("redis", PASS, f"connected ({_redact_url(config.redis_url)})")
     except ImportError:
         return Check("redis", FAIL, "redis not installed -- run: uv add redis[hiredis]")
     except Exception as e:
-        return Check("redis", FAIL, f"connection failed: {str(e)[:80]}")
+        # Exception text can echo the DSN back (redis-py includes it in some
+        # connection errors), so redact the message too.
+        return Check("redis", FAIL, f"connection failed: {_redact_url(str(e)[:200])[:80]}")
 
 
 def check_langfuse(config: Config) -> Check:

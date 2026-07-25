@@ -350,7 +350,12 @@ async def _run_server(config: Config) -> None:
                 await memory_store.connect()
 
             memory_archiver = MemoryArchiver()
-            logger.info("Memory system enabled (redis=%s)", config.redis_url)
+            # Redact: config.redis_url carries the password, and this line goes to
+            # stdout -> pod logs -> every aggregator downstream. Same class of leak
+            # as the one fixed in preflight.check_redis.
+            from .preflight import _redact_url
+
+            logger.info("Memory system enabled (redis=%s)", _redact_url(config.redis_url))
         except Exception:
             logger.exception("Failed to initialise memory system — continuing without it")
             memory_tuplespace = None
@@ -573,8 +578,15 @@ async def _run_pollers(config: Config) -> None:
     tasks = []
     sources_started = []
 
-    # Job engine (always)
-    tasks.append(asyncio.create_task(job_engine.start(), name="job-engine"))
+    # Job engine — only when this process owns it. Running a second engine
+    # alongside `--server` double-dispatches: both poll the same jobs table and
+    # each launches its own agents for the same job (launch_spec_analyst's only
+    # guard is a _has_running_agent read, which both pass). Pollers write jobs to
+    # the DB and need no engine of their own.
+    if config.engine_enabled:
+        tasks.append(asyncio.create_task(job_engine.start(), name="job-engine"))
+    else:
+        logger.info("Job engine disabled (ENGINE_ENABLED=false) — this process only feeds jobs to the DB")
 
     # GitLab Issues
     if config.gitlab_issues_enabled and config.gitlab_token:
@@ -608,13 +620,20 @@ async def _run_pollers(config: Config) -> None:
 
     if sources_started:
         logger.info("Input sources started: %s", ", ".join(sources_started))
-    else:
+    elif config.engine_enabled:
         logger.warning("No input sources configured — job engine running but no pollers active")
+    else:
+        logger.warning("No input sources configured and engine disabled — this process will do nothing")
 
     try:
         await asyncio.Event().wait()
     finally:
-        await job_engine.stop()
+        # Only stop the engine if we started it. JobEngine.stop() marks every
+        # in-process agent in the database as failed, so calling it from a
+        # poller-only process would kill the agents belonging to whichever
+        # process actually owns the engine — on any routine rollout or restart.
+        if config.engine_enabled:
+            await job_engine.stop()
         if gitlab_poller:
             await gitlab_poller.stop()
         if trello_poller:
