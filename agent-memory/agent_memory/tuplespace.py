@@ -1,6 +1,7 @@
 """TupleSpace — L2 shared cache using Linda coordination primitives."""
 
 import logging
+import re
 import time
 import uuid
 
@@ -8,6 +9,22 @@ from .protocols import TupleSpaceBackend
 from .tags import normalize_tags
 from .tracing import MemoryTraceEvent, TraceOp, emit
 from .types import Fact
+
+# RediSearch treats these as syntax inside a TAG filter, so a raw value
+# containing any of them produces a query error rather than a non-match:
+#
+#   @project:{wallet-api}  ->  Syntax error at offset 23 near api
+#
+# backends/redis.py swallows search exceptions and returns [], so the failure is
+# indistinguishable from "nothing matched". Every hyphenated project, category,
+# key or tag silently read back empty — which is most of them.
+_TAG_SPECIAL = re.compile(r"([,.<>{}\[\]\"':;!@#$%^&*()\-+=~|/\\ ])")
+
+
+def _escape_tag(value: str) -> str:
+    """Escape a value for use inside a RediSearch TAG filter: {value}."""
+    return _TAG_SPECIAL.sub(r"\\\1", str(value))
+
 
 logger = logging.getLogger(__name__)
 
@@ -96,14 +113,14 @@ class TupleSpace:
     ) -> list[Fact]:
         """Non-destructive query for matching facts (Linda RD)."""
         t0 = time.monotonic()
-        query_parts = [f"@project:{{{self._project}}}"]
+        query_parts = [f"@project:{{{_escape_tag(self._project)}}}"]
         if category:
-            query_parts.append(f"@category:{{{category}}}")
+            query_parts.append(f"@category:{{{_escape_tag(category)}}}")
         if key_pattern:
-            query_parts.append(f"@key:{{{key_pattern}}}")
+            query_parts.append(f"@key:{{{_escape_tag(key_pattern)}}}")
         if tags:
             normalized = normalize_tags(tags)
-            tag_filter = "|".join(normalized)
+            tag_filter = "|".join(_escape_tag(x) for x in normalized)
             query_parts.append(f"@tags:{{{tag_filter}}}")
 
         query = " ".join(query_parts)
@@ -128,11 +145,11 @@ class TupleSpace:
     ) -> Fact | None:
         """Atomically read and delete a matching fact (Linda IN)."""
         t0 = time.monotonic()
-        query_parts = [f"@project:{{{self._project}}}"]
+        query_parts = [f"@project:{{{_escape_tag(self._project)}}}"]
         if category:
-            query_parts.append(f"@category:{{{category}}}")
+            query_parts.append(f"@category:{{{_escape_tag(category)}}}")
         if key_pattern:
-            query_parts.append(f"@key:{{{key_pattern}}}")
+            query_parts.append(f"@key:{{{_escape_tag(key_pattern)}}}")
 
         query = " ".join(query_parts)
         doc = await self._backend.atomic_pop(INDEX_NAME, query)
@@ -154,9 +171,9 @@ class TupleSpace:
 
     async def count(self, category: str | None = None) -> int:
         """Count facts in the given category for this project."""
-        query_parts = [f"@project:{{{self._project}}}"]
+        query_parts = [f"@project:{{{_escape_tag(self._project)}}}"]
         if category:
-            query_parts.append(f"@category:{{{category}}}")
+            query_parts.append(f"@category:{{{_escape_tag(category)}}}")
         query = " ".join(query_parts)
         results = await self._backend.search(INDEX_NAME, query, limit=10000)
         return len(results)

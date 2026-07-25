@@ -136,7 +136,11 @@ class RedisTupleSpaceBackend:
             await self._client.ft(name).info()
             logger.debug("Index '%s' already exists", name)
         except Exception:
-            from redis.commands.search.indexDefinition import IndexDefinition, IndexType
+            # redis-py renamed this module to snake_case; the camelCase path was
+            # removed by 7.x. Imported lazily inside the except branch, so it only
+            # raised when an index actually had to be created — i.e. on a fresh
+            # Redis, which is exactly the first-run path.
+            from redis.commands.search.index_definition import IndexDefinition, IndexType
 
             definition = IndexDefinition(prefix=["fact:"], index_type=IndexType.JSON)
             await self._client.ft(name).create_index(fields, definition=definition)
