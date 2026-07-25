@@ -39,9 +39,19 @@ spec:
             - sh
             - -c
             - |
-              host=$(echo "$NATS_SERVER_IP" | sed -e 's#^nats://##' -e 's#:.*##')
-              port=$(echo "$NATS_SERVER_IP" | sed -e 's#.*:##' -e 's#[^0-9]##g')
-              port=${port:-4222}
+              # NATS_SERVER_IP may be a bare host ("18.191.42.210"), host:port,
+              # or scheme-prefixed. Mirrors connectors/nats_config.py
+              # _normalize_server, which defaults the port to 4222 when absent.
+              #
+              # Do NOT parse this with `sed 's#.*:##'`: with no colon present that
+              # is a no-op, and stripping non-digits then turns 18.191.42.210 into
+              # the port "1819142210" — non-empty, so a ${port:-4222} default never
+              # fires and the probe spins forever on a bad port.
+              addr=${NATS_SERVER_IP#nats://}; addr=${addr#tls://}; addr=${addr%%/*}
+              case "$addr" in
+                *:*) host=${addr%:*}; port=${addr##*:} ;;
+                *)   host=$addr;      port=4222 ;;
+              esac
               until nc -z -w 5 "$host" "$port"; do
                 echo "waiting for nats at $host:$port..."; sleep 3
               done
