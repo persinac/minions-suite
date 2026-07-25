@@ -274,8 +274,34 @@ class PostgresDatabase:
         logger.info("Updated spec for job %s (%d chars)", job_id, len(spec))
         await self.record_event(job_id, "spec_refined", "db", f"spec_length={len(spec)}")
 
-    async def update_job_status(self, job_id: str, status: JobStatus, error: str | None = None) -> None:
+    async def update_job_status(
+        self,
+        job_id: str,
+        status: JobStatus,
+        error: str | None = None,
+        expected_status: JobStatus | None = None,
+    ) -> bool:
+        """Move a job to `status`. Returns True if this call performed the write.
+
+        With `expected_status` the UPDATE is a compare-and-swap: it only lands if
+        the row is still in that status, and False means another process moved the
+        job first. Callers that gate dispatch on the transition should pass it and
+        bail on False, or two engines will each dispatch agents for the same job.
+
+        Left off, behaviour is the historical blind write — correct for terminal
+        transitions (FAILED, DONE) which must land regardless of intermediate state.
+        """
         job = await self.get_job(job_id)
+
+        # Losing a CAS is an expected outcome, not an error. Bail before validation:
+        # otherwise the loser trips validate_job_transition (dev_in_progress ->
+        # dev_in_progress is not a legal edge), which raises into _advance's retry
+        # handler, logs as a failure, and burns retry budget for having correctly
+        # deferred to another process.
+        if expected_status is not None and job is not None and job.status != expected_status:
+            logger.info("Job %s -> %s skipped: in %s, expected %s", job_id, status, job.status, expected_status)
+            return False
+
         if job:
             try:
                 validate_job_transition(job_id, job.status, status)
@@ -285,15 +311,30 @@ class PostgresDatabase:
                 raise
 
         async with self._pool.connection() as conn:
-            await conn.execute(
-                f"UPDATE {JOB_SCHEMA}.jobs SET status = %s, updated_at = %s, error = COALESCE(%s, error) WHERE id = %s",
-                (status, _now(), error, job_id),
-            )
+            if expected_status is None:
+                cur = await conn.execute(
+                    f"UPDATE {JOB_SCHEMA}.jobs SET status = %s, updated_at = %s, error = COALESCE(%s, error) WHERE id = %s",
+                    (status, _now(), error, job_id),
+                )
+            else:
+                cur = await conn.execute(
+                    f"UPDATE {JOB_SCHEMA}.jobs SET status = %s, updated_at = %s, error = COALESCE(%s, error) "
+                    f"WHERE id = %s AND status = %s",
+                    (status, _now(), error, job_id, expected_status),
+                )
+            won = cur.rowcount > 0
+
+        if not won:
+            # Lost the race in the window between the read above and this write.
+            logger.info("Job %s -> %s skipped: another process advanced it first", job_id, status)
+            return False
+
         logger.info("Job %s -> %s", job_id, status)
         detail = f"status={status}"
         if error:
             detail += f" error={error[:200]}"
         await self.record_event(job_id, "job_status_changed", "db", detail)
+        return True
 
     async def get_job_usage(self, job_id: str) -> dict:
         async with self._pool.connection() as conn:

@@ -283,7 +283,18 @@ async def launch_engineers(engine: JobEngine, job: Job):
             return
         return
 
-    await engine.db.update_job_status(job.id, JobStatus.DEV_IN_PROGRESS)
+    # Compare-and-swap, not a blind write: this transition is the gate for the
+    # launch loop below. If another engine already moved the job out of
+    # TASKS_CREATED it has taken ownership of dispatch, and continuing here would
+    # start a second set of engineers on the same tasks.
+    #
+    # ENGINE_ENABLED should already guarantee a single engine per deployment; this
+    # is the backstop for the case that guarantee is broken by hand — a scaled-up
+    # replica count, or a local `--server` pointed at the same database.
+    won = await engine.db.update_job_status(job.id, JobStatus.DEV_IN_PROGRESS, expected_status=JobStatus.TASKS_CREATED)
+    if not won:
+        logger.info("Job %s already advanced past tasks_created by another engine — skipping launch", job.id)
+        return
 
     # Launch one task per service (first pending wins, rest wait for next poll)
     launched_services = set()
