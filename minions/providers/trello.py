@@ -15,11 +15,20 @@ logger = logging.getLogger(__name__)
 
 TRELLO_API = "https://api.trello.com/1"
 
-# List names the poller looks for (case-insensitive match)
-LIST_ONDECK = "minions-on-deck"
-LIST_IN_PROGRESS = "minions-in-progress"
+# List names the poller looks for. Matched case-insensitively against the board: names are
+# normalised with .strip().lower() in _resolve_list_ids, so these must be the lowercase form
+# of the list's ACTUAL name on the board.
+#
+# Corrected 2026-07-25. These were aspirational names ("minions-*") that no list on the board
+# ever had, so _resolve_list_ids raised on every start and took the whole process down —
+# CrashLoopBackOff, since a component death is treated as fatal. Board's real lists are:
+# Ideas, Design, On-deck, tech-debt, In progress, Done, Fucked.
+#
+# LIST_DONE was already correct by accident: "done" is the normalised form of "Done".
+LIST_ONDECK = "on-deck"
+LIST_IN_PROGRESS = "in progress"
 LIST_DONE = "done"
-LIST_FAILED = "failed"
+LIST_FAILED = "fucked"
 
 REQUIRED_LISTS = [LIST_ONDECK, LIST_IN_PROGRESS, LIST_DONE, LIST_FAILED]
 
