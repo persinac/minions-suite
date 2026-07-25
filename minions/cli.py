@@ -528,11 +528,45 @@ async def _run_gitlab_issues_only(config: Config) -> None:
         await db.close()
 
 
-async def _run_pollers(config: Config) -> None:
+def _supervise(task: asyncio.Task, shutdown: asyncio.Event) -> asyncio.Task:
+    """Make a background task's death visible, and stop the process when it happens.
+
+    Every long-running component here is an asyncio task that nothing ever
+    awaits — the parent blocks on an Event instead. An exception inside one is
+    therefore never retrieved, and because the task list keeps a strong
+    reference it is never garbage collected either, so asyncio's usual
+    "Task exception was never retrieved" warning never fires. The failure is
+    completely invisible.
+
+    That is not hypothetical: the Trello poller raises from _resolve_list_ids
+    when the board is missing a required list, and the process went on logging
+    "Input sources started: trello" and reporting 1/1 Running with no poller at
+    all. Losing an input source means the container is doing nothing it was
+    deployed to do, so the honest response is to log loudly and exit — a
+    CrashLoopBackOff is visible where a healthy-looking idle pod is not.
+    """
+
+    def _on_done(finished: asyncio.Task) -> None:
+        if finished.cancelled():
+            return
+        exc = finished.exception()
+        if exc is None:
+            logger.error("Background task %s exited on its own — nothing left to run it", finished.get_name())
+        else:
+            logger.error("Background task %s died: %s", finished.get_name(), exc, exc_info=exc)
+        shutdown.set()
+
+    task.add_done_callback(_on_done)
+    return task
+
+
+async def _run_pollers(config: Config) -> int:
     """Run all configured input source pollers + job engine.
 
     Starts every poller whose keys/flags are set, skips the rest.
     Designed to run as a standalone container or via `task up`.
+
+    Returns a process exit code: non-zero if a component died.
     """
     from .engine import JobEngine
     from .project_registry import build_registry
@@ -577,6 +611,7 @@ async def _run_pollers(config: Config) -> None:
 
     tasks = []
     sources_started = []
+    shutdown = asyncio.Event()
 
     # Job engine — only when this process owns it. Running a second engine
     # alongside `--server` double-dispatches: both poll the same jobs table and
@@ -584,7 +619,7 @@ async def _run_pollers(config: Config) -> None:
     # guard is a _has_running_agent read, which both pass). Pollers write jobs to
     # the DB and need no engine of their own.
     if config.engine_enabled:
-        tasks.append(asyncio.create_task(job_engine.start(), name="job-engine"))
+        tasks.append(_supervise(asyncio.create_task(job_engine.start(), name="job-engine"), shutdown))
     else:
         logger.info("Job engine disabled (ENGINE_ENABLED=false) — this process only feeds jobs to the DB")
 
@@ -593,7 +628,7 @@ async def _run_pollers(config: Config) -> None:
         from .providers.gitlab_issues import GitLabIssuesPoller
 
         gitlab_poller = GitLabIssuesPoller(config, db, projects)
-        tasks.append(asyncio.create_task(gitlab_poller.start(), name="gitlab-issues-poller"))
+        tasks.append(_supervise(asyncio.create_task(gitlab_poller.start(), name="gitlab-issues-poller"), shutdown))
         sources_started.append("gitlab-issues")
     else:
         gitlab_poller = None
@@ -603,7 +638,7 @@ async def _run_pollers(config: Config) -> None:
         from .providers.trello import TrelloPoller
 
         trello_poller = TrelloPoller(config, db)
-        tasks.append(asyncio.create_task(trello_poller.start(), name="trello-poller"))
+        tasks.append(_supervise(asyncio.create_task(trello_poller.start(), name="trello-poller"), shutdown))
         sources_started.append("trello")
     else:
         trello_poller = None
@@ -613,7 +648,7 @@ async def _run_pollers(config: Config) -> None:
         from .renovate.engine import RenovateEngine
 
         renovate_engine = RenovateEngine(db, config, projects, nats_client=nats_client)
-        tasks.append(asyncio.create_task(renovate_engine.start(), name="renovate-engine"))
+        tasks.append(_supervise(asyncio.create_task(renovate_engine.start(), name="renovate-engine"), shutdown))
         sources_started.append("renovate")
     else:
         renovate_engine = None
@@ -626,7 +661,11 @@ async def _run_pollers(config: Config) -> None:
         logger.warning("No input sources configured and engine disabled — this process will do nothing")
 
     try:
-        await asyncio.Event().wait()
+        # Wakes on a component death as well as on signal, so a dead poller ends
+        # the process instead of leaving it idle and reporting 1/1 Running.
+        await shutdown.wait()
+        logger.error("A component died — shutting down so the failure is visible to the orchestrator")
+        return 1
     finally:
         # Only stop the engine if we started it. JobEngine.stop() marks every
         # in-process agent in the database as failed, so calling it from a
@@ -947,8 +986,9 @@ def main():
         return
 
     if args.pollers:
-        asyncio.run(_run_pollers(config))
-        return
+        # Non-zero when a component died, so the container restarts instead of
+        # sitting there Running with nothing actually polling.
+        sys.exit(asyncio.run(_run_pollers(config)))
 
     if args.trello_only:
         asyncio.run(_run_trello_only(config))

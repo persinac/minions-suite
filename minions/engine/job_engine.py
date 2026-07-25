@@ -169,12 +169,23 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
         return None, None
 
     def _default_working_dir(self) -> str:
-        """Return the repo_path of the first registered service, or repo_base_dir."""
-        for project in self.registry.values():
-            if project.services:
-                first_svc = next(iter(project.services.values()), None)
-                if first_svc:
-                    return first_svc.repo_path
+        """Return a neutral working directory when no service could be resolved.
+
+        This used to return the first registered service's repo_path, which
+        meant an unresolved service name silently pointed the agent at whatever
+        project happened to sort first — it had write, commit and push tools,
+        so a job for one repo could have opened a PR against an unrelated one.
+        Observed live: every project shared the service name 'app', so a
+        wallet-api job checked out Flashback-Android.
+
+        An agent with no repo fails obviously; an agent with the wrong repo
+        does damage. Prefer the former.
+        """
+        logger.error(
+            "No service resolved for this task — falling back to %s. The agent will have no checkout. "
+            "Check that the task's service name matches a key under some project's `services:` in projects.yaml.",
+            self.config.repo_base_dir,
+        )
         return self.config.repo_base_dir
 
     # =========================================================================

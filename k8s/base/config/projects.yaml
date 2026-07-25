@@ -44,7 +44,7 @@ projects:
       roles: [frontend]
       timeout: 1800
     services:
-      app:
+      flashback-android:
         project_id: flippin-balls/Flashback-Android
         git_provider: github
         clone_url: https://github.com/flippin-balls/Flashback-Android.git
@@ -62,7 +62,7 @@ projects:
       roles: [frontend]
       timeout: 1800
     services:
-      app:
+      flashback-apple:
         project_id: flippin-balls/Flashback-Apple
         git_provider: github
         clone_url: https://github.com/flippin-balls/Flashback-Apple.git
@@ -82,7 +82,7 @@ projects:
       languages: [python]
       timeout: 1800
     services:
-      app:
+      appwrite-functions:
         project_id: flippin-balls/appwrite-functions
         git_provider: github
         clone_url: https://github.com/flippin-balls/appwrite-functions.git
@@ -105,7 +105,7 @@ projects:
       languages: [python]
       timeout: 1800
     services:
-      app:
+      aws-utils:
         project_id: flippin-balls/aws-utils
         git_provider: github
         clone_url: https://github.com/flippin-balls/aws-utils.git
@@ -126,7 +126,7 @@ projects:
       roles: [backend]
       timeout: 1800
     services:
-      app:
+      database:
         project_id: flippin-balls/database
         git_provider: github
         clone_url: https://github.com/flippin-balls/database.git
@@ -146,7 +146,7 @@ projects:
       languages: [python]
       timeout: 1800
     services:
-      app:
+      device-config-management:
         project_id: flippin-balls/device-config-management
         git_provider: github
         clone_url: https://github.com/flippin-balls/device-config-management.git
@@ -169,7 +169,7 @@ projects:
       languages: [python]
       timeout: 1800
     services:
-      app:
+      device-requisition:
         project_id: flippin-balls/device-requisition
         git_provider: github
         clone_url: https://github.com/flippin-balls/device-requisition.git
@@ -192,7 +192,7 @@ projects:
       languages: [python]
       timeout: 1800
     services:
-      app:
+      directory-api:
         project_id: flippin-balls/directory-api
         git_provider: github
         clone_url: https://github.com/flippin-balls/directory-api.git
@@ -215,7 +215,7 @@ projects:
       languages: [typescript]
       timeout: 1800
     services:
-      app:
+      directory-ui:
         project_id: flippin-balls/directory-ui
         git_provider: github
         clone_url: https://github.com/flippin-balls/directory-ui.git
@@ -238,7 +238,7 @@ projects:
       languages: [shell]
       timeout: 1800
     services:
-      app:
+      esp-cryptoauthlib:
         project_id: flippin-balls/esp-cryptoauthlib
         git_provider: github
         clone_url: https://github.com/flippin-balls/esp-cryptoauthlib.git
@@ -259,7 +259,7 @@ projects:
       languages: [python]
       timeout: 1800
     services:
-      app:
+      flashback-cns:
         project_id: flippin-balls/flashback-cns
         git_provider: github
         clone_url: https://github.com/flippin-balls/flashback-cns.git
@@ -282,7 +282,7 @@ projects:
       languages: [shell]
       timeout: 1800
     services:
-      app:
+      flashback-fleet-esp-common:
         project_id: flippin-balls/flashback-fleet-esp-common
         git_provider: github
         clone_url: https://github.com/flippin-balls/flashback-fleet-esp-common.git
@@ -303,7 +303,7 @@ projects:
       languages: [typescript]
       timeout: 1800
     services:
-      app:
+      flashback-heatmap:
         project_id: flippin-balls/flashback-heatmap
         git_provider: github
         clone_url: https://github.com/flippin-balls/flashback-heatmap.git
@@ -324,7 +324,7 @@ projects:
       roles: [backend]
       timeout: 1800
     services:
-      app:
+      flashback-plugins:
         project_id: flippin-balls/flashback-plugins
         git_provider: github
         clone_url: https://github.com/flippin-balls/flashback-plugins.git
@@ -344,7 +344,7 @@ projects:
       languages: [python]
       timeout: 1800
     services:
-      app:
+      healthcheck:
         project_id: flippin-balls/healthcheck
         git_provider: github
         clone_url: https://github.com/flippin-balls/healthcheck.git
@@ -367,7 +367,7 @@ projects:
       languages: [shell]
       timeout: 1800
     services:
-      app:
+      hermes-bridge:
         project_id: flippin-balls/hermes-bridge
         git_provider: github
         clone_url: https://github.com/flippin-balls/hermes-bridge.git
@@ -388,7 +388,7 @@ projects:
       languages: [python]
       timeout: 1800
     services:
-      app:
+      infrastructure:
         project_id: flippin-balls/infrastructure
         git_provider: github
         clone_url: https://github.com/flippin-balls/infrastructure.git
@@ -411,7 +411,7 @@ projects:
       languages: [python]
       timeout: 1800
     services:
-      app:
+      integration-tests:
         project_id: flippin-balls/integration-tests
         git_provider: github
         clone_url: https://github.com/flippin-balls/integration-tests.git
@@ -432,7 +432,7 @@ projects:
       roles: [backend]
       timeout: 1800
     services:
-      app:
+      kagent-agents:
         project_id: flippin-balls/kagent-agents
         git_provider: github
         clone_url: https://github.com/flippin-balls/kagent-agents.git
@@ -450,7 +450,7 @@ projects:
       roles: [backend]
       timeout: 1800
     services:
-      app:
+      log-analyzer:
         project_id: flippin-balls/log-analyzer
         git_provider: github
         clone_url: https://github.com/flippin-balls/log-analyzer.git
@@ -470,7 +470,7 @@ projects:
       languages: [shell]
       timeout: 1800
     services:
-      app:
+      lora-nodes:
         project_id: flippin-balls/lora-nodes
         git_provider: github
         clone_url: https://github.com/flippin-balls/lora-nodes.git
@@ -491,7 +491,7 @@ projects:
       languages: [python]
       timeout: 1800
     services:
-      app:
+      lora-pi-monitor:
         project_id: flippin-balls/lora-pi-monitor
         git_provider: github
         clone_url: https://github.com/flippin-balls/lora-pi-monitor.git
@@ -514,7 +514,7 @@ projects:
       languages: [python]
       timeout: 1800
     services:
-      app:
+      management-api:
         project_id: flippin-balls/management-api
         git_provider: github
         clone_url: https://github.com/flippin-balls/management-api.git
@@ -537,7 +537,7 @@ projects:
       languages: [typescript]
       timeout: 1800
     services:
-      app:
+      management-dashboard:
         project_id: flippin-balls/management-dashboard
         git_provider: github
         clone_url: https://github.com/flippin-balls/management-dashboard.git
@@ -560,7 +560,7 @@ projects:
       languages: [python]
       timeout: 1800
     services:
-      app:
+      mcp-minions:
         project_id: flippin-balls/mcp-minions
         git_provider: github
         clone_url: https://github.com/flippin-balls/mcp-minions.git
@@ -583,7 +583,7 @@ projects:
       languages: [shell]
       timeout: 1800
     services:
-      app:
+      parts-db:
         project_id: flippin-balls/parts-db
         git_provider: github
         clone_url: https://github.com/flippin-balls/parts-db.git
@@ -604,7 +604,7 @@ projects:
       languages: [python]
       timeout: 1800
     services:
-      app:
+      pinball-db:
         project_id: flippin-balls/pinball-db
         git_provider: github
         clone_url: https://github.com/flippin-balls/pinball-db.git
@@ -627,7 +627,7 @@ projects:
       languages: [shell]
       timeout: 1800
     services:
-      app:
+      playfield-relay:
         project_id: flippin-balls/playfield-relay
         git_provider: github
         clone_url: https://github.com/flippin-balls/playfield-relay.git
@@ -648,7 +648,7 @@ projects:
       languages: [python]
       timeout: 1800
     services:
-      app:
+      requisition-device-cli:
         project_id: flippin-balls/requisition-device-cli
         git_provider: github
         clone_url: https://github.com/flippin-balls/requisition-device-cli.git
@@ -671,7 +671,7 @@ projects:
       languages: [typescript]
       timeout: 1800
     services:
-      app:
+      store-front:
         project_id: flippin-balls/store-front
         git_provider: github
         clone_url: https://github.com/flippin-balls/store-front.git
@@ -694,7 +694,7 @@ projects:
       languages: [python]
       timeout: 1800
     services:
-      app:
+      storefront-api:
         project_id: flippin-balls/storefront-api
         git_provider: github
         clone_url: https://github.com/flippin-balls/storefront-api.git
@@ -717,7 +717,7 @@ projects:
       languages: [typescript]
       timeout: 1800
     services:
-      app:
+      ui-integration-tests:
         project_id: flippin-balls/ui-integration-tests
         git_provider: github
         clone_url: https://github.com/flippin-balls/ui-integration-tests.git
@@ -740,7 +740,7 @@ projects:
       languages: [python]
       timeout: 1800
     services:
-      app:
+      wallet-api:
         project_id: flippin-balls/wallet-api
         git_provider: github
         clone_url: https://github.com/flippin-balls/wallet-api.git
