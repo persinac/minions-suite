@@ -488,7 +488,7 @@ async def get_review_feedback(engine: JobEngine, job_id: str, task: Task) -> str
 
 async def run_task_review(engine: JobEngine, job: Job, task: Task):
     """Launch a code reviewer for a single task's PR."""
-    from .review import _create_provider_for_project
+    from .review import _create_provider_for_project, create_reviewer_provider
 
     # Only one reviewer per engineer task. This is reached from the arbiter's
     # `advance_job` remediation, which re-fires every monitor pass while the job
@@ -571,7 +571,7 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
     mr_info = {}
     if project and mr_id:
         try:
-            provider = _create_provider_for_project(project, engine.config)
+            provider = await create_reviewer_provider(project, engine.config)
             changed_files = await provider.get_changed_files(project.project_id, mr_id)
             mr_info = {"project_id": project.project_id, "changed_files": changed_files}
         except Exception as e:

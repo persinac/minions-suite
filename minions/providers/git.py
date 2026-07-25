@@ -382,34 +382,38 @@ class GitHubProvider:
         )
         return {"posted": True, "inline": False}
 
+    # GitHub refuses a formal review on a PR you authored:
+    #   GraphQL: Review Can not approve your own pull request (addPullRequestReview)
+    # The same GitHub App opens the PR and reviews it, so this fires on every
+    # minion-authored PR. It is a platform rule, not a permissions problem —
+    # no token scope makes it work.
+    _SELF_REVIEW_MARKERS = ("your own pull request", "can not approve your own")
+
     async def submit_review(self, project_id: str, mr_id: str, verdict: str, body: str) -> dict:
-        if verdict == "approve":
-            self._run_gh(
-                [
-                    "pr",
-                    "review",
-                    mr_id,
-                    "--repo",
-                    project_id,
-                    "--approve",
-                    "--body",
-                    body,
-                ]
-            )
-        else:
-            self._run_gh(
-                [
-                    "pr",
-                    "review",
-                    mr_id,
-                    "--repo",
-                    project_id,
-                    "--request-changes",
-                    "--body",
-                    body,
-                ]
-            )
-        return {"verdict": verdict, "posted": True}
+        flag = "--approve" if verdict == "approve" else "--request-changes"
+
+        try:
+            self._run_gh(["pr", "review", mr_id, "--repo", project_id, flag, "--body", body])
+            return {"verdict": verdict, "posted": True, "as": "review"}
+        except RuntimeError as e:
+            if not any(marker in str(e).lower() for marker in self._SELF_REVIEW_MARKERS):
+                raise
+
+        # Fall back to a plain PR comment. The verdict is stated in the body so
+        # it is not lost, just not enforced by GitHub's review machinery. Same
+        # precedent as post_inline_comment, which already degrades to a regular
+        # comment on GitHub. Previously this raised and the reviewer's entire
+        # analysis was discarded.
+        label = "APPROVED" if verdict == "approve" else "CHANGES REQUESTED"
+        commented = (
+            f"**Automated review — {label}**\n\n"
+            f"{body}\n\n"
+            "_Posted as a comment rather than a formal review: GitHub does not permit "
+            "the identity that opened a pull request to review it._"
+        )
+        self._run_gh(["pr", "comment", mr_id, "--repo", project_id, "--body", commented])
+        logger.info("Posted review for %s#%s as a comment (self-authored PR)", project_id, mr_id)
+        return {"verdict": verdict, "posted": True, "as": "comment", "reason": "self-authored PR"}
 
     async def merge_mr(self, project_id: str, mr_id: str) -> dict:
         try:

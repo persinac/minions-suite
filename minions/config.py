@@ -184,10 +184,6 @@ class Config:
     job_cost_limit_usd: float = 25.0
     agent_max_turns: int = 60
 
-    # Difficulty-based model tiers. One cheap classifier call per job picks the
-    # tier, and every agent on that job uses it. Easy vs hard is a 5x difference
-    # on both input and output pricing, so a single correct "easy" verdict pays
-    # for several hundred classifications.
     # Job admission rate caps. The cost ceilings bound what one job can spend;
     # these bound how many jobs can spend at all, which is the difference
     # between one bad job and a bad afternoon. Deliberately set high — they are
@@ -197,6 +193,10 @@ class Config:
     max_jobs_per_hour: int = 20
     max_jobs_per_month: int = 500
 
+    # Difficulty-based model tiers. One cheap classifier call per job picks the
+    # tier, and every agent on that job uses it. Easy vs hard is a 5x difference
+    # on both input and output pricing, so a single correct "easy" verdict pays
+    # for several hundred classifications.
     classifier_enabled: bool = True
     classifier_model: str = "claude-haiku-4-5"
     classifier_max_chars: int = 6000
@@ -215,6 +215,14 @@ class Config:
     github_app_id: str = ""
     github_app_private_key: str = ""  # SECRET (PEM)
     github_app_installation_id: str = ""
+
+    # Second App used only to post reviews. GitHub refuses a formal review from
+    # the identity that opened the PR, and the App above opens every minion PR,
+    # so a distinct identity is the only way to get a real APPROVED /
+    # CHANGES_REQUESTED. Unset = reviews degrade to a PR comment.
+    github_reviewer_app_id: str = ""
+    github_reviewer_app_private_key: str = ""  # SECRET (PEM)
+    github_reviewer_app_installation_id: str = ""
 
     # Review engine
     engine_poll_interval: int = 10

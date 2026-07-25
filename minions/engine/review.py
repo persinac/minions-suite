@@ -55,7 +55,7 @@ async def run_review_in_process(engine: JobEngine, job: Job, task: Task):
 
     # Create git provider
     try:
-        provider = _create_provider_for_project(project, engine.config)
+        provider = await create_reviewer_provider(project, engine.config)
     except ValueError as e:
         logger.error("Failed to create provider for task %s: %s", task.id, e)
         await engine.db.update_task(task.id, status=TaskStatus.FAILED, agent_role="", error=str(e)[:200])
@@ -159,6 +159,36 @@ async def check_review_tasks(engine: JobEngine, job: Job):
     else:
         await engine.db.update_job_status(job.id, JobStatus.DONE)
         logger.info("Review job %s completed", job.id)
+
+
+async def create_reviewer_provider(project, config):
+    """Git provider for the code reviewer, using the reviewer App if configured.
+
+    GitHub refuses a formal review from the identity that opened the pull
+    request, and the engineer App opens every minion PR. Handing the reviewer a
+    token from a *second* App is what makes an actual APPROVED /
+    CHANGES_REQUESTED possible rather than a comment.
+
+    Falls back to the normal provider when no reviewer App is configured, in
+    which case GitHubProvider.submit_review degrades to a PR comment.
+
+    Only the review path uses this. Everything else keeps the engineer identity,
+    which is correct — clones, commits and pushes must stay attributable to the
+    App that owns the branch.
+    """
+    from ..providers.git import create_provider
+    from ..providers.github_app import reviewer_token
+
+    provider_type = project.git_provider or config.git_provider
+    if provider_type != "github":
+        return _create_provider_for_project(project, config)
+
+    token = await reviewer_token(config)
+    if not token:
+        return _create_provider_for_project(project, config)
+
+    logger.info("Using the reviewer GitHub App identity for %s", project.project_id)
+    return create_provider("github", token=token)
 
 
 def _create_provider_for_project(project, config):

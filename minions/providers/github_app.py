@@ -179,6 +179,69 @@ def build_token_provider(config) -> GitHubAppTokenProvider | None:
     )
 
 
+def build_reviewer_token_provider(config) -> GitHubAppTokenProvider | None:
+    """Provider for the *reviewer* identity, if a second App is configured.
+
+    GitHub refuses a formal review from the identity that opened the pull
+    request, and the engineer App opens every minion PR. A second App is the
+    only way to get a real APPROVED / CHANGES_REQUESTED — no token scope on the
+    first App can grant it.
+
+    Returns None when the second App is not configured, in which case callers
+    keep using the engineer identity and degrade to a PR comment.
+    """
+    app_id = getattr(config, "github_reviewer_app_id", "")
+    private_key = getattr(config, "github_reviewer_app_private_key", "")
+    installation_id = getattr(config, "github_reviewer_app_installation_id", "")
+
+    if not (app_id and private_key and installation_id):
+        return None
+
+    if app_id == config.github_app_id:
+        # Same App means same identity means GitHub rejects the review again.
+        logger.warning("Reviewer App id matches the engineer App — reviews will still be refused; configure a distinct App")
+        return None
+
+    return GitHubAppTokenProvider(app_id=app_id, private_key=private_key, installation_id=installation_id)
+
+
+_reviewer_provider: GitHubAppTokenProvider | None = None
+_reviewer_built = False
+
+
+async def reviewer_token(config) -> str | None:
+    """Current installation token for the reviewer App, or None if unconfigured.
+
+    Deliberately does NOT touch os.environ: GH_TOKEN belongs to the engineer
+    identity, and clobbering it would make the reviewer's credential leak into
+    clones, commits and pushes. Callers pass this token explicitly.
+    """
+    global _reviewer_provider, _reviewer_built
+
+    if not _reviewer_built:
+        try:
+            _reviewer_provider = build_reviewer_token_provider(config)
+        except ValueError as e:
+            logger.error("Reviewer GitHub App credentials are malformed: %s", e)
+            _reviewer_provider = None
+        _reviewer_built = True
+        if _reviewer_provider:
+            logger.info(
+                "Reviewer GitHub App enabled (app_id=%s, installation=%s)",
+                _reviewer_provider.app_id,
+                _reviewer_provider.installation_id,
+            )
+
+    if _reviewer_provider is None:
+        return None
+
+    try:
+        return await _reviewer_provider.token()
+    except GitHubAppError as e:
+        logger.error("Could not refresh reviewer GitHub App token: %s", e)
+        return None
+
+
 # Process-wide singleton. The engine refreshes it once per poll cycle; every
 # `gh` invocation downstream then reads a current token out of the environment.
 _provider: GitHubAppTokenProvider | None = None
@@ -220,7 +283,9 @@ async def ensure_token(config) -> str | None:
 
 
 def reset_token_provider() -> None:
-    """Drop the cached provider. For tests, and for config reloads."""
-    global _provider, _provider_built
+    """Drop the cached providers. For tests, and for config reloads."""
+    global _provider, _provider_built, _reviewer_provider, _reviewer_built
     _provider = None
     _provider_built = False
+    _reviewer_provider = None
+    _reviewer_built = False
