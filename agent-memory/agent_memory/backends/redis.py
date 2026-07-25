@@ -69,7 +69,7 @@ class RedisTupleSpaceBackend:
                 else:
                     parsed = raw
                 docs.append(parsed)
-            except json.JSONDecodeError, AttributeError:
+            except (json.JSONDecodeError, AttributeError):
                 # Try to build from individual fields
                 d = {}
                 for field in ("project", "category", "key", "value", "tags", "agent_role", "job_id", "timestamp"):

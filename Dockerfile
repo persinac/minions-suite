@@ -10,6 +10,9 @@ WORKDIR /app
 # Only pyproject + lockfile — builder output is just the venv,
 # so it stays cached until dependencies change.
 COPY pyproject.toml uv.lock* ./
+# agent-memory is a local editable path dependency (pyproject.toml [tool.uv.sources]),
+# so its source must be present before uv sync can resolve it.
+COPY agent-memory/ ./agent-memory/
 RUN uv sync --frozen --no-dev --extra test --python-preference only-system
 
 # ============================================================

@@ -293,5 +293,5 @@ def _format_elapsed(started_at: str) -> str:
         elif secs < 3600:
             return f"{secs // 60}m {secs % 60}s"
         return f"{secs // 3600}h {(secs % 3600) // 60}m"
-    except ValueError, TypeError:
+    except (ValueError, TypeError):
         return "?"

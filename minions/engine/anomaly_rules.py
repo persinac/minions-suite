@@ -42,7 +42,7 @@ async def check_stuck_tasks(db: AbstractDatabase, stuck_threshold_minutes: int =
                 if updated.tzinfo is None:
                     updated = updated.replace(tzinfo=UTC)
                 elapsed_minutes = (now - updated.timestamp()) / 60.0
-            except ValueError, TypeError:
+            except (ValueError, TypeError):
                 continue
 
             if elapsed_minutes < stuck_threshold_minutes:
@@ -63,7 +63,7 @@ async def check_stuck_tasks(db: AbstractDatabase, stuck_threshold_minutes: int =
                         if (now - st_time.timestamp()) / 60.0 < stuck_threshold_minutes:
                             has_recent_activity = True
                             break
-                    except ValueError, TypeError:
+                    except (ValueError, TypeError):
                         continue
 
             if has_recent_activity:
