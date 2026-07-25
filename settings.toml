@@ -16,6 +16,11 @@ mcp_connect_host = "localhost"
 repo_base_dir = "/repos"
 
 [default.engine]
+# Exactly one process should run a JobEngine. Both --server and --pollers build
+# one, and job advancement has no cross-process lock — two engines will each
+# dispatch agents for the same job. Set ENGINE_ENABLED=false on poller-only
+# deployments; the pollers just write jobs to the DB and need no engine.
+enabled = true
 poll_interval = 10
 job_poll_interval = 5
 max_concurrent_reviews = 3
@@ -98,3 +103,40 @@ log_level = "DEBUG"
 
 [development.pollers.gitlab_issues]
 enabled = true
+
+# --- production (K8s / flashback-fleet) ---------------------------------------
+# Activate with ENV_FOR_DYNACONF=production. Without this block, production
+# silently inherits [default], where nats/arbiter/memory are all false.
+
+[production]
+log_level = "INFO"
+
+[production.server]
+# Must bind 0.0.0.0 in a container — the [default] value of "localhost" would
+# make the MCP port unreachable from outside the pod.
+mcp_host = "0.0.0.0"
+
+[production.nats]
+enabled = true
+
+[production.arbiter]
+enabled = true
+
+[production.memory]
+enabled = true
+
+[production.git]
+provider = "github"
+
+# NOTE: the Trello poller has no `enabled` flag — cli.py:590 starts it whenever
+# TRELLO_API_KEY + TRELLO_TOKEN + TRELLO_BOARD_ID are all present. Those live in
+# Doppler mcp-minions/prd, so it activates automatically in this environment.
+
+[production.pollers.gitlab_issues]
+enabled = false
+
+[production.k8s]
+# Phase 1 runs agents in-process. K8s Job dispatch stays off until the
+# agent-worker is given a tool executor — dispatched agents currently return
+# {"error": "No tool executor configured"} for every tool call.
+dispatch = false
