@@ -28,7 +28,12 @@ enabled = true
 poll_interval = 10
 job_poll_interval = 5
 max_concurrent_reviews = 3
-max_concurrent_jobs = 3
+# One job at a time. Concurrency here multiplies spend directly: each job runs a
+# spec analyst, an arbiter, one or more engineers and a reviewer, and the $25
+# per-job ceiling is per job — three concurrent jobs is a $75 ceiling.
+# Raise deliberately, once a full job has been observed end to end under the
+# ceilings.
+max_concurrent_jobs = 1
 max_revisions = 3
 
 # --- Spend ceilings (USD; 0 disables) ---------------------------------------

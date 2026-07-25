@@ -170,6 +170,20 @@ class TrelloPoller:
         card_desc = card.get("desc", "")
         spec_text = f"# {card_name}\n\n{card_desc}"
 
+        # Create the job BEFORE touching the card.
+        #
+        # This was the other way round, and create_job was being handed a Job
+        # where it takes a spec string — the same signature bug as submit_spec.
+        # So every card was moved out of on-deck, then job creation raised, then
+        # the poll loop's `except Exception` swallowed it and carried on. Each
+        # cycle drained the next batch: 24 cards moved to "in progress" with no
+        # job, no agent and no spend behind any of them, and no way to tell from
+        # the board that nothing was happening.
+        #
+        # Creating the job first means a failure here leaves the card exactly
+        # where it was, so the next poll retries it instead of losing it.
+        job = await self.db.create_job(spec_text, external_id=card_id)
+
         await self._move_card(card_id, LIST_IN_PROGRESS)
         if self._minion_label_id:
             try:
@@ -178,8 +192,6 @@ class TrelloPoller:
             except httpx.HTTPError:
                 logger.debug("Failed to add minion label to card %s", card_id[:8], exc_info=True)
 
-        job = Job(spec=spec_text, external_id=card_id)
-        job = await self.db.create_job(job)
         started_at = datetime.now(UTC).isoformat()
         self._active[card_id] = {
             "job_id": job.id,

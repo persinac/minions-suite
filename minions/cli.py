@@ -694,9 +694,10 @@ async def _run_job(spec_text: str, config: Config) -> int:
     db = _create_db(config)
     await db.connect()
 
-    # Create job
-    job = Job(spec=spec_text)
-    job = await db.create_job(job)
+    # create_job takes the spec string and builds the Job itself; passing a
+    # pre-built Job fails pydantic validation. Third instance of the same bug —
+    # submit_spec and the Trello poller had it too.
+    job = await db.create_job(spec_text)
     print(f"Job {job.id} created (status: {job.status})")
 
     # Optional NATS

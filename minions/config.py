@@ -254,7 +254,7 @@ class Config:
 
     # Job engine
     job_engine_poll_interval: int = 5
-    max_concurrent_jobs: int = 3
+    max_concurrent_jobs: int = 1
     # Whether this process runs a JobEngine. Both --server and --pollers construct
     # one, and job advancement has no cross-process lock: two engines polling the
     # same database will both advance a job and each dispatch its own agents (see
@@ -335,7 +335,7 @@ class Config:
             engine_poll_interval=_env_or_int("ENGINE_POLL_INTERVAL", _get("engine", "poll_interval"), 10),
             job_engine_poll_interval=_env_or_int("JOB_ENGINE_POLL_INTERVAL", _get("engine", "job_poll_interval"), 5),
             max_concurrent_reviews=_env_or_int("MAX_CONCURRENT_REVIEWS", _get("engine", "max_concurrent_reviews"), 3),
-            max_concurrent_jobs=_env_or_int("MAX_CONCURRENT_JOBS", _get("engine", "max_concurrent_jobs"), 3),
+            max_concurrent_jobs=_env_or_int("MAX_CONCURRENT_JOBS", _get("engine", "max_concurrent_jobs"), 1),
             engine_enabled=_env_or_bool("ENGINE_ENABLED", _get("engine", "enabled"), True),
             max_revisions=_env_or_int("MAX_REVISIONS", _get("engine", "max_revisions"), 3),
             agent_timeout=_env_or_int("AGENT_TIMEOUT", _get("engine", "agent_timeout"), 600),
