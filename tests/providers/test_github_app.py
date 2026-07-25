@@ -34,6 +34,22 @@ def keypair() -> tuple[str, object]:
     return pem, key.public_key()
 
 
+@pytest.fixture(scope="module")
+def pkcs1_pem() -> str:
+    """A PKCS#1 key — the format GitHub's "Generate a private key" button emits.
+
+    The other fixture produces PKCS#8. Real App keys arrive as
+    `-----BEGIN RSA PRIVATE KEY-----`, so the format actually in production needs
+    its own coverage rather than riding on the assumption that both parse.
+    """
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    return key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode()
+
+
 @dataclass
 class _FakeResponse:
     status_code: int
@@ -134,6 +150,12 @@ class TestJwt:
 
         auth = _FakeClient.calls[0]["headers"]["Authorization"]
         jwt.decode(auth.removeprefix("Bearer "), public, algorithms=["RS256"])  # would raise if broken
+
+    async def test_pkcs1_key_works(self, pkcs1_pem):
+        """GitHub emits PKCS#1 (BEGIN RSA PRIVATE KEY), not PKCS#8."""
+        assert pkcs1_pem.startswith("-----BEGIN RSA PRIVATE KEY-----")
+        await _provider(pkcs1_pem).token()
+        assert _FakeClient.calls[0]["headers"]["Authorization"].startswith("Bearer ")
 
     async def test_unusable_key_raises_without_leaking_material(self):
         p = GitHubAppTokenProvider("4393069", "-----BEGIN PRIVATE KEY-----\nnope\n-----END PRIVATE KEY-----", "12345")
