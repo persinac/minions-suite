@@ -490,20 +490,31 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
     """Launch a code reviewer for a single task's PR."""
     from .review import _create_provider_for_project, create_engineer_provider, create_reviewer_provider
 
-    # Only one reviewer per engineer task. This is reached from the arbiter's
+    # One reviewer per (PR, specialty). This is reached from the arbiter's
     # `advance_job` remediation, which re-fires every monitor pass while the job
     # looks stuck — each pass previously created another reviewer task and
     # another agent. Observed: two reviewers on one PR, $4.87 for a review that
     # was needed once.
+    #
+    # Keyed on specialty as well as pr_url so expert fan-out is not mistaken for
+    # duplication. Keyed on pr_url alone, N specialists on one PR collapse to the
+    # first one to start, and the rest vanish with no error — the job still
+    # reports a clean review, having actually run one. Specialty is None for the
+    # single general reviewer, which dedupes against itself exactly as before.
     existing = await engine.db.get_tasks(job.id)
     duplicate = [
         t
         for t in existing
-        if t.agent_role == AgentRole.CODE_REVIEWER and t.id != task.id and t.status != TaskStatus.FAILED and (t.pr_url or "") == (task.pr_url or "")
+        if t.agent_role == AgentRole.CODE_REVIEWER
+        and t.id != task.id
+        and t.status != TaskStatus.FAILED
+        and (t.pr_url or "") == (task.pr_url or "")
+        and (t.specialty or "") == (task.specialty or "")
     ]
     if duplicate:
         logger.info(
-            "Reviewer already exists for task %s (PR %s) as task %s — not launching another",
+            "Reviewer (specialty=%s) already exists for task %s (PR %s) as task %s — not launching another",
+            task.specialty or "general",
             task.id,
             task.pr_url or "pending",
             duplicate[0].id,

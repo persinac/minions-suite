@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     error TEXT,
     mr_url TEXT,
     mr_id TEXT,
+    specialty TEXT,
     verdict TEXT,
     comments_posted INTEGER DEFAULT 0,
     created_at TEXT NOT NULL,
@@ -304,8 +305,8 @@ class SQLiteDatabase:
         await self._db.execute(
             """INSERT INTO tasks (id, job_id, title, description, service, agent_role, status,
                branch_name, pr_number, pr_url, review_status, deploy_status, revision_count,
-               attempt, max_attempts, error, mr_url, mr_id, verdict, comments_posted, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               attempt, max_attempts, error, mr_url, mr_id, specialty, verdict, comments_posted, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 task.id,
                 task.job_id,
@@ -325,6 +326,7 @@ class SQLiteDatabase:
                 task.error,
                 task.mr_url,
                 task.mr_id,
+                task.specialty,
                 task.verdict,
                 task.comments_posted,
                 task.created_at,
@@ -465,8 +467,8 @@ class SQLiteDatabase:
         await self._db.execute(
             """INSERT INTO tasks (id, job_id, title, description, service, agent_role, status,
                branch_name, pr_number, pr_url, review_status, deploy_status, revision_count,
-               attempt, max_attempts, error, mr_url, mr_id, verdict, comments_posted, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               attempt, max_attempts, error, mr_url, mr_id, specialty, verdict, comments_posted, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 task.id,
                 task.job_id,
@@ -486,6 +488,7 @@ class SQLiteDatabase:
                 task.error,
                 task.mr_url,
                 task.mr_id,
+                task.specialty,
                 task.verdict,
                 task.comments_posted,
                 task.created_at,
@@ -849,6 +852,7 @@ def _row_to_task(row) -> Task:
         error=row["error"],
         mr_url=row["mr_url"],
         mr_id=row["mr_id"],
+        specialty=row["specialty"] if "specialty" in row.keys() else None,
         verdict=row["verdict"],
         comments_posted=row["comments_posted"] or 0,
         created_at=row["created_at"],

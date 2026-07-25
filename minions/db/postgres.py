@@ -227,8 +227,8 @@ class PostgresDatabase:
                     (id, job_id, title, description, service, agent_role, status,
                      branch_name, pr_number, pr_url, review_status, deploy_status,
                      revision_count, attempt, max_attempts, error,
-                     mr_url, mr_id, verdict, comments_posted, created_at, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                     mr_url, mr_id, specialty, verdict, comments_posted, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     task.id,
                     task.job_id,
@@ -248,6 +248,7 @@ class PostgresDatabase:
                     task.error,
                     task.mr_url,
                     task.mr_id,
+                    task.specialty,
                     task.verdict,
                     task.comments_posted,
                     task.created_at,
@@ -388,8 +389,8 @@ class PostgresDatabase:
                     (id, job_id, title, description, service, agent_role, status,
                      branch_name, pr_number, pr_url, review_status, deploy_status,
                      revision_count, attempt, max_attempts, error,
-                     mr_url, mr_id, verdict, comments_posted, created_at, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                     mr_url, mr_id, specialty, verdict, comments_posted, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     task.id,
                     task.job_id,
@@ -409,6 +410,7 @@ class PostgresDatabase:
                     task.error,
                     task.mr_url,
                     task.mr_id,
+                    task.specialty,
                     task.verdict,
                     task.comments_posted,
                     task.created_at,
@@ -852,6 +854,7 @@ def _dict_to_task(d: dict) -> Task:
         error=d.get("error"),
         mr_url=d.get("mr_url"),
         mr_id=d.get("mr_id"),
+        specialty=d.get("specialty"),
         verdict=d.get("verdict"),
         comments_posted=d.get("comments_posted", 0),
         created_at=_ts(d["created_at"]) or "",

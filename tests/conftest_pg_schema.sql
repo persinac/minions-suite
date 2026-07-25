@@ -225,6 +225,7 @@ CREATE TABLE tasks (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     mr_url text,
     mr_id text,
+    specialty text,
     verdict text,
     comments_posted integer DEFAULT 0 NOT NULL
 );

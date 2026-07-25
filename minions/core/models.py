@@ -167,6 +167,10 @@ class Task(BaseModel):
     # Review task fields
     mr_url: str | None = Field(default=None, description="MR/PR URL (for review tasks)")
     mr_id: str | None = Field(default=None, description="MR/PR identifier (for review tasks)")
+    specialty: str | None = Field(
+        default=None,
+        description="Expert reviewer specialty (api, dba, frontend, ...). None = the single general reviewer.",
+    )
     verdict: str | None = Field(default=None, description="Review verdict: approve or request_changes")
     comments_posted: int = Field(default=0, description="Number of inline comments posted")
     created_at: str = Field(default_factory=_now)
