@@ -445,6 +445,26 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
     """Launch a code reviewer for a single task's PR."""
     from .review import _create_provider_for_project
 
+    # Only one reviewer per engineer task. This is reached from the arbiter's
+    # `advance_job` remediation, which re-fires every monitor pass while the job
+    # looks stuck — each pass previously created another reviewer task and
+    # another agent. Observed: two reviewers on one PR, $4.87 for a review that
+    # was needed once.
+    existing = await engine.db.get_tasks(job.id)
+    duplicate = [
+        t
+        for t in existing
+        if t.agent_role == AgentRole.CODE_REVIEWER and t.id != task.id and t.status != TaskStatus.FAILED and (t.pr_url or "") == (task.pr_url or "")
+    ]
+    if duplicate:
+        logger.info(
+            "Reviewer already exists for task %s (PR %s) as task %s — not launching another",
+            task.id,
+            task.pr_url or "pending",
+            duplicate[0].id,
+        )
+        return
+
     review_context = json.dumps(
         {
             "task_id": task.id,

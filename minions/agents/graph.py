@@ -31,6 +31,7 @@ class AgentSubgraphState(TypedDict):
     tool_executor: Any  # ToolExecutor or McpToolExecutor
     timeout: int
     max_turns: int
+    cost_limit: float
     log_path: str
     user_message: str | None
     db: Any  # AbstractDatabase or None
@@ -59,8 +60,15 @@ async def agent_execution_node(state: AgentSubgraphState) -> dict:
             log_path=Path(state["log_path"]),
             user_message=state.get("user_message"),
             max_turns=state["max_turns"],
+            # Without this the ceiling would apply only to the legacy loop, and
+            # use_langgraph_agent defaults true — so it would never fire in prod.
+            cost_limit=state.get("cost_limit", 0.0),
             db=state.get("db"),
             job_id=state["job_id"],
+            # Previously omitted, which left the cost-limit and wind-down logs
+            # unable to say which agent they were talking about.
+            agent_id=state.get("agent_id", ""),
+            agent_role=str(state.get("agent_role") or ""),
         )
         return {"result": result, "error": None}
     except Exception as e:

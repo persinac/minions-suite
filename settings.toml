@@ -30,6 +30,22 @@ job_poll_interval = 5
 max_concurrent_reviews = 3
 max_concurrent_jobs = 3
 max_revisions = 3
+
+# --- Spend ceilings (USD; 0 disables) ---------------------------------------
+# Nothing bounded cost before these existed. The agent loop stopped on turns or
+# wall-clock only, with max_turns hardcoded at 100 — one backend_engineer run
+# billed $20.57 by turn 64, with headroom for roughly half as much again.
+#
+# agent_cost_limit_usd feeds the existing wind-down escalation, so an agent at
+# 80% of budget is told to wrap up and at 90% is restricted to commit/push/PR
+# tools. It ships what it has instead of being killed mid-edit.
+#
+# job_cost_limit_usd is checked before each agent launches and is what actually
+# bounds a job — the per-agent limit alone would let one job spend N times over
+# by running N agents.
+agent_cost_limit_usd = 8.0
+job_cost_limit_usd = 25.0
+agent_max_turns = 60
 agent_timeout = 600
 agent_log_dir = "logs/agents"
 agent_dispatch_mode = "in_process"

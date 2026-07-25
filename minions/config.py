@@ -127,6 +127,16 @@ def _env_or_int(env_var: str, dynaconf_val, default: int) -> int:
     return default
 
 
+def _env_or_float(env_var: str, dynaconf_val, default: float) -> float:
+    """Env var (cast to float) wins, then dynaconf, then default."""
+    env = os.getenv(env_var)
+    if env is not None:
+        return float(env)
+    if dynaconf_val is not None:
+        return float(dynaconf_val)
+    return default
+
+
 def _env_or_bool(env_var: str, dynaconf_val, default: bool) -> bool:
     """Env var (truthy check) wins, then dynaconf, then default."""
     env = os.getenv(env_var)
@@ -158,6 +168,21 @@ class Config:
     # Agent settings
     agent_timeout: int = 600
     agent_log_dir: str = "logs/agents"
+
+    # Spend ceilings, in USD. 0 disables a limit.
+    #
+    # Nothing bounded cost before this: the loop stopped on turns or wall-clock
+    # only, and max_turns was hardcoded at 100. A single backend_engineer run
+    # billed $20.57 over 64 turns and had headroom for ~50% more.
+    #
+    # agent_cost_limit_usd is enforced inside the tool-use loop and reuses the
+    # existing wind-down escalation, so an agent nearing its budget is told to
+    # commit and ship rather than being killed with its work on the floor.
+    # job_cost_limit_usd is checked before each new agent launches, which is
+    # what stops a job from spending without bound across many agents.
+    agent_cost_limit_usd: float = 8.0
+    job_cost_limit_usd: float = 25.0
+    agent_max_turns: int = 60
 
     # Git provider defaults
     git_provider: str = "gitlab"
@@ -286,6 +311,9 @@ class Config:
             engine_enabled=_env_or_bool("ENGINE_ENABLED", _get("engine", "enabled"), True),
             max_revisions=_env_or_int("MAX_REVISIONS", _get("engine", "max_revisions"), 3),
             agent_timeout=_env_or_int("AGENT_TIMEOUT", _get("engine", "agent_timeout"), 600),
+            agent_cost_limit_usd=_env_or_float("AGENT_COST_LIMIT_USD", _get("engine", "agent_cost_limit_usd"), 8.0),
+            job_cost_limit_usd=_env_or_float("JOB_COST_LIMIT_USD", _get("engine", "job_cost_limit_usd"), 25.0),
+            agent_max_turns=_env_or_int("AGENT_MAX_TURNS", _get("engine", "agent_max_turns"), 60),
             agent_log_dir=_env_or("AGENT_LOG_DIR", _get("engine", "agent_log_dir"), str(base / "logs" / "agents")),
             agent_dispatch_mode=_env_or("AGENT_DISPATCH_MODE", _get("engine", "agent_dispatch_mode"), "in_process"),
             # -- Database --

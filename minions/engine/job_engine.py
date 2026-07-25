@@ -615,6 +615,23 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
         knowledge_context: str | None = None,
     ):
         """Run an agent in-process using the LiteLLM tool-use loop."""
+        # Per-job spend ceiling. The per-agent limit bounds one agent; this is
+        # what bounds a job that keeps launching them. Checked before the agent
+        # starts, because once litellm is called the money is already spent.
+        if self.config.job_cost_limit_usd > 0:
+            usage = await self.db.get_job_usage(job.id)
+            spent = float(usage.get("total_cost_usd") or 0.0)
+            if spent >= self.config.job_cost_limit_usd:
+                message = (
+                    f"Job {job.id} has spent ${spent:.2f}, at or over its "
+                    f"${self.config.job_cost_limit_usd:.2f} limit — refusing to launch {task.agent_role}"
+                )
+                logger.error(message)
+                await self.db.update_task(task.id, status=TaskStatus.FAILED, error=message)
+                await self.db.update_job_status(job.id, JobStatus.FAILED, error=message)
+                await self.db.record_event(job.id, "job_cost_limit_exceeded", "engine", message)
+                return None
+
         # Create the appropriate tool executor for non-reviewer roles
         working_dir = "."
         if service and service.repo_path:

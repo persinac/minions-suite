@@ -99,9 +99,12 @@ async def run_agent(
         role_cfg = timeout_cfg.roles.get(task.agent_role)
         timeout = role_cfg.task_timeout_seconds if role_cfg else config.agent_timeout
 
-        # All agents get 100 turns — engineers for complex multi-subtask work,
-        # reviewers for large diffs with many files to read and comment on.
-        max_turns = 100
+        # Turns and dollars are both bounded. Turns alone were not a cost
+        # control: at 100 turns a single engineer billed $20.57 by turn 64 with
+        # room to spend half as much again. The cost limit is the real ceiling;
+        # max_turns just keeps a cheap-but-looping agent from spinning forever.
+        max_turns = config.agent_max_turns
+        cost_limit = config.agent_cost_limit_usd
 
         # Mark agent as running so the engine knows it's alive
         agent.status = "running"
@@ -118,6 +121,7 @@ async def run_agent(
                 log_path=log_path,
                 user_message=user_message,
                 max_turns=max_turns,
+                cost_limit=cost_limit,
                 db=db,
                 job=job,
                 task=task,
@@ -133,6 +137,7 @@ async def run_agent(
                 log_path=log_path,
                 user_message=user_message,
                 max_turns=max_turns,
+                cost_limit=cost_limit,
                 db=db,
                 job_id=job.id,
                 agent_id=agent.id if agent else "",
@@ -192,6 +197,7 @@ async def _run_via_subgraph(
     log_path,
     user_message: str | None,
     max_turns: int,
+    cost_limit: float,
     db,
     job: Job,
     task: Task,
@@ -213,6 +219,7 @@ async def _run_via_subgraph(
         "tool_executor": tool_executor,
         "timeout": timeout,
         "max_turns": max_turns,
+        "cost_limit": cost_limit,
         "log_path": str(log_path),
         "user_message": user_message,
         "db": db,
@@ -237,6 +244,7 @@ async def _agent_loop_generic(
     log_path: Path,
     user_message: str | None = None,
     max_turns: int = 30,
+    cost_limit: float = 0.0,
     db=None,
     job_id: str | None = None,
     agent_id: str | None = None,
@@ -288,10 +296,26 @@ async def _agent_loop_generic(
                 logger.warning("Agent timeout after %ds", elapsed)
                 break
 
+            # Hard spend ceiling. The wind-down below tries to land the work
+            # gracefully well before this, so reaching it means the agent
+            # ignored two escalating warnings — stop paying either way.
+            if cost_limit > 0 and total_cost >= cost_limit:
+                logger.error(
+                    "Agent %s (role=%s) hit its $%.2f cost limit at turn %d ($%.4f spent) — stopping",
+                    agent_id,
+                    agent_role,
+                    cost_limit,
+                    num_turns,
+                    total_cost,
+                )
+                log.write(f"[SYSTEM] Cost limit ${cost_limit:.2f} reached at turn {num_turns} (${total_cost:.4f})\n")
+                break
+
             # --- Wind-down escalation ---
             turns_pct_reached = num_turns >= hard_stop_turn
             time_pct_reached = elapsed >= timeout * 0.9
-            if wind_down_phase < 2 and (turns_pct_reached or time_pct_reached):
+            cost_pct_reached = cost_limit > 0 and total_cost >= cost_limit * 0.9
+            if wind_down_phase < 2 and (turns_pct_reached or time_pct_reached or cost_pct_reached):
                 wind_down_phase = 2
                 remaining_turns = max_turns - num_turns
                 remaining_time = int(timeout - elapsed)
@@ -307,7 +331,8 @@ async def _agent_loop_generic(
             elif wind_down_phase < 1:
                 turns_near = num_turns >= wind_down_turn
                 time_near = elapsed >= timeout * 0.8
-                if turns_near or time_near:
+                cost_near = cost_limit > 0 and total_cost >= cost_limit * 0.8
+                if turns_near or time_near or cost_near:
                     wind_down_phase = 1
                     remaining_turns = max_turns - num_turns
                     remaining_time = int(timeout - elapsed)
