@@ -5,6 +5,7 @@ posting review comments. The agent's tools dispatch through this layer
 so tool definitions are provider-agnostic.
 """
 
+import json
 import logging
 import subprocess
 from dataclasses import dataclass
@@ -381,6 +382,68 @@ class GitHubProvider:
             ]
         )
         return {"posted": True, "inline": False}
+
+    async def get_required_checks(self, project_id: str, branch: str) -> list[str]:
+        """Required status-check names from branch protection, or [] if none.
+
+        Branch protection is the authoritative source — persinac wires it per
+        repo — so reading it at runtime means this gate cannot drift from what
+        GitHub itself enforces. An empty list means the branch has no protection
+        or requires nothing, which callers must treat as BLOCK for agent PRs.
+        """
+        try:
+            raw = self._run_gh(["api", f"/repos/{project_id}/branches/{branch}/protection/required_status_checks"])
+        except RuntimeError as e:
+            # 404 = no protection configured. Not an error, but not a pass either.
+            logger.info("No branch protection required-checks on %s@%s (%s)", project_id, branch, str(e)[:100])
+            return []
+
+        try:
+            payload = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            logger.warning("Unparseable required_status_checks payload for %s@%s", project_id, branch)
+            return []
+
+        # `checks` is the modern form ([{context, app_id}]); `contexts` the legacy one.
+        checks = payload.get("checks") or []
+        names = [c.get("context") for c in checks if c.get("context")]
+        return names or [c for c in (payload.get("contexts") or []) if c]
+
+    async def get_check_runs(self, project_id: str, sha: str) -> dict[str, str]:
+        """Map check-run name -> conclusion for a commit.
+
+        Deliberately the Checks API, NOT the combined commit status. GitHub
+        Actions posts check-runs, and those are not aggregated into
+        /commits/{sha}/status — so a status-only gate sees a fully-gated repo as
+        empty and, with empty-means-pass semantics, merges anyway.
+        """
+        try:
+            raw = self._run_gh(["api", "--paginate", f"/repos/{project_id}/commits/{sha}/check-runs"])
+        except RuntimeError as e:
+            logger.warning("Could not read check-runs for %s@%s: %s", project_id, sha[:8], str(e)[:120])
+            return {}
+
+        runs: dict[str, str] = {}
+        for chunk in raw.split("\n"):
+            if not chunk.strip():
+                continue
+            try:
+                payload = json.loads(chunk)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            for run in payload.get("check_runs", []):
+                name = run.get("name")
+                if not name:
+                    continue
+                # in_progress/queued runs have conclusion=None; surface the status
+                # so the caller can tell "still running" from "failed".
+                runs[name] = run.get("conclusion") or run.get("status") or "unknown"
+        return runs
+
+    async def get_pr_head_sha(self, project_id: str, mr_id: str) -> str:
+        """Head commit of a PR — the SHA that check-runs are attached to."""
+        raw = self._run_gh(["api", f"/repos/{project_id}/pulls/{mr_id}", "--jq", ".head.sha"])
+        return raw.strip()
 
     # GitHub refuses a formal review on a PR you authored:
     #   GraphQL: Review Can not approve your own pull request (addPullRequestReview)

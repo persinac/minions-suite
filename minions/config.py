@@ -184,6 +184,11 @@ class Config:
     job_cost_limit_usd: float = 25.0
     agent_max_turns: int = 60
 
+    # Block auto-merge unless every branch-protection required check is green
+    # on the PR head. FAIL-CLOSED: a repo with no required checks blocks agent
+    # merges, which is deliberate pressure to gate the least-verified repos.
+    require_ci_pass: bool = True
+
     # Job admission rate caps. The cost ceilings bound what one job can spend;
     # these bound how many jobs can spend at all, which is the difference
     # between one bad job and a bad afternoon. Deliberately set high — they are
@@ -347,6 +352,7 @@ class Config:
             agent_cost_limit_usd=_env_or_float("AGENT_COST_LIMIT_USD", _get("engine", "agent_cost_limit_usd"), 8.0),
             job_cost_limit_usd=_env_or_float("JOB_COST_LIMIT_USD", _get("engine", "job_cost_limit_usd"), 25.0),
             agent_max_turns=_env_or_int("AGENT_MAX_TURNS", _get("engine", "agent_max_turns"), 60),
+            require_ci_pass=_env_or_bool("REQUIRE_CI_PASS", _get("engine", "require_ci_pass"), True),
             max_jobs_per_hour=_env_or_int("MAX_JOBS_PER_HOUR", _get("engine", "max_jobs_per_hour"), 20),
             max_jobs_per_month=_env_or_int("MAX_JOBS_PER_MONTH", _get("engine", "max_jobs_per_month"), 500),
             classifier_enabled=_env_or_bool("CLASSIFIER_ENABLED", _get("engine", "classifier_enabled"), True),

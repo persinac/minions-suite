@@ -127,6 +127,58 @@ async def _try_complete_task(engine: JobEngine, task: Task, label: str) -> None:
                 logger.warning("%s: could not fail task %s: %s", label, task.id, e)
 
 
+PASSING_CHECK_CONCLUSIONS = {"success", "neutral", "skipped"}
+
+
+async def _ci_gate_passes(engine: JobEngine, project, provider, mr_id: str, target_branch: str) -> tuple[bool, str]:
+    """True if every required check is green on the PR head.
+
+    Fails CLOSED. A repo with no required checks configured blocks agent merges
+    rather than sailing through — that is deliberate pressure to gate the
+    least-verified repos, not an oversight. renovate's should_auto_merge does the
+    opposite (empty ci_status counts as success); do not copy it.
+
+    Reads required check names from branch protection at runtime rather than a
+    baked-in list, so this can never drift from what GitHub itself enforces. And
+    reads check-runs, not the combined commit status: GitHub Actions posts
+    check-runs, which are NOT aggregated into /commits/{sha}/status, so a
+    status-only gate sees a fully-gated repo as empty.
+    """
+    if not engine.config.require_ci_pass:
+        return True, "CI gate disabled (require_ci_pass=false)"
+
+    for method in ("get_required_checks", "get_check_runs", "get_pr_head_sha"):
+        if not hasattr(provider, method):
+            return False, f"provider cannot evaluate CI ({method} unavailable) — blocking"
+
+    try:
+        required = await provider.get_required_checks(project.project_id, target_branch)
+    except Exception as e:
+        return False, f"could not read branch protection: {str(e)[:120]}"
+
+    if not required:
+        return False, (
+            f"{project.project_id}@{target_branch} has no required status checks — "
+            "blocking agent merge until the repo is gated"
+        )
+
+    try:
+        sha = await provider.get_pr_head_sha(project.project_id, mr_id)
+        runs = await provider.get_check_runs(project.project_id, sha)
+    except Exception as e:
+        return False, f"could not read check-runs: {str(e)[:120]}"
+
+    missing = [name for name in required if name not in runs]
+    if missing:
+        return False, f"required checks never reported: {missing}"
+
+    failed = [f"{name}={runs[name]}" for name in required if runs[name] not in PASSING_CHECK_CONCLUSIONS]
+    if failed:
+        return False, f"required checks not green: {failed}"
+
+    return True, f"all {len(required)} required checks green on {sha[:8]}"
+
+
 async def _retry_or_fail_review(engine: JobEngine, task: Task, reason: str) -> None:
     """Send a task back for another review attempt, or fail it for a human.
 
@@ -698,7 +750,20 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
         if project and project.auto_merge and mr_id:
             try:
                 merge_provider = await create_engineer_provider(project, engine.config)
-                merge_result = await merge_provider.merge_mr(project.project_id, mr_id)
+
+                # CI gate, fail-closed. Runs before merge_mr so a red or ungated
+                # repo is never merged into by an agent.
+                _, service = engine._resolve_service(task.service)
+                target_branch = (service.default_branch if service else "") or "main"
+                ci_ok, ci_reason = await _ci_gate_passes(engine, project, merge_provider, mr_id, target_branch)
+
+                if not ci_ok:
+                    logger.warning("Auto-merge BLOCKED for task %s: %s", task.id, ci_reason)
+                    await engine.db.record_event(job.id, "auto_merge_blocked_ci", "engine", f"task={task.id} {ci_reason}")
+                    merge_result = {"merged": False, "error": f"CI gate: {ci_reason}"}
+                else:
+                    logger.info("CI gate passed for task %s: %s", task.id, ci_reason)
+                    merge_result = await merge_provider.merge_mr(project.project_id, mr_id)
                 if merge_result.get("merged"):
                     logger.info("Auto-merged MR %s for task %s", mr_id, task.id)
                 else:
