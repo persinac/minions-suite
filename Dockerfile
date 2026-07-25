@@ -78,6 +78,12 @@ COPY --chown=minions:minions pyproject.toml uv.lock* /app/
 COPY --chown=minions:minions minions/ /app/minions/
 COPY --chown=minions:minions prompts/ /app/prompts/
 COPY --chown=minions:minions projects.yaml /app/
+# settings.toml was previously only bind-mounted by docker-compose, so it was
+# absent from the image entirely. Without it dynaconf has no file to read and
+# every [production] override silently falls back to the in-code defaults —
+# nats/arbiter/memory off, mcp_host localhost. Bake it in; env vars still
+# override any individual value at runtime (Config uses _env_or throughout).
+COPY --chown=minions:minions settings.toml /app/
 
 USER minions
 
