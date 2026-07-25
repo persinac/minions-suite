@@ -241,6 +241,6 @@ def test_loads_without_settings_toml(monkeypatch):
     config = Config.load()
 
     # Should fall back to dataclass defaults
-    assert config.model == "gpt-4o"
+    assert config.model == "claude-opus-5"
     assert config.agent_timeout == 600
     assert config.mcp_port == 8321

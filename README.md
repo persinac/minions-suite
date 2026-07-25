@@ -248,7 +248,7 @@ If no profile is configured, roles and languages are auto-inferred from changed 
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `LITELLM_MODEL` | No | `gpt-4o` | LLM model string ([LiteLLM-supported](https://docs.litellm.ai/docs/providers)) |
+| `LITELLM_MODEL` | No | `claude-opus-5` | LLM model string ([LiteLLM-supported](https://docs.litellm.ai/docs/providers)) |
 | `ANTHROPIC_API_KEY` | \* | - | Anthropic API key |
 | `OPENAI_API_KEY` | \* | - | OpenAI API key |
 | `GITLAB_TOKEN` | \*\* | - | GitLab personal access token |

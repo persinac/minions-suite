@@ -157,7 +157,7 @@ def build_registry(config_path: str) -> dict[str, ProjectConfig]:
         data = yaml.safe_load(f) or {}
 
     defaults = data.get("defaults", {})
-    default_model = defaults.get("model", "gpt-4o")
+    default_model = defaults.get("model", "claude-opus-5")
     default_provider = defaults.get("git_provider", "gitlab")
     default_gitlab_url = defaults.get("gitlab_url", "")
 

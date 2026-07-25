@@ -4,7 +4,11 @@
 # Override per-environment via [development] or [production] sections.
 
 [default]
-model = "gpt-4o"
+# Routed by LiteLLM to Anthropic and present in its cost map, so per-agent
+# spend still lands in the dashboard and cost reports. Per-role selection
+# (cheaper models for the deploy monitor and spec analyst) is a separate
+# change; this is the global fallback every agent uses today.
+model = "claude-opus-5"
 log_level = "INFO"
 projects_file = "projects.yaml"
 dry_run = false

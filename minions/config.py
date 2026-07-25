@@ -144,7 +144,7 @@ class Config:
     """Configuration loaded from settings.toml + environment variables."""
 
     # LiteLLM model (any litellm-supported model string)
-    model: str = "gpt-4o"
+    model: str = "claude-opus-5"
 
     # MCP server
     mcp_port: int = 8321
@@ -269,7 +269,7 @@ class Config:
 
         return cls(
             # -- Top-level settings (dynaconf top-level keys) --
-            model=_env_or("LITELLM_MODEL", os.getenv("MODEL") or _get_top("model"), "gpt-4o"),
+            model=_env_or("LITELLM_MODEL", os.getenv("MODEL") or _get_top("model"), "claude-opus-5"),
             log_level=_env_or("LOG_LEVEL", _get_top("log_level"), "INFO"),
             projects_file=_env_or("PROJECTS_FILE", _get_top("projects_file"), str(base / "projects.yaml")),
             dry_run=_env_or_bool("DRY_RUN", _get_top("dry_run"), False),
