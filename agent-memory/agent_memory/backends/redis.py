@@ -116,10 +116,14 @@ class RedisTupleSpaceBackend:
         """Create a RediSearch index if it doesn't already exist."""
         from redis.commands.search.field import NumericField, TagField, TextField
 
+        # Every factory must accept the same keywords as the call site below.
+        # The NUMERIC SORTABLE lambda previously took only a positional name, so
+        # `factory(path, as_name=...)` raised TypeError and no index was ever
+        # created — the whole memory tier then failed to initialise.
         field_map = {
             "TAG": TagField,
             "TEXT": TextField,
-            "NUMERIC SORTABLE": lambda n: NumericField(n, sortable=True),
+            "NUMERIC SORTABLE": lambda n, **kw: NumericField(n, sortable=True, **kw),
         }
 
         fields = []

@@ -350,7 +350,12 @@ async def _run_server(config: Config) -> None:
                 await memory_store.connect()
 
             memory_archiver = MemoryArchiver()
-            logger.info("Memory system enabled (redis=%s)", config.redis_url)
+            # Redact: config.redis_url carries the password, and this line goes to
+            # stdout -> pod logs -> every aggregator downstream. Same class of leak
+            # as the one fixed in preflight.check_redis.
+            from .preflight import _redact_url
+
+            logger.info("Memory system enabled (redis=%s)", _redact_url(config.redis_url))
         except Exception:
             logger.exception("Failed to initialise memory system — continuing without it")
             memory_tuplespace = None
