@@ -288,8 +288,11 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
     @mcp.tool()
     async def submit_spec(spec: str, external_id: str | None = None) -> str:
         """Submit a new feature specification to start a job."""
-        job = Job(spec=spec, external_id=external_id)
-        job = await db.create_job(job)
+        # create_job takes (spec: str, external_id), not a Job — it constructs the
+        # Job itself. Passing a pre-built Job made every submit_spec call fail
+        # pydantic validation ("Input should be a valid string"), so the MCP
+        # intake path had never worked.
+        job = await db.create_job(spec, external_id=external_id)
         return json.dumps({"job_id": job.id, "status": str(job.status)})
 
     @mcp.tool()
