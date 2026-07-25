@@ -1,12 +1,43 @@
 version: '3'
 
+# Credential resolution happens in database/dbmate.sh, in this order:
+#   DATABASE_URL -> POSTGRES_URL -> assembled DB_* parts
+#
+# POSTGRES_MIGRATE_URL below stays as an explicit per-invocation override. When
+# it is unset Task renders it as an empty string, which dbmate.sh treats as
+# unset and falls through — so in a pod, or under `doppler run`, the migrate
+# tasks now work with nothing exported at all.
+
 tasks:
   ensure-dbmate:
     desc: "Install dbmate if not present"
     status:
       - command -v dbmate
     cmds:
-      - brew install dbmate
+      # Was brew-only, which fails on every Linux host — including the box this
+      # is deployed from. Pick an installer that exists rather than assuming a Mac.
+      - |
+        set -e
+        if command -v brew >/dev/null 2>&1; then
+          brew install dbmate
+        elif [ "$(uname -s)" = "Linux" ]; then
+          case "$(uname -m)" in
+            x86_64|amd64)  suffix="amd64" ;;
+            aarch64|arm64) suffix="arm64" ;;
+            *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+          target="$HOME/.local/bin"   # no sudo required
+          mkdir -p "$target"
+          echo "Installing dbmate ($suffix) to $target"
+          curl -fsSL -o "$target/dbmate" \
+            "https://github.com/amacneil/dbmate/releases/latest/download/dbmate-linux-$suffix"
+          chmod +x "$target/dbmate"
+          command -v dbmate >/dev/null 2>&1 || echo "NOTE: add $target to PATH"
+        else
+          echo "Cannot install dbmate automatically on $(uname -s)." >&2
+          echo "See https://github.com/amacneil/dbmate#installation" >&2
+          exit 1
+        fi
 
   migrate:
     desc: "Run dbmate migrations (up)"
@@ -31,3 +62,26 @@ tasks:
       DATABASE_URL: '{{.POSTGRES_MIGRATE_URL}}'
     cmds:
       - database/dbmate.sh pgsql status
+
+  migrate:k8s:
+    desc: "Run migrations inside the cluster, using the pod's own POSTGRES_URL"
+    vars:
+      DBMATE_CMD: '{{.DBMATE_CMD | default "up"}}'
+      NS: '{{.NS | default "minion-suite"}}'
+    cmds:
+      # The credential never leaves the cluster: POSTGRES_URL is already in the
+      # pod environment, so nothing is fetched, exported, or printed here. This
+      # is the path that was missing when the difficulty migration had to be
+      # applied by hand.
+      - |
+        set -e
+        pod="$(kubectl get pods -n {{.NS}} -l app.kubernetes.io/name=minion-suite \
+                 -o jsonpath='{.items[0].metadata.name}')"
+        echo "Running 'dbmate {{.DBMATE_CMD}}' in {{.NS}}/$pod"
+        kubectl exec -n {{.NS}} "$pod" -c minion-suite -- /app/database/dbmate.sh pgsql {{.DBMATE_CMD}}
+
+  migrate:k8s:status:
+    desc: "Show migration status from inside the cluster"
+    cmds:
+      - task: migrate:k8s
+        vars: {DBMATE_CMD: status}

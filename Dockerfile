@@ -47,6 +47,19 @@ RUN curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tm
 # CircleCI CLI
 RUN curl -fsSL https://raw.githubusercontent.com/CircleCI-Public/circleci-cli/main/install.sh | bash
 
+# dbmate — so schema migrations can be applied from inside the cluster against
+# the pod's own POSTGRES_URL. Without it there is no in-cluster migration path
+# at all and every schema change has to be hand-applied from a workstation,
+# which also means hand-maintaining minions.schema_migrations so dbmate's ledger
+# does not drift. Pinned rather than :latest so an image rebuild cannot silently
+# change the migration tool.
+ARG DBMATE_VERSION=v2.27.0
+RUN arch="$(dpkg --print-architecture)" \
+    && curl -fsSL -o /usr/local/bin/dbmate \
+        "https://github.com/amacneil/dbmate/releases/download/${DBMATE_VERSION}/dbmate-linux-${arch}" \
+    && chmod +x /usr/local/bin/dbmate \
+    && dbmate --version
+
 # Doppler CLI (via apt repo)
 RUN curl -sLf --retry 3 --tlsv1.2 --proto "=https" \
         'https://packages.doppler.com/public/cli/gpg.DE2A7741A397C129.key' \
@@ -92,6 +105,10 @@ COPY --chown=minions:minions agent-memory/ /app/agent-memory/
 # nats/arbiter/memory off, mcp_host localhost. Bake it in; env vars still
 # override any individual value at runtime (Config uses _env_or throughout).
 COPY --chown=minions:minions settings.toml /app/
+# Migrations + the dbmate wrapper. The wrapper prefers POSTGRES_URL, which is
+# already in the pod environment via the minion-suite-db Secret, so
+# `task db:migrate:k8s` needs no credential handling of its own.
+COPY --chown=minions:minions database/ /app/database/
 
 USER minions
 

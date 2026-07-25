@@ -19,13 +19,30 @@ if [ ! -d "$MIGRATIONS_DIR" ]; then
     exit 1
 fi
 
-# If DATABASE_URL is already set, use it directly.
-# Otherwise build it from individual DB_* env vars.
+# Credential resolution, in order of preference:
+#
+#   1. DATABASE_URL  — dbmate's own convention, and what `task db:migrate` sets
+#   2. POSTGRES_URL  — what the *application* uses everywhere else: config.py
+#                      reads it, the minion-suite-db Secret sets it, and the
+#                      Pulumi stack composes it. It was previously ignored here,
+#                      so the one credential already present in a running pod was
+#                      the one this script refused, and migrations had to be
+#                      applied by hand.
+#   3. DB_* parts    — assembled below, for a box that exports the pieces
+#
+if [ -z "${DATABASE_URL:-}" ] && [ -n "${POSTGRES_URL:-}" ]; then
+    DATABASE_URL="$POSTGRES_URL"
+fi
+
 if [ -z "${DATABASE_URL:-}" ]; then
     for var in DB_ADMIN DB_PASSWORD DB_HOST DB_PORT DB_NAME; do
         if [ -z "${!var:-}" ]; then
-            echo "Error: Neither DATABASE_URL nor $var is set."
-            echo "Export DATABASE_URL, or set DB_ADMIN/DB_PASSWORD/DB_HOST/DB_PORT/DB_NAME."
+            echo "Error: no database credentials found."
+            echo "Set one of:"
+            echo "  DATABASE_URL   (dbmate convention)"
+            echo "  POSTGRES_URL   (what the app and the k8s Secret use)"
+            echo "  DB_ADMIN + DB_PASSWORD + DB_HOST + DB_PORT + DB_NAME"
+            echo "Missing: $var"
             exit 1
         fi
     done
@@ -38,7 +55,12 @@ if [ -z "${DATABASE_URL:-}" ]; then
     DB_USER_ENCODED=$(urlencode "$DB_ADMIN")
     DB_PASSWORD_ENCODED=$(urlencode "$DB_PASSWORD")
 
-    DATABASE_URL="postgres://${DB_USER_ENCODED}:${DB_PASSWORD_ENCODED}@${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=disable"
+    # Default kept at disable for the local docker-compose Postgres. Note that
+    # config.py's _build_postgres_url assembles sslmode=require from these same
+    # five variables — so pointing DB_* at DO works for the app and fails here
+    # unless DB_SSLMODE is set. Prefer POSTGRES_URL against a managed instance;
+    # it carries the right mode already.
+    DATABASE_URL="postgres://${DB_USER_ENCODED}:${DB_PASSWORD_ENCODED}@${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=${DB_SSLMODE:-disable}"
 fi
 
 export DATABASE_URL
