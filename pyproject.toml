@@ -12,6 +12,10 @@ dependencies = [
     "psycopg[binary,pool]>=3.1",
     "nats-py>=2.12,<2.13",
     "httpx>=0.27.0",
+    # GitHub App installation tokens: RS256 JWT signing. Present transitively
+    # today via litellm, but declared explicitly since providers/github_app.py
+    # imports it directly.
+    "pyjwt[crypto]>=2.8",
     "pyyaml>=6.0",
     "python-gitlab>=4.0.0",
     "rich>=13.0",

@@ -92,6 +92,20 @@ def check_git_provider(config: Config) -> Check:
         return Check("gitlab auth", FAIL if not container else WARN, "GITLAB_TOKEN not set", required=not container)
 
     if config.git_provider == "github":
+        # GitHub App first — it supersedes a static PAT when configured.
+        # Actually mint a token rather than checking the vars are non-empty: a
+        # mismatched App ID, a mangled PEM, or an uninstalled App all look fine
+        # by presence and fail at the first `gh` call, hours into a job.
+        if config.github_app_id and config.github_app_private_key and config.github_app_installation_id:
+            from .providers.github_app import GitHubAppError, build_token_provider
+
+            try:
+                provider = build_token_provider(config)
+                asyncio.run(provider.token())
+                return Check("github auth", PASS, f"GitHub App {config.github_app_id} installation {config.github_app_installation_id}")
+            except (GitHubAppError, ValueError) as e:
+                return Check("github auth", FAIL, f"GitHub App: {e}")
+
         if config.github_token:
             return Check("github auth", PASS, "GH_TOKEN set")
         # Check gh CLI auth
