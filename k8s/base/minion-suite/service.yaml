@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: minion-suite
+  labels:
+    app.kubernetes.io/name: minion-suite
+    app.kubernetes.io/component: orchestration
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: minion-suite
+  ports:
+    - name: mcp
+      port: 8321
+      targetPort: mcp
+      protocol: TCP

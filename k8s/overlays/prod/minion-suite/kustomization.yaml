@@ -1,0 +1,32 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# This is the path ArgoCD syncs (minion-suite-prod Application, created by the
+# minion-suite-infra Pulumi stack). One overlay pulls in all three workloads plus
+# the shared ConfigMap — they are one system off one image, not three services.
+
+namespace: minion-suite
+
+resources:
+  - ../../../base/config
+  - ../../../base/minion-suite
+  - ../../../base/input-sources
+  - ../../../base/minion-dashboard
+
+labels:
+  - pairs:
+      environment: prod
+    # includeSelectors: false is load-bearing — a Deployment's selector is
+    # immutable, so folding this into it would force a resource replace on any
+    # future label change.
+    includeSelectors: false
+
+# All three Deployments run the SAME image with different args; one entry
+# retargets every occurrence of the `minion-suite` placeholder.
+#
+# newTag is what CI (or `task docker:ecr:push`) bumps. Until the first push there
+# is no such tag in ECR and pods will ImagePullBackOff — expected, not a defect.
+images:
+  - name: minion-suite
+    newName: 162756281464.dkr.ecr.us-east-1.amazonaws.com/minion-suite
+    newTag: "0.1.0"

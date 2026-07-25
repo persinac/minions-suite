@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minion-dashboard
+  labels:
+    app.kubernetes.io/name: minion-dashboard
+    app.kubernetes.io/component: ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: minion-dashboard
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: minion-dashboard
+        app.kubernetes.io/component: ui
+    spec:
+      imagePullSecrets:
+        - name: ecr-creds
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: minion-dashboard
+          image: minion-suite
+          # The dashboard is a SEPARATE uvicorn process — `--server` does not
+          # serve it. cli.py:927 calls run_dashboard() with no argument, so the
+          # port is hardcoded to 8322 in dashboard.py:1467 with no env override.
+          args: ["--dashboard"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities: {drop: ["ALL"]}
+          ports:
+            - name: http
+              containerPort: 8322
+          envFrom:
+            - secretRef: {name: minion-suite-config}
+            - secretRef: {name: minion-suite-db}
+            - secretRef: {name: minion-suite-redis}
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: HOME
+              value: "/tmp"
+            - name: ENV_FOR_DYNACONF
+              value: "production"
+            # Read-only viewer. It queries Postgres directly and runs no engine;
+            # set explicitly so it can never become a third dispatcher.
+            - name: ENGINE_ENABLED
+              value: "false"
+          # /metrics is the only route that returns 200 without touching the DB.
+          # Do NOT probe the DB-backed routes: dashboard handlers swallow
+          # exceptions and return empty JSON, so they report healthy with Postgres
+          # down — a probe against them proves nothing.
+          readinessProbe:
+            httpGet: {path: /metrics, port: 8322}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /metrics, port: 8322}
+            periodSeconds: 20
+            failureThreshold: 3
+          resources:
+            requests: {memory: "256Mi", cpu: "50m"}
+            limits: {memory: "512Mi", cpu: "500m"}
+      restartPolicy: Always
