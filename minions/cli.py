@@ -18,8 +18,11 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import re
+import signal
 import sys
+import traceback
 from pathlib import Path
 
 from .config import Config
@@ -409,9 +412,53 @@ async def _run_server(config: Config) -> None:
     if arbiter:
         tasks.append(asyncio.create_task(arbiter.start(), name="arbiter"))
 
+    # Record WHY the server stops, rather than inferring it afterwards.
+    #
+    # When mcp.run_async() returns, the `finally` below calls
+    # job_engine.stop(), which marks every in-process agent "interrupted by
+    # engine shutdown". Agents have been dying that way mid-run with no
+    # recorded cause: uvicorn handles the signal gracefully and exits 0, so the
+    # pod reports Completed, the ReplicaSet replaces it at restarts=0, and every
+    # crash-shaped diagnostic -- OOM, eviction, restart count, node pressure,
+    # probes -- comes back clean.
+    #
+    # Already ruled out: memory (0.47 of 12 GiB at death), OOM, eviction, node
+    # pressure, autoscalers, the startup probe (300s budget vs a ~5s bind), a
+    # stale rollout-restart annotation, agent shell commands signalling a shared
+    # process group (fixed in 070c7db, deaths continued), and running the test
+    # command by hand (the pod survived). What remains needs the signal itself.
+    _prev_handlers = {}
+
+    def _log_signal(signum, frame):  # pragma: no cover - only fires in-cluster
+        name = signal.Signals(signum).name
+        logger.error(
+            "SERVER RECEIVED %s (pid=%s ppid=%s) -- this stops the MCP server and fails every in-process agent",
+            name,
+            os.getpid(),
+            os.getppid(),
+        )
+        try:
+            logger.error("Stack at %s:\n%s", name, "".join(traceback.format_stack(frame)[-6:]))
+        except Exception:
+            pass
+        previous = _prev_handlers.get(signum)
+        if callable(previous):
+            previous(signum, frame)
+        else:
+            raise KeyboardInterrupt(f"{name} received")
+
+    for _sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT):
+        try:
+            _prev_handlers[_sig] = signal.getsignal(_sig)
+            signal.signal(_sig, _log_signal)
+        except (ValueError, OSError):
+            logger.debug("Could not install handler for %s", _sig)
+
     try:
         await mcp.run_async(transport="sse", host=config.mcp_host, port=config.mcp_port)
+        logger.error("mcp.run_async() RETURNED WITHOUT A SIGNAL -- the server stopped on its own")
     finally:
+        logger.warning("Engine shutdown beginning -- in-process agents will be marked failed")
         await job_engine.stop()
         if gitlab_issues_poller:
             await gitlab_issues_poller.stop()
