@@ -63,6 +63,23 @@ async def run_agent(
         )
         if db:
             agent = await db.create_agent(agent)
+    elif agent.model:
+        # An agent handed to us already carries a resolved model — dev.py builds
+        # it with resolve_model(), which applies the difficulty tier from the
+        # classifier and any per-role override.
+        #
+        # Without this the caller's choice was silently discarded: `model` stayed
+        # at config.model, so every agent ran on the global default while its DB
+        # row recorded the tier it was SUPPOSED to use. The classifier has been
+        # classifying, persisting a decision, and changing nothing since it was
+        # added — job 17d10bdc was rated `easy` and made 62 calls to
+        # claude-opus-5 against 2 to claude-haiku-4-5.
+        #
+        # It also means recorded cost was wrong in the cheap direction:
+        # completion_cost() prices against agent.model (haiku) while the tokens
+        # were actually billed at opus rates, ~5x higher. Any spend figure taken
+        # from those rows understates reality.
+        model = agent.model
 
     log_dir = Path(config.agent_log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -478,7 +495,7 @@ async def _agent_loop_generic(
                         parsed = json.loads(result)
                         if isinstance(parsed, dict) and "error" in parsed:
                             tc_error = str(parsed["error"])[:200]
-                    except (json.JSONDecodeError, TypeError):
+                    except json.JSONDecodeError, TypeError:
                         pass
 
                 # Record tool call to DB for dashboard visibility
