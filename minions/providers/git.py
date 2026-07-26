@@ -429,30 +429,52 @@ class GitHubProvider:
         return {"posted": True, "inline": False, "reason": reason}
 
     async def get_required_checks(self, project_id: str, branch: str) -> list[str]:
-        """Required status-check names from branch protection, or [] if none.
+        """Required status-check names in force on a branch, or [] if none.
 
-        Branch protection is the authoritative source — persinac wires it per
-        repo — so reading it at runtime means this gate cannot drift from what
-        GitHub itself enforces. An empty list means the branch has no protection
-        or requires nothing, which callers must treat as BLOCK for agent PRs.
+        Reads /repos/{repo}/rules/branches/{branch} — the EFFECTIVE rules for the
+        branch, aggregated across every ruleset that targets it.
+
+        Deliberately not /branches/{branch}/protection/required_status_checks.
+        That endpoint only reports *classic* branch protection: an org-level
+        ruleset does not appear there at all, so a gate reading it sees [] on a
+        fully-protected branch. Verified against wallet-api@main, where the
+        classic endpoint returned "Resource not accessible by integration" while
+        the rules endpoint returned the live org ruleset (id 19750440) with
+        required_status_checks: ['secret-scan'].
+
+        The classic endpoint also needs Administration:read, which this App does
+        not have and does not need; the rules endpoint works with its existing
+        grant. Two reasons to prefer it, either sufficient.
+
+        An empty list means nothing is required, which callers treat as BLOCK for
+        agent PRs.
         """
         try:
-            raw = self._run_gh(["api", f"/repos/{project_id}/branches/{branch}/protection/required_status_checks"])
+            raw = self._run_gh(["api", f"/repos/{project_id}/rules/branches/{branch}"])
         except RuntimeError as e:
-            # 404 = no protection configured. Not an error, but not a pass either.
-            logger.info("No branch protection required-checks on %s@%s (%s)", project_id, branch, str(e)[:100])
+            logger.info("Could not read branch rules for %s@%s (%s)", project_id, branch, str(e)[:100])
             return []
 
         try:
-            payload = json.loads(raw)
+            rules = json.loads(raw)
         except (json.JSONDecodeError, ValueError):
-            logger.warning("Unparseable required_status_checks payload for %s@%s", project_id, branch)
+            logger.warning("Unparseable branch-rules payload for %s@%s", project_id, branch)
             return []
 
-        # `checks` is the modern form ([{context, app_id}]); `contexts` the legacy one.
-        checks = payload.get("checks") or []
-        names = [c.get("context") for c in checks if c.get("context")]
-        return names or [c for c in (payload.get("contexts") or []) if c]
+        if not isinstance(rules, list):
+            return []
+
+        names: list[str] = []
+        for rule in rules:
+            if not isinstance(rule, dict) or rule.get("type") != "required_status_checks":
+                continue
+            params = rule.get("parameters") or {}
+            for check in params.get("required_status_checks") or []:
+                context = check.get("context") if isinstance(check, dict) else None
+                if context and context not in names:
+                    names.append(context)
+
+        return names
 
     async def get_check_runs(self, project_id: str, sha: str) -> dict[str, str]:
         """Map check-run name -> conclusion for a commit.

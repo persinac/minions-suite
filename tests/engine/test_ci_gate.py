@@ -12,6 +12,8 @@ protection at RUNTIME so the gate cannot drift from what GitHub enforces, resolv
 them against check-runs on the PR head, and treat absent/empty as BLOCK.
 """
 
+import json
+
 import pytest
 
 from minions.config import Config
@@ -176,3 +178,78 @@ class TestWiring:
 
         assert 'commits/{sha}/check-runs' in body
         assert 'commits/{sha}/status' not in body, "must not call the combined status endpoint"
+
+
+class TestRequiredChecksSource:
+    """The gate must read the surface that org rulesets actually appear on.
+
+    It originally read /branches/{branch}/protection/required_status_checks —
+    classic branch protection. An org-level ruleset does not appear there at all.
+    Verified live against wallet-api@main: that endpoint returned "Resource not
+    accessible by integration" while /rules/branches/main returned the org
+    ruleset (id 19750440) with required_status_checks: ['secret-scan'].
+
+    Fail-closed meant this was safe — nothing merged wrongly — but the gate would
+    have blocked every agent PR forever, never unblocking once CI went green.
+    """
+
+    @staticmethod
+    def _provider(payload):
+        from minions.providers.git import GitHubProvider
+
+        p = GitHubProvider(token="t")
+        p._run_gh = lambda args, timeout=30, stdin=None: payload
+        return p
+
+    async def test_reads_the_rules_endpoint_not_classic_protection(self):
+        import inspect
+
+        from minions.providers.git import GitHubProvider
+
+        body = inspect.getsource(GitHubProvider.get_required_checks).split('"""')[-1]
+
+        assert "rules/branches/" in body
+        assert "protection/required_status_checks" not in body
+
+    async def test_extracts_contexts_from_the_live_shape(self):
+        """The exact payload shape returned for wallet-api@main."""
+        payload = json.dumps(
+            [
+                {"type": "non_fast_forward", "ruleset_source_type": "Organization", "ruleset_id": 19750440},
+                {"type": "deletion", "ruleset_source_type": "Organization", "ruleset_id": 19750440},
+                {"type": "pull_request", "parameters": {"dismiss_stale_reviews_on_push": True}},
+                {
+                    "type": "required_status_checks",
+                    "parameters": {"required_status_checks": [{"context": "secret-scan"}]},
+                },
+            ]
+        )
+
+        assert await self._provider(payload).get_required_checks("org/repo", "main") == ["secret-scan"]
+
+    async def test_merges_contexts_across_multiple_rulesets(self):
+        """Org and repo rulesets can both target a branch; both are in force."""
+        payload = json.dumps(
+            [
+                {"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": "secret-scan"}]}},
+                {
+                    "type": "required_status_checks",
+                    "parameters": {"required_status_checks": [{"context": "lint"}, {"context": "secret-scan"}]},
+                },
+            ]
+        )
+
+        checks = await self._provider(payload).get_required_checks("org/repo", "main")
+
+        assert sorted(checks) == ["lint", "secret-scan"]
+        assert len(checks) == 2, "duplicates across rulesets must collapse"
+
+    async def test_no_status_check_rule_returns_empty(self):
+        """Protected against force-push and deletion, but no CI required."""
+        payload = json.dumps([{"type": "non_fast_forward"}, {"type": "deletion"}])
+
+        assert await self._provider(payload).get_required_checks("org/repo", "main") == []
+
+    async def test_unreadable_and_malformed_payloads_return_empty(self):
+        for payload in ("not json", json.dumps({"message": "Not Found"}), "[]"):
+            assert await self._provider(payload).get_required_checks("org/repo", "main") == []
