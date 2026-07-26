@@ -209,11 +209,18 @@ async def classify_difficulty(spec: str, config) -> tuple[str | None, str]:
     return difficulty, reason
 
 
-def resolve_model(config, difficulty: str | None, project_model: str = "") -> str:
+def resolve_model(config, difficulty: str | None, project_model: str = "", is_reviewer: bool = False) -> str:
     """Pick the model for an agent.
 
     Precedence: an explicit per-project model wins (someone chose it
-    deliberately), then the difficulty tier, then the global default.
+    deliberately), then the reviewer default, then the difficulty tier, then the
+    global default.
+
+    Reviewers get their own default because they fan out. One engineer runs per
+    task; up to five specialists review its output, so reviewer cost multiplies
+    against a job ceiling the engineer has already eaten into. An easy ticket
+    still pulls everything down to the cheap tier — the reviewer default only
+    applies from medium upward, where it would otherwise be Opus.
     """
     if project_model:
         return project_model
@@ -223,4 +230,14 @@ def resolve_model(config, difficulty: str | None, project_model: str = "") -> st
         MEDIUM: config.model_medium,
         HARD: config.model_hard,
     }
-    return tiers.get(difficulty or "") or config.model
+    tier_model = tiers.get(difficulty or "")
+
+    if is_reviewer:
+        reviewer_default = getattr(config, "model_reviewer", "")
+        if reviewer_default:
+            # Never spend *more* than the tier: an easy ticket keeps Haiku.
+            if difficulty == EASY and tier_model:
+                return tier_model
+            return reviewer_default
+
+    return tier_model or config.model

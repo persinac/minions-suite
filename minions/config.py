@@ -209,6 +209,12 @@ class Config:
     model_medium: str = "claude-sonnet-5"
     model_hard: str = "claude-opus-5"
 
+    # Reviewers run per-specialty and fan out, so their cost multiplies where the
+    # engineer's does not: ~4 specialists on one PR against a job ceiling that has
+    # already absorbed an engineer. Sonnet holds up well on review; the difficulty
+    # classifier still pulls this down to the easy tier on trivial tickets.
+    model_reviewer: str = "claude-sonnet-5"
+
     # Git provider defaults
     git_provider: str = "gitlab"
     gitlab_url: str = ""
@@ -361,6 +367,7 @@ class Config:
             model_easy=_env_or("MODEL_EASY", _get("engine", "model_easy"), "claude-haiku-4-5"),
             model_medium=_env_or("MODEL_MEDIUM", _get("engine", "model_medium"), "claude-sonnet-5"),
             model_hard=_env_or("MODEL_HARD", _get("engine", "model_hard"), "claude-opus-5"),
+            model_reviewer=_env_or("MODEL_REVIEWER", _get("engine", "model_reviewer"), "claude-sonnet-5"),
             agent_log_dir=_env_or("AGENT_LOG_DIR", _get("engine", "agent_log_dir"), str(base / "logs" / "agents")),
             agent_dispatch_mode=_env_or("AGENT_DISPATCH_MODE", _get("engine", "agent_dispatch_mode"), "in_process"),
             # -- Database --

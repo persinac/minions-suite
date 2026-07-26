@@ -953,6 +953,14 @@ def main():
         datefmt="%H:%M:%S",
     )
 
+    # Scrub credentials from every record before it can reach a log, a terminal
+    # or an agent transcript. Two credentials had to be rotated in one afternoon
+    # — one from a call site that logged a Redis URL with the password inline —
+    # and fixing call sites one at a time only fixes the ones already known.
+    from .redaction import install as install_redaction
+
+    install_redaction()
+
     if args.preflight:
         from .preflight import print_preflight, run_preflight
 

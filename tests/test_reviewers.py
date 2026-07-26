@@ -1,0 +1,161 @@
+"""Which specialists a PR wakes.
+
+Conditionality is the cost control: each reviewer is a full agent run, so a
+Python-only test PR should wake three, not five. Over-firing costs money;
+under-firing loses the lens that would have caught the bug.
+
+The DBA trigger is the interesting one — content-based, because a lock-taking
+ALTER TABLE or an N+1 session.query inside ordinary application code has no
+tell-tale path.
+"""
+
+import pytest
+
+from minions.reviewers import (
+    API,
+    BACKEND_ARCHITECTURE,
+    DBA,
+    FRONTEND,
+    PYTHONISTA,
+    infer_specialists,
+    skipped_specialists,
+)
+
+
+class TestAlwaysOn:
+    def test_api_and_architecture_always_fire(self):
+        for files in ([], ["README.md"], ["app/main.py"], ["src/App.tsx"]):
+            selected = infer_specialists(files)
+
+            assert API in selected, files
+            assert BACKEND_ARCHITECTURE in selected, files
+
+    def test_a_docs_only_pr_wakes_only_the_two(self):
+        assert infer_specialists(["README.md", "docs/guide.md"]) == [API, BACKEND_ARCHITECTURE]
+
+
+class TestPythonista:
+    def test_fires_on_python(self):
+        assert PYTHONISTA in infer_specialists(["app/crud/play_transaction.py"])
+
+    def test_silent_without_python(self):
+        assert PYTHONISTA not in infer_specialists(["src/App.tsx", "README.md"])
+
+
+class TestFrontend:
+    @pytest.mark.parametrize("path", ["src/App.tsx", "src/App.jsx", "src/util.ts", "src/util.js"])
+    def test_fires_on_component_extensions(self, path):
+        assert FRONTEND in infer_specialists([path])
+
+    def test_type_declarations_do_not_count(self):
+        """.d.ts has no component logic — waking a reviewer on it is pure cost."""
+        assert FRONTEND not in infer_specialists(["types/api.d.ts"])
+
+    def test_a_real_ts_file_alongside_a_declaration_still_fires(self):
+        assert FRONTEND in infer_specialists(["types/api.d.ts", "src/App.tsx"])
+
+
+class TestDbaPathSignals:
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "database/pgsql/migrations/20260725_add_col.sql",
+            "app/migrations/0003_auto.py",
+            "alembic/versions/abc123_add_index.py",
+            "db/migrate/20260101_create.rb",
+        ],
+    )
+    def test_fires_on_migration_paths(self, path):
+        assert DBA in infer_specialists([path])
+
+    def test_silent_on_ordinary_code(self):
+        assert DBA not in infer_specialists(["app/routes/health.py"], diff="+def health():\n+    return 'ok'\n")
+
+
+class TestDbaContentSignals:
+    """The reason this is not path-only."""
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "+    op.add_column('users', sa.Column('email', sa.String()))",
+            "+    rows = session.query(Play).filter(Play.user_id == uid).all()",
+            "+    cursor.execute('SELECT id FROM plays WHERE user_id = %s', (uid,))",
+            "+    qs = Play.objects.filter(user_id=uid)",
+            "+    await db.execute(stmt)",
+            "+    conn.exec_driver_sql('ALTER TABLE plays ADD COLUMN x int')",
+        ],
+    )
+    def test_orm_and_sql_in_application_code_wakes_the_dba(self, line):
+        assert DBA in infer_specialists(["app/service.py"], diff=line)
+
+    def test_bare_alter_table_wakes_the_dba(self):
+        diff = "+ALTER TABLE plays ADD COLUMN promo boolean NOT NULL DEFAULT false;"
+
+        assert DBA in infer_specialists(["scripts/fix.txt"], diff=diff)
+
+    def test_only_added_lines_count(self):
+        """A PR that DELETES the last raw query should not wake a DBA."""
+        diff = "-    cursor.execute('SELECT * FROM plays')\n+    rows = repo.list_plays()\n"
+
+        assert DBA not in infer_specialists(["app/service.py"], diff=diff)
+
+    def test_diff_header_lines_are_not_content(self):
+        """`+++ b/migrations.py` is a header, not an added line."""
+        diff = "--- a/app/readme.md\n+++ b/app/readme.md\n+Some prose about updating things.\n"
+
+        assert DBA not in infer_specialists(["app/readme.md"], diff=diff)
+
+    def test_the_word_update_alone_does_not_fire(self):
+        """Substring matching on UPDATE would fire on 'updated_at' everywhere."""
+        diff = "+    record.updated_at = now()\n+    # update the cache\n"
+
+        assert DBA not in infer_specialists(["app/service.py"], diff=diff)
+
+    def test_no_diff_falls_back_to_paths(self):
+        assert DBA not in infer_specialists(["app/service.py"])
+        assert DBA in infer_specialists(["app/migrations/0001.py"])
+
+
+class TestRealPrs:
+    def test_the_wallet_api_pr(self):
+        """4 Python test files, no migrations, no frontend."""
+        files = [
+            "tests/conftest.py",
+            "tests/test_play_transaction_crud.py",
+            "tests/fixtures/db.py",
+            "pyproject.toml",
+        ]
+        diff = "+    rows = session.query(PlayTransaction).filter_by(user_id=uid).all()\n"
+
+        selected = infer_specialists(files, diff)
+
+        assert set(selected) == {API, BACKEND_ARCHITECTURE, PYTHONISTA, DBA}
+        assert FRONTEND not in selected
+        assert skipped_specialists(selected) == [FRONTEND]
+
+    def test_a_frontend_only_pr_does_not_wake_python_or_db(self):
+        selected = infer_specialists(["src/components/Cart.tsx"], diff="+const [x, setX] = useState(0)\n")
+
+        assert set(selected) == {API, BACKEND_ARCHITECTURE, FRONTEND}
+        assert sorted(skipped_specialists(selected)) == sorted([PYTHONISTA, DBA])
+
+
+class TestPrompts:
+    def test_every_specialty_has_a_prompt(self):
+        """A specialty with no prompt file would fan out into an empty persona."""
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1] / "prompts" / "reviewers"
+        for specialty in (API, BACKEND_ARCHITECTURE, DBA, PYTHONISTA, FRONTEND):
+            assert (root / f"{specialty}.md").is_file(), f"missing prompt for {specialty}"
+
+    def test_every_prompt_states_its_verdict_contract(self):
+        """Aggregation reads these verdicts; a persona without one cannot vote."""
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1] / "prompts" / "reviewers"
+        for path in root.glob("*.md"):
+            text = path.read_text(encoding="utf-8")
+            assert "Verdict[" in text, f"{path.name} has no verdict line"
+            assert "REQUEST_CHANGES" in text, f"{path.name} cannot request changes"

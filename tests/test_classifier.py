@@ -214,3 +214,41 @@ class TestFailOpen:
 
         assert seen["model"] == config.classifier_model
         assert seen["model"] != config.model_hard
+
+
+class TestReviewerModel:
+    """Reviewers fan out, so their cost multiplies where the engineer's does not."""
+
+    def test_reviewers_default_to_sonnet_not_opus_on_hard(self):
+        config = Config.from_env()
+
+        assert resolve_model(config, HARD, is_reviewer=True) == config.model_reviewer
+        assert resolve_model(config, HARD, is_reviewer=False) == config.model_hard
+
+    def test_reviewers_stay_cheap_on_easy_tickets(self):
+        """The reviewer default must not make an easy ticket MORE expensive."""
+        config = Config.from_env()
+
+        assert resolve_model(config, EASY, is_reviewer=True) == config.model_easy
+
+    def test_a_pinned_project_model_still_wins(self):
+        config = Config.from_env()
+
+        assert resolve_model(config, HARD, project_model="pinned", is_reviewer=True) == "pinned"
+
+    def test_engineers_are_unaffected(self):
+        config = Config.from_env()
+
+        for difficulty in (EASY, MEDIUM, HARD):
+            assert resolve_model(config, difficulty) == resolve_model(config, difficulty, is_reviewer=False)
+
+    def test_the_reviewer_model_is_cheaper_than_the_hard_tier(self):
+        import litellm
+
+        config = Config.from_env()
+        reviewer = litellm.model_cost.get(config.model_reviewer, {})
+        hard = litellm.model_cost.get(config.model_hard, {})
+        if not reviewer or not hard:
+            pytest.skip("models absent from the litellm cost map")
+
+        assert reviewer["output_cost_per_token"] < hard["output_cost_per_token"]
