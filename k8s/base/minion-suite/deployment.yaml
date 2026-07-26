@@ -179,8 +179,32 @@ spec:
         # config.py:242). Phase 2 K8s dispatch clones into a per-Job emptyDir
         # instead, at which point this can shrink or go away.
         - name: repos
-          persistentVolumeClaim:
-            claimName: minion-suite-repos
+          # Node-local, NOT the Longhorn PVC it used to be.
+          #
+          # /repos holds disposable git checkouts — everything in it is
+          # re-clonable from origin in seconds, so replicated block storage buys
+          # nothing and cost a great deal. Under sustained agent I/O (cloning,
+          # editing, running a 1367-test suite) the Longhorn replica repeatedly
+          # faulted:
+          #
+          #   Warning AutoSalvaged / Faulted  volume pvc-ce189790...
+          #   Warning FailedStartingSnapshotPurge
+          #
+          # Each fault made the volume briefly unavailable, the mount failed,
+          # and the kubelet SIGTERMed the pod — pid 1, ppid 0, clean exit 0, so
+          # the pod showed Completed with restarts=0 and every crash-shaped
+          # diagnostic came back healthy. Identical fingerprint to the ArgoCD
+          # selfHeal loop fixed separately, which is why fixing that one did not
+          # stop the churn: there were two independent causes.
+          #
+          # It only bit while a job ran because an idle pod barely touches the
+          # volume. The pod would sit healthy for hours, then die 5-21 minutes
+          # into every job.
+          #
+          # The PVC minion-suite-repos is deliberately left in place, unused, so
+          # this is revertible without re-provisioning.
+          emptyDir:
+            sizeLimit: 20Gi
         - name: config
           configMap:
             name: minion-suite-config-files
