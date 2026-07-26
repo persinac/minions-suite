@@ -552,8 +552,26 @@ async def run_engineer(engine: JobEngine, job: Job, task: Task, is_revision: boo
             slug = task.title.lower().replace(" ", "-")[:30]
             branch_name = f"feat-job-{short_job_id}-{slug}"
 
+        # Only claim the task if something else has not already claimed it.
+        #
+        # The poll loop sets PENDING -> IN_PROGRESS *before* spawning this
+        # coroutine, so on a retry the task is already IN_PROGRESS by the time
+        # we get here. Unconditionally writing IN_PROGRESS again is an illegal
+        # same-status transition, and the handler below returns — so the agent
+        # was never created and the retry did nothing.
+        #
+        # That made retries inert from the start. Attempt 1 (is_retry=False)
+        # ran; every later attempt aborted in milliseconds, which is why job
+        # 095146b8 recorded three attempts against a single agent row, and why
+        # d1925a3f burned its whole retry budget in 60-second cycles without
+        # spending a cent after the first agent died.
+        updates = {"branch_name": branch_name}
+        current = await engine.db.get_task(task.id)
+        if not current or current.status != TaskStatus.IN_PROGRESS:
+            updates["status"] = TaskStatus.IN_PROGRESS
+
         try:
-            await engine.db.update_task(task.id, branch_name=branch_name, status=TaskStatus.IN_PROGRESS)
+            await engine.db.update_task(task.id, **updates)
         except InvalidTransitionError as e:
             logger.warning("Rejected task transition for %s: %s", task.id, e)
             return
