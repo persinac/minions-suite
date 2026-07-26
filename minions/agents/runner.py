@@ -16,6 +16,7 @@ from ..config import Config
 from ..core.models import Agent, AgentRole, Job, Task, _now
 from ..project_registry import ProjectConfig, ServiceTarget
 from ..providers.git import GitProviderProtocol
+from .caching import apply_cache_control, extract_cache_tokens
 from .prompt import build_agent_prompt, build_prompt
 from .tools.definitions import REVIEW_TOOL_DEFINITIONS, ToolExecutor, get_tools_for_role
 
@@ -156,6 +157,11 @@ async def run_agent(
 
         agent.input_tokens = result["input_tokens"]
         agent.output_tokens = result["output_tokens"]
+        # Without these two the columns stay 0 forever — which is exactly why
+        # nobody noticed caching had never been enabled: update_agent has
+        # always persisted them, and nothing ever populated them.
+        agent.cache_read_tokens = result.get("cache_read_tokens", 0)
+        agent.cache_creation_tokens = result.get("cache_creation_tokens", 0)
         agent.cost_usd = result["cost_usd"]
         agent.num_turns = result["num_turns"]
         agent.status = "done"
@@ -270,6 +276,8 @@ async def _agent_loop_generic(
 
     total_input = 0
     total_output = 0
+    total_cache_read = 0
+    total_cache_creation = 0
     total_cost = 0.0
     num_turns = 0
     verdict = None
@@ -371,9 +379,15 @@ async def _agent_loop_generic(
             max_retries = 5
             for attempt in range(max_retries):
                 try:
+                    # Cache the stable prefix. An agentic loop re-sends
+                    # turns 1..N-1 on turn N, which was 94% of the one
+                    # measured job's cost. No-ops on models that do not
+                    # support it, so a MODEL_ENGINEER pointing at another
+                    # vendor is unaffected.
+                    cached_messages = apply_cache_control(messages, model)
                     response = await litellm.acompletion(
                         model=model,
-                        messages=messages,
+                        messages=cached_messages,
                         tools=tools,
                         max_tokens=8192,
                         timeout=120,
@@ -408,6 +422,9 @@ async def _agent_loop_generic(
             if usage:
                 total_input += usage.prompt_tokens or 0
                 total_output += usage.completion_tokens or 0
+                turn_read, turn_created = extract_cache_tokens(response)
+                total_cache_read += turn_read
+                total_cache_creation += turn_created
 
             try:
                 turn_cost = litellm.completion_cost(completion_response=response)
@@ -502,6 +519,8 @@ async def _agent_loop_generic(
     return {
         "input_tokens": total_input,
         "output_tokens": total_output,
+        "cache_read_tokens": total_cache_read,
+        "cache_creation_tokens": total_cache_creation,
         "cost_usd": total_cost,
         "num_turns": num_turns,
         "verdict": verdict,
