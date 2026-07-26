@@ -996,6 +996,11 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
             agent_role: str | None = None,
         ) -> str:
             """Create a persistent memory note. Writes to L2 and queues for L3 archival."""
+            # `project` was accepted, documented, and mapped in mcp_executor.py
+            # -- and then dropped on the floor here, so every note fell back to
+            # the tuplespace's startup scope (the first key in projects.yaml).
+            # Job 0f90844d, a management-api job, filed its note under
+            # flashback-android.
             fact_id = await tuplespace.out(
                 category="memory_note",
                 key=f"note-{job_id or 'manual'}",
@@ -1003,6 +1008,7 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
                 tags=tags,
                 agent_role=agent_role,
                 job_id=job_id,
+                project=project,
             )
             return json.dumps({"fact_id": fact_id, "queued_for_archival": True})
 

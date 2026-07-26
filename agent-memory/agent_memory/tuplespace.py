@@ -76,11 +76,22 @@ class TupleSpace:
         agent_role: str | None = None,
         job_id: str | None = None,
         ttl: int | None = None,
+        project: str | None = None,
     ) -> str:
-        """Publish a fact to the tuplespace (Linda OUT)."""
+        """Publish a fact to the tuplespace (Linda OUT).
+
+        `project` overrides the instance scope for this write. The server builds
+        one TupleSpace at startup scoped to the *first* entry in projects.yaml
+        and every job shares it, so without an override every fact -- whichever
+        repo the job targets -- files under that one project. Reads for the
+        project that actually did the work then come back empty, and because the
+        Redis backend swallows search errors and returns [], that is
+        indistinguishable from "nothing learned yet".
+        """
+        write_project = project or self._project
         fact_id = uuid.uuid4().hex[:12]
         doc = {
-            "project": self._project,
+            "project": write_project,
             "category": category,
             "key": key,
             "value": value,
@@ -89,13 +100,13 @@ class TupleSpace:
             "job_id": job_id or "",
             "timestamp": time.time(),
         }
-        redis_key = _fact_key(self._project, fact_id)
+        redis_key = _fact_key(write_project, fact_id)
         await self._backend.put(redis_key, doc, ttl=ttl)
 
         emit(
             MemoryTraceEvent(
                 op=TraceOp.L2_PUT,
-                project=self._project,
+                project=write_project,
                 job_id=job_id or "",
                 agent_role=agent_role or "",
                 tier="l2",

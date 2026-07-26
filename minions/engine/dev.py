@@ -181,10 +181,7 @@ async def _ci_gate_passes(engine: JobEngine, project, provider, mr_id: str, targ
         return False, f"could not read branch rules: {str(e)[:120]}"
 
     if not required:
-        return False, (
-            f"{project.project_id}@{target_branch} has no required status checks — "
-            "blocking agent merge until the repo is gated"
-        )
+        return False, (f"{project.project_id}@{target_branch} has no required status checks — blocking agent merge until the repo is gated")
 
     try:
         state = await provider.get_merge_state(project.project_id, mr_id)
@@ -422,9 +419,13 @@ async def launch_engineers(engine: JobEngine, job: Job):
     fresh_tasks = [t for t in pending_tasks if t.attempt <= 1]
     retry_tasks = [t for t in pending_tasks if t.attempt > 1]
 
-    # Pick up tasks needing revisions (in_progress with changes_requested)
+    # Pick up tasks needing revisions (in_progress with changes_requested).
+    # Prefix match, not equality: the single-reviewer path writes a bare
+    # "changes_requested", but the specialist fan-out writes
+    # "changes_requested: <which reviewers objected>". Testing for equality
+    # silently dropped every fan-out revision on the floor.
     in_progress_eng = [t for t in job_tasks if t.agent_role in engineer_roles and t.status == TaskStatus.IN_PROGRESS]
-    revision_tasks = [t for t in in_progress_eng if t.review_status == "changes_requested"]
+    revision_tasks = [t for t in in_progress_eng if (t.review_status or "").startswith("changes_requested")]
 
     actionable_tasks = fresh_tasks + retry_tasks + revision_tasks
     if not actionable_tasks:
@@ -631,9 +632,7 @@ async def _run_one_specialist(
 
     # Reviewers fan out, so they get their own model tier — see resolve_model.
     model = resolve_model(engine.config, job.difficulty, project.model if project else "", is_reviewer=True)
-    agent = await engine.db.create_agent(
-        Agent(job_id=job.id, role=AgentRole.CODE_REVIEWER, task_id=reviewer_task.id, model=model)
-    )
+    agent = await engine.db.create_agent(Agent(job_id=job.id, role=AgentRole.CODE_REVIEWER, task_id=reviewer_task.id, model=model))
 
     await engine.db.record_event(job.id, "agent_launched", "engine", f"agent={agent.id} role=code_reviewer specialty={specialty}")
     await engine._nats_agent_status(job.id, agent.id, "code_reviewer", "launched")
@@ -666,7 +665,7 @@ async def _run_one_specialist(
         logger.error("Reviewer %s failed for task %s: %s", specialty, task.id, e, exc_info=True)
         try:
             await engine.db.update_task(reviewer_task.id, status=TaskStatus.FAILED, agent_role="", error=str(e)[:200])
-        except (InvalidTransitionError, PreconditionError):
+        except InvalidTransitionError, PreconditionError:
             pass
         return specialty, None
 
@@ -704,11 +703,7 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
     # before this guard existed ($4.87 for a review needed once).
     existing = await engine.db.get_tasks(job.id)
     already = [
-        t
-        for t in existing
-        if t.agent_role == AgentRole.CODE_REVIEWER
-        and t.status != TaskStatus.FAILED
-        and (t.pr_url or "") == (task.pr_url or "")
+        t for t in existing if t.agent_role == AgentRole.CODE_REVIEWER and t.status != TaskStatus.FAILED and (t.pr_url or "") == (task.pr_url or "")
     ]
     if already:
         logger.info(
@@ -771,9 +766,7 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
         ", ".join(specialists),
         f" (skipped: {', '.join(skipped)})" if skipped else "",
     )
-    await engine.db.record_event(
-        job.id, "review_fanout", "engine", f"task={task.id} ran={','.join(specialists)} skipped={','.join(skipped)}"
-    )
+    await engine.db.record_event(job.id, "review_fanout", "engine", f"task={task.id} ran={','.join(specialists)} skipped={','.join(skipped)}")
 
     # Per-job spend ceiling. Reviewers call run_agent directly rather than going
     # through _run_in_process, so the job ceiling never applied to them. With one
@@ -782,17 +775,16 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
         usage = await engine.db.get_job_usage(job.id)
         spent = float(usage.get("total_cost_usd") or 0.0)
         if spent >= engine.config.job_cost_limit_usd:
-            message = f"Job {job.id} has spent ${spent:.2f}, at or over its ${engine.config.job_cost_limit_usd:.2f} limit — refusing to fan out reviewers"
+            message = (
+                f"Job {job.id} has spent ${spent:.2f}, at or over its ${engine.config.job_cost_limit_usd:.2f} limit — refusing to fan out reviewers"
+            )
             logger.error(message)
             await engine.db.record_event(job.id, "job_cost_limit_exceeded", "engine", message)
             await _retry_or_fail_review(engine, task, message)
             return
 
     results = await asyncio.gather(
-        *[
-            _run_one_specialist(engine, job, task, specialty, project, service, mr_id, mr_info, provider, review_context)
-            for specialty in specialists
-        ],
+        *[_run_one_specialist(engine, job, task, specialty, project, service, mr_id, mr_info, provider, review_context) for specialty in specialists],
         return_exceptions=True,
     )
 
@@ -877,6 +869,7 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
     except (InvalidTransitionError, PreconditionError) as e:
         logger.warning("Could not transition task %s to MERGED after approval: %s", task.id, e)
 
+
 async def manage_dev_tasks(engine: JobEngine, job: Job):
     """Per-task lifecycle manager: review launches, revision cycles, job advancement.
 
@@ -926,9 +919,23 @@ async def manage_dev_tasks(engine: JobEngine, job: Job):
                 name=f"eng-{'retry' if is_retry else 'recover'}-{task.id[:8]}",
             )
 
-        elif task.status == TaskStatus.IN_PROGRESS and task.review_status == "changes_requested":
-            # Reviewer requested changes — launch revision engineer
+        elif task.status == TaskStatus.IN_PROGRESS and (task.review_status or "").startswith("changes_requested"):
+            # Reviewer requested changes — launch revision engineer.
+            #
+            # Prefix match, not equality. run_task_review writes
+            # "changes_requested: <reason>" after aggregating the specialist
+            # fan-out; only the older single-reviewer path writes the bare
+            # string. Under equality this branch never fired for a fan-out
+            # verdict, so control fell through to the IN_PROGRESS orphan
+            # recovery below -- which sees the *previous* engineer agent still
+            # marked done, concludes "agent finished but the task was never
+            # updated", and promotes the task to PR_OPEN. The revision intent
+            # was erased ~3s after it was recorded, review relaunched, the
+            # reviewer-dedup guard correctly refused a second fan-out, and the
+            # job wedged at dev_in_progress forever (job 0f90844d).
+            #
             # Skip if there's already a running agent for this task
+            latest_agent = await engine.db.get_agent_for_task(task.id)
             latest_agent = await engine.db.get_agent_for_task(task.id)
             if latest_agent and latest_agent.status in ("starting", "running"):
                 continue
