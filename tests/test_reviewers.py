@@ -159,3 +159,77 @@ class TestPrompts:
             text = path.read_text(encoding="utf-8")
             assert "Verdict[" in text, f"{path.name} has no verdict line"
             assert "REQUEST_CHANGES" in text, f"{path.name} cannot request changes"
+
+
+class TestAggregation:
+    """Any REQUEST_CHANGES blocks; N/A abstains; silence never approves."""
+
+    @staticmethod
+    def _v(verdicts):
+        from minions.reviewers import aggregate_verdicts
+
+        return aggregate_verdicts(verdicts)
+
+    def test_all_approve(self):
+        verdict, reason = self._v({API: "approve", BACKEND_ARCHITECTURE: "approve"})
+
+        assert verdict == "approve"
+        assert "api" in reason
+
+    def test_one_blocker_beats_four_approvals(self):
+        """A DBA objection is not outvoted by reviewers who never looked at SQL."""
+        verdict, reason = self._v(
+            {API: "approve", BACKEND_ARCHITECTURE: "approve", PYTHONISTA: "approve", FRONTEND: "approve", DBA: "request_changes"}
+        )
+
+        assert verdict == "request_changes"
+        assert "dba" in reason
+
+    def test_discuss_beats_approve_but_loses_to_blocking(self):
+        assert self._v({API: "approve", DBA: "discuss"})[0] == "discuss"
+        assert self._v({API: "discuss", DBA: "request_changes"})[0] == "request_changes"
+
+    def test_na_abstains_rather_than_approving(self):
+        verdict, reason = self._v({API: "approve", DBA: "n/a"})
+
+        assert verdict == "approve"
+        assert "n/a: dba" in reason
+
+    def test_all_na_does_not_approve(self):
+        """Nobody reviewed anything — that is not consent to merge."""
+        verdict, reason = self._v({API: "n/a", DBA: "n/a"})
+
+        assert verdict == "request_changes"
+        assert "nothing was actually reviewed" in reason
+
+    def test_a_missing_verdict_fails_closed(self):
+        """Same rule as the single-reviewer path: silence is not approval."""
+        verdict, reason = self._v({API: "approve", DBA: None})
+
+        assert verdict == "request_changes"
+        assert "dba" in reason
+
+    def test_an_unparseable_verdict_fails_closed(self):
+        verdict, _ = self._v({API: "approve", DBA: "lgtm probably"})
+
+        assert verdict == "request_changes"
+
+    def test_no_reviewers_at_all_fails_closed(self):
+        assert self._v({})[0] == "request_changes"
+
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            ("APPROVE", "approve"),
+            ("Approved", "approve"),
+            ("REQUEST_CHANGES", "request_changes"),
+            ("request-changes", "request_changes"),
+            ("changes_requested", "request_changes"),
+            ("  DISCUSS  ", "discuss"),
+            ("N/A", "n/a"),
+        ],
+    )
+    def test_verdict_spellings_the_personas_actually_emit(self, raw, expected):
+        from minions.reviewers import normalise_verdict
+
+        assert normalise_verdict(raw) == expected

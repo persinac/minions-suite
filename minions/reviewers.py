@@ -97,3 +97,78 @@ def skipped_specialists(selected: list[str]) -> list[str]:
     """The conditional reviewers that did not fire — for the audit line."""
     conditional = (PYTHONISTA, DBA, FRONTEND)
     return [s for s in conditional if s not in selected]
+
+
+# --- Verdict aggregation ----------------------------------------------------
+#
+# Per the swarm orchestrator: any REQUEST_CHANGES wins, then any DISCUSS, else
+# APPROVE. N/A abstains — a specialist that found nothing in scope is not a vote
+# for merging.
+
+APPROVE = "approve"
+REQUEST_CHANGES = "request_changes"
+DISCUSS = "discuss"
+NOT_APPLICABLE = "n/a"
+
+_VERDICT_ALIASES = {
+    "approve": APPROVE,
+    "approved": APPROVE,
+    "request_changes": REQUEST_CHANGES,
+    "request changes": REQUEST_CHANGES,
+    "changes_requested": REQUEST_CHANGES,
+    "discuss": DISCUSS,
+    "needs_discussion": DISCUSS,
+    "n/a": NOT_APPLICABLE,
+    "na": NOT_APPLICABLE,
+    "not_applicable": NOT_APPLICABLE,
+}
+
+
+def normalise_verdict(raw: str | None) -> str | None:
+    """Map a reviewer's verdict onto the canonical set. None if unusable."""
+    if not raw:
+        return None
+    return _VERDICT_ALIASES.get(str(raw).strip().lower().replace("-", "_"))
+
+
+def aggregate_verdicts(verdicts: dict[str, str | None]) -> tuple[str, str]:
+    """Collapse per-specialty verdicts into one decision.
+
+    Takes {specialty: verdict}. Returns (verdict, human-readable reason).
+
+    Fails CLOSED on a missing or unparseable verdict, matching the single-reviewer
+    path: a specialist that crashed, timed out or hit its cost ceiling has not
+    approved anything, and treating silence as assent is what let unreviewed code
+    merge once already.
+
+    Any REQUEST_CHANGES blocks outright — each specialist speaks only about its
+    own domain, so a DBA objection is not outvoted by four approvals in areas it
+    never looked at.
+    """
+    if not verdicts:
+        return REQUEST_CHANGES, "no reviewers ran"
+
+    missing = sorted(s for s, v in verdicts.items() if normalise_verdict(v) is None)
+    if missing:
+        return REQUEST_CHANGES, f"no usable verdict from: {', '.join(missing)}"
+
+    resolved = {s: normalise_verdict(v) for s, v in verdicts.items()}
+
+    blocking = sorted(s for s, v in resolved.items() if v == REQUEST_CHANGES)
+    if blocking:
+        return REQUEST_CHANGES, f"changes requested by: {', '.join(blocking)}"
+
+    discussing = sorted(s for s, v in resolved.items() if v == DISCUSS)
+    if discussing:
+        return DISCUSS, f"discussion requested by: {', '.join(discussing)}"
+
+    approving = sorted(s for s, v in resolved.items() if v == APPROVE)
+    if not approving:
+        # Everyone returned N/A. Nobody actually reviewed anything.
+        return REQUEST_CHANGES, "every reviewer returned N/A — nothing was actually reviewed"
+
+    abstained = sorted(s for s, v in resolved.items() if v == NOT_APPLICABLE)
+    reason = f"approved by: {', '.join(approving)}"
+    if abstained:
+        reason += f" (n/a: {', '.join(abstained)})"
+    return APPROVE, reason
