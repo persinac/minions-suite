@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING
 
 from ..agents.prompt import build_agent_prompt
 from ..agents.runner import run_agent
-from ..core.models import Agent, AgentRole, Job, JobStatus, Task, TaskStatus
 from ..classifier import classify_difficulty, resolve_model
+from ..core.models import Agent, AgentRole, Job, JobStatus, Task, TaskStatus
 from ..core.state_transitions import InvalidTransitionError, PreconditionError
 
 if TYPE_CHECKING:
@@ -594,38 +594,128 @@ async def get_review_feedback(engine: JobEngine, job_id: str, task: Task) -> str
     return "The reviewer requested changes but no specific feedback was found in messages."
 
 
-async def run_task_review(engine: JobEngine, job: Job, task: Task):
-    """Launch a code reviewer for a single task's PR."""
-    from .review import _create_provider_for_project, create_engineer_provider, create_reviewer_provider
+async def _run_one_specialist(
+    engine: JobEngine,
+    job: Job,
+    task: Task,
+    specialty: str,
+    project,
+    service,
+    mr_id: str,
+    mr_info: dict,
+    provider,
+    review_context: str,
+) -> tuple[str, str | None]:
+    """Run a single expert reviewer. Returns (specialty, verdict-or-None).
 
-    # One reviewer per (PR, specialty). This is reached from the arbiter's
-    # `advance_job` remediation, which re-fires every monitor pass while the job
-    # looks stuck — each pass previously created another reviewer task and
-    # another agent. Observed: two reviewers on one PR, $4.87 for a review that
-    # was needed once.
+    Never raises: one specialist blowing up must not take the others with it.
+    A None verdict is a real signal — aggregate_verdicts fails closed on it.
+    """
+    from ..reviewers import load_persona
+
+    reviewer_task = await engine.db.create_task(
+        Task(
+            job_id=job.id,
+            title=f"[{specialty}] Review PR for {task.title}",
+            description=f"Review PR {task.pr_url or 'pending'}",
+            service=task.service,
+            agent_role=AgentRole.CODE_REVIEWER,
+            status=TaskStatus.IN_PROGRESS,
+            specialty=specialty,
+            mr_url=task.pr_url or "",
+            mr_id=mr_id,
+            pr_url=task.pr_url or "",
+            pr_number=task.pr_number,
+        )
+    )
+
+    # Reviewers fan out, so they get their own model tier — see resolve_model.
+    model = resolve_model(engine.config, job.difficulty, project.model if project else "", is_reviewer=True)
+    agent = await engine.db.create_agent(
+        Agent(job_id=job.id, role=AgentRole.CODE_REVIEWER, task_id=reviewer_task.id, model=model)
+    )
+
+    await engine.db.record_event(job.id, "agent_launched", "engine", f"agent={agent.id} role=code_reviewer specialty={specialty}")
+    await engine._nats_agent_status(job.id, agent.id, "code_reviewer", "launched")
+
+    persona = load_persona(specialty)
+    context = f"## Review Target\n\n{review_context}"
+    if persona:
+        context += f"\n\n## Your Review Lens\n\n{persona}"
+
+    if engine._k8s_enabled:
+        prompt = engine._maybe_dry_run(build_agent_prompt(job, reviewer_task, project, service, context))
+        working_dir = service.repo_path if service else "."
+        await engine._dispatch_k8s(job, agent, AgentRole.CODE_REVIEWER, prompt, working_dir, service=service)
+        return specialty, None
+
+    try:
+        result_agent = await run_agent(
+            job=job,
+            task=reviewer_task,
+            project=project,
+            service=service,
+            config=engine.config,
+            db=engine.db,
+            provider=provider,
+            mr_info=mr_info if provider else None,
+            context=context,
+            agent=agent,
+        )
+    except Exception as e:
+        logger.error("Reviewer %s failed for task %s: %s", specialty, task.id, e, exc_info=True)
+        try:
+            await engine.db.update_task(reviewer_task.id, status=TaskStatus.FAILED, agent_role="", error=str(e)[:200])
+        except (InvalidTransitionError, PreconditionError):
+            pass
+        return specialty, None
+
+    verdict = getattr(result_agent, "_review_verdict", None)
+    terminal = TaskStatus.DONE if result_agent.status == "done" else TaskStatus.FAILED
+    try:
+        await engine.db.update_task(reviewer_task.id, status=terminal, agent_role="", verdict=verdict or "")
+    except (InvalidTransitionError, PreconditionError) as e:
+        logger.warning("Could not mark reviewer task %s as %s: %s", reviewer_task.id, terminal, e)
+
+    if result_agent.status != "done":
+        return specialty, None
+
+    logger.info("Reviewer %s verdict for task %s: %s", specialty, task.id, verdict)
+    return specialty, verdict
+
+
+async def run_task_review(engine: JobEngine, job: Job, task: Task):
+    """Fan out expert reviewers across a task's PR, then act on their verdict.
+
+    Two always run (api, backend-architecture); the rest fire on signals in the
+    diff, so a Python-only PR wakes three specialists rather than five. That
+    conditionality is the cost control — each is a full agent run.
+    """
+    import asyncio
+
+    from ..reviewers import aggregate_verdicts, infer_specialists, skipped_specialists
+    from .review import create_engineer_provider, create_reviewer_provider
+
+    # A fan-out either happened for this PR or it did not. Checking per-specialty
+    # would let a re-entry add stragglers to a review that already concluded.
     #
-    # Keyed on specialty as well as pr_url so expert fan-out is not mistaken for
-    # duplication. Keyed on pr_url alone, N specialists on one PR collapse to the
-    # first one to start, and the rest vanish with no error — the job still
-    # reports a clean review, having actually run one. Specialty is None for the
-    # single general reviewer, which dedupes against itself exactly as before.
+    # Reached from the arbiter's `advance_job` remediation, which re-fires every
+    # monitor pass while a job looks stuck — that spawned duplicate reviewers
+    # before this guard existed ($4.87 for a review needed once).
     existing = await engine.db.get_tasks(job.id)
-    duplicate = [
+    already = [
         t
         for t in existing
         if t.agent_role == AgentRole.CODE_REVIEWER
-        and t.id != task.id
         and t.status != TaskStatus.FAILED
         and (t.pr_url or "") == (task.pr_url or "")
-        and (t.specialty or "") == (task.specialty or "")
     ]
-    if duplicate:
+    if already:
         logger.info(
-            "Reviewer (specialty=%s) already exists for task %s (PR %s) as task %s — not launching another",
-            task.specialty or "general",
+            "Review already ran for task %s (PR %s): %d reviewer task(s) — not fanning out again",
             task.id,
             task.pr_url or "pending",
-            duplicate[0].id,
+            len(already),
         )
         return
 
@@ -642,182 +732,150 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
         indent=2,
     )
 
-    # Extract MR ID from the engineer task
     mr_id = task.mr_id or str(task.pr_number or "")
     if not mr_id and task.pr_url:
         import re
 
-        match = re.search(r"/merge_requests/(\d+)", task.pr_url)
+        match = re.search(r"/merge_requests/(\d+)", task.pr_url) or re.search(r"/pull/(\d+)", task.pr_url)
         if match:
             mr_id = match.group(1)
 
-    # Create a reviewer task entry
-    reviewer_task = Task(
-        job_id=job.id,
-        title=f"Review PR for {task.title}",
-        description=f"Review PR {task.pr_url or 'pending'}",
-        service=task.service,
-        agent_role=AgentRole.CODE_REVIEWER,
-        status=TaskStatus.IN_PROGRESS,
-        mr_url=task.pr_url or "",
-        mr_id=mr_id,
-        pr_url=task.pr_url or "",
-        pr_number=task.pr_number,
-    )
-    reviewer_task = await engine.db.create_task(reviewer_task)
-
     project, service = engine._resolve_service(task.service)
 
-    # Use project model if available, otherwise fall back to engine config
-    model = resolve_model(engine.config, job.difficulty, project.model if project else "")
-    agent = Agent(job_id=job.id, role=AgentRole.CODE_REVIEWER, task_id=reviewer_task.id, model=model)
-    agent = await engine.db.create_agent(agent)
-
-    await engine.db.record_event(job.id, "agent_launched", "engine", f"agent={agent.id} role=code_reviewer task={task.id}")
-    await engine._nats_agent_status(job.id, agent.id, "code_reviewer", "launched")
-    await engine._trello_comment(job, f"Code reviewer started for {task.service} (agent={agent.id[:8]})")
-
-    context = f"## Review Target\n\n{review_context}"
-
-    if engine._k8s_enabled:
-        prompt = engine._maybe_dry_run(build_agent_prompt(job, reviewer_task, project, service, context))
-        working_dir = service.repo_path if service else "."
-        await engine._dispatch_k8s(job, agent, AgentRole.CODE_REVIEWER, prompt, working_dir, service=service)
-        return
-
-    # Create git provider and MR info so the reviewer gets a working ToolExecutor
+    # Fetch the diff as well as the file list: the DBA trigger keys on SQL and
+    # ORM tokens in the diff, which no path pattern reveals.
     provider = None
-    mr_info = {}
+    mr_info: dict = {}
+    changed_files: list[str] = []
+    diff = ""
     if project and mr_id:
         try:
             provider = await create_reviewer_provider(project, engine.config)
             changed_files = await provider.get_changed_files(project.project_id, mr_id)
             mr_info = {"project_id": project.project_id, "changed_files": changed_files}
+            try:
+                diff = await provider.get_diff(project.project_id, mr_id)
+            except Exception as e:
+                # Degrades the DBA trigger to path-only — a weaker but never-wrong
+                # subset. Not worth failing the review over.
+                logger.warning("Could not fetch diff for %s#%s: %s", project.project_id, mr_id, str(e)[:120])
         except Exception as e:
             logger.warning("Failed to create provider/fetch MR info for task review %s: %s", task.id, e)
             mr_info = {"project_id": project.project_id if project else "", "changed_files": []}
 
-    # Call run_agent directly with provider/mr_info for proper review executor setup
-    result_agent = await run_agent(
-        job=job,
-        task=reviewer_task,
-        project=project,
-        service=service,
-        config=engine.config,
-        db=engine.db,
-        provider=provider,
-        mr_info=mr_info if provider else None,
-        context=context,
-        agent=agent,
+    specialists = infer_specialists(changed_files, diff)
+    skipped = skipped_specialists(specialists)
+    logger.info(
+        "Review fan-out for task %s: %s%s",
+        task.id,
+        ", ".join(specialists),
+        f" (skipped: {', '.join(skipped)})" if skipped else "",
+    )
+    await engine.db.record_event(
+        job.id, "review_fanout", "engine", f"task={task.id} ran={','.join(specialists)} skipped={','.join(skipped)}"
     )
 
-    # Mark the reviewer task as done/failed regardless of verdict
-    reviewer_terminal_status = TaskStatus.DONE if result_agent.status == "done" else TaskStatus.FAILED
-    try:
-        await engine.db.update_task(
-            reviewer_task.id,
-            status=reviewer_terminal_status,
-            agent_role="",
-            verdict=getattr(result_agent, "_review_verdict", None) or "",
-        )
-    except InvalidTransitionError as e:
-        logger.warning("Could not mark reviewer task %s as %s: %s", reviewer_task.id, reviewer_terminal_status, e)
+    # Per-job spend ceiling. Reviewers call run_agent directly rather than going
+    # through _run_in_process, so the job ceiling never applied to them. With one
+    # reviewer that was survivable; fanning out four makes it the dominant cost.
+    if engine.config.job_cost_limit_usd > 0:
+        usage = await engine.db.get_job_usage(job.id)
+        spent = float(usage.get("total_cost_usd") or 0.0)
+        if spent >= engine.config.job_cost_limit_usd:
+            message = f"Job {job.id} has spent ${spent:.2f}, at or over its ${engine.config.job_cost_limit_usd:.2f} limit — refusing to fan out reviewers"
+            logger.error(message)
+            await engine.db.record_event(job.id, "job_cost_limit_exceeded", "engine", message)
+            await _retry_or_fail_review(engine, task, message)
+            return
 
-    # Re-fetch task — it may have moved on if a concurrent reviewer already handled it
+    results = await asyncio.gather(
+        *[
+            _run_one_specialist(engine, job, task, specialty, project, service, mr_id, mr_info, provider, review_context)
+            for specialty in specialists
+        ],
+        return_exceptions=True,
+    )
+
+    verdicts: dict[str, str | None] = {}
+    for specialty, outcome in zip(specialists, results, strict=False):
+        if isinstance(outcome, BaseException):
+            logger.error("Reviewer %s raised for task %s: %s", specialty, task.id, outcome)
+            verdicts[specialty] = None
+        else:
+            verdicts[specialty] = outcome[1]
+
+    if engine._k8s_enabled:
+        # Dispatched to the cluster; verdicts arrive asynchronously.
+        return
+
+    # Re-fetch: the task may have moved on while the fan-out ran.
     current_task = await engine.db.get_task(task.id)
     if not current_task or current_task.status != TaskStatus.IN_REVIEW:
-        logger.info("Reviewer finished but task %s is now %s — skipping verdict", task.id, current_task.status if current_task else "gone")
+        logger.info("Fan-out finished but task %s is now %s — skipping verdict", task.id, current_task.status if current_task else "gone")
         return
 
-    if result_agent.status != "done":
-        # Reset original task from in_review back to pr_open for retry
+    verdict, reason = aggregate_verdicts(verdicts)
+    logger.info("Aggregated review verdict for task %s: %s (%s)", task.id, verdict, reason)
+    await engine.db.record_event(job.id, "review_aggregated", "engine", f"task={task.id} verdict={verdict} {reason}")
+
+    if verdict == "request_changes":
+        # Covers a genuine objection AND a missing verdict — aggregate_verdicts
+        # fails closed, so a crashed specialist lands here rather than approving.
         try:
-            await engine.db.update_task(task.id, status=TaskStatus.PR_OPEN, agent_role="")
-            logger.info("Reviewer failed, task %s reset to PR_OPEN for retry", task.id)
-        except InvalidTransitionError:
-            logger.warning("Could not reset task %s to PR_OPEN after reviewer failure", task.id)
+            await engine.db.update_task(task.id, review_status=f"changes_requested: {reason[:150]}", agent_role="")
+            await engine.db.update_task(task.id, status=TaskStatus.IN_PROGRESS, agent_role="")
+            logger.info("Review requested changes, task %s -> IN_PROGRESS for revision", task.id)
+        except (InvalidTransitionError, PreconditionError) as e:
+            logger.warning("Could not transition task %s for revision: %s", task.id, e)
         return
 
-    # Handle successful review — check verdict
-    # A missing verdict is a review that did not happen, not an approval.
-    #
-    # This previously read `verdict == "approve" or verdict is None`, so any
-    # reviewer that crashed, timed out, hit the cost ceiling, or simply never
-    # called submit_review was treated as having approved. It is not
-    # hypothetical: on job f6451f44 submit_review raised (GitHub refuses a
-    # self-authored review), _review_verdict was never set, and the task
-    # advanced to MERGED with no review recorded anywhere. With auto_merge on
-    # across every project, that same path now merges to main.
-    #
-    # Fail closed. An absent verdict is treated exactly like a failed review:
-    # retry if attempts remain, otherwise stop and leave it for a human.
-    verdict = getattr(result_agent, "_review_verdict", None)
-
-    if verdict is None:
-        message = "Reviewer produced no verdict — refusing to treat that as approval"
-        logger.error("%s (task %s, PR %s)", message, task.id, task.pr_url or "unknown")
-        await engine.db.record_event(job.id, "review_verdict_missing", "engine", f"task={task.id}")
+    if verdict == "discuss":
+        # No human is watching an autonomous run, so "needs discussion" cannot
+        # mean "wait indefinitely". Treat it as blocking and leave it for a human.
+        message = f"Reviewers want discussion, not approval: {reason}"
+        logger.warning("%s (task %s)", message, task.id)
         await _retry_or_fail_review(engine, task, message)
         return
 
-    approved = verdict == "approve"
-
-    if approved:
-        # Auto-merge if project is configured for it.
-        #
-        # Deliberately NOT `provider` — that carries the reviewer identity, which
-        # has read-only Contents. Merging writes to the base branch and
-        # --delete-branch removes a ref, so it would 403. The engineer App
-        # already has write (it pushed the branch), and GitHub only forbids an
-        # identity *approving* its own PR, never merging one.
-        if project and project.auto_merge and mr_id:
-            try:
-                merge_provider = await create_engineer_provider(project, engine.config)
-
-                # CI gate, fail-closed. Runs before merge_mr so a red or ungated
-                # repo is never merged into by an agent.
-                _, service = engine._resolve_service(task.service)
-                target_branch = (service.default_branch if service else "") or "main"
-                ci_ok, ci_reason = await _ci_gate_passes(engine, project, merge_provider, mr_id, target_branch)
-
-                if not ci_ok:
-                    logger.warning("Auto-merge BLOCKED for task %s: %s", task.id, ci_reason)
-                    await engine.db.record_event(job.id, "auto_merge_blocked_ci", "engine", f"task={task.id} {ci_reason}")
-                    merge_result = {"merged": False, "error": f"CI gate: {ci_reason}"}
-                else:
-                    logger.info("CI gate passed for task %s: %s", task.id, ci_reason)
-                    merge_result = await merge_provider.merge_mr(project.project_id, mr_id)
-
-                    # Branch protection refusing the merge IS the gate — the
-                    # pre-check above is only a hint, and mergeable_state can be
-                    # `unknown` when it runs. Record the refusal distinctly so it
-                    # does not read as a transient API failure.
-                    if not merge_result.get("merged"):
-                        detail = str(merge_result.get("error", "unknown"))
-                        await engine.db.record_event(
-                            job.id, "auto_merge_refused", "engine", f"task={task.id} {detail[:200]}"
-                        )
-                        logger.warning("Merge refused for task %s (branch protection or conflict): %s", task.id, detail[:200])
-                if merge_result.get("merged"):
-                    logger.info("Auto-merged MR %s for task %s", mr_id, task.id)
-                else:
-                    logger.warning("Auto-merge failed for task %s: %s", task.id, merge_result.get("error", "unknown"))
-            except Exception as e:
-                logger.warning("Auto-merge error for task %s: %s", task.id, e)
-
+    # Approved.
+    if project and project.auto_merge and mr_id:
         try:
-            await engine.db.update_task(task.id, status=TaskStatus.MERGED, agent_role="")
-            logger.info("Review approved, task %s -> MERGED", task.id)
-        except InvalidTransitionError as e:
-            logger.warning("Could not transition task %s to MERGED after approval: %s", task.id, e)
-    elif verdict == "request_changes":
-        try:
-            await engine.db.update_task(task.id, review_status="changes_requested", agent_role="")
-            await engine.db.update_task(task.id, status=TaskStatus.IN_PROGRESS, agent_role="")
-            logger.info("Review requested changes, task %s -> IN_PROGRESS for revision", task.id)
-        except InvalidTransitionError as e:
-            logger.warning("Could not transition task %s for revision: %s", task.id, e)
+            # Deliberately NOT the reviewer provider — that identity has read-only
+            # Contents. Merging writes to the base branch and --delete-branch
+            # removes a ref. The engineer App already has write, and GitHub only
+            # forbids an identity *approving* its own PR, never merging one.
+            merge_provider = await create_engineer_provider(project, engine.config)
 
+            target_branch = (service.default_branch if service else "") or "main"
+            ci_ok, ci_reason = await _ci_gate_passes(engine, project, merge_provider, mr_id, target_branch)
+
+            if not ci_ok:
+                logger.warning("Auto-merge BLOCKED for task %s: %s", task.id, ci_reason)
+                await engine.db.record_event(job.id, "auto_merge_blocked_ci", "engine", f"task={task.id} {ci_reason}")
+                merge_result = {"merged": False, "error": f"CI gate: {ci_reason}"}
+            else:
+                logger.info("CI gate passed for task %s: %s", task.id, ci_reason)
+                merge_result = await merge_provider.merge_mr(project.project_id, mr_id)
+
+                # Branch protection refusing the merge IS the gate — the
+                # pre-check is only a hint, and mergeable_state can be `unknown`
+                # when it runs. Record the refusal distinctly so it does not read
+                # as a transient API failure.
+                if not merge_result.get("merged"):
+                    detail = str(merge_result.get("error", "unknown"))
+                    await engine.db.record_event(job.id, "auto_merge_refused", "engine", f"task={task.id} {detail[:200]}")
+                    logger.warning("Merge refused for task %s (branch protection or conflict): %s", task.id, detail[:200])
+
+            if merge_result.get("merged"):
+                logger.info("Auto-merged MR %s for task %s", mr_id, task.id)
+        except Exception as e:
+            logger.warning("Auto-merge error for task %s: %s", task.id, e)
+
+    try:
+        await engine.db.update_task(task.id, status=TaskStatus.MERGED, agent_role="")
+        logger.info("Review approved (%s), task %s -> MERGED", reason, task.id)
+    except (InvalidTransitionError, PreconditionError) as e:
+        logger.warning("Could not transition task %s to MERGED after approval: %s", task.id, e)
 
 async def manage_dev_tasks(engine: JobEngine, job: Job):
     """Per-task lifecycle manager: review launches, revision cycles, job advancement.

@@ -19,29 +19,42 @@ from minions.core.models import AgentRole, Task, TaskStatus
 
 class TestMissingVerdictFailsClosed:
     def test_the_or_none_approval_is_gone(self):
-        """The exact expression that caused it, pinned so it cannot come back."""
+        """The exact expression that caused it, pinned so it cannot come back.
+
+        With fan-out the decision moved into aggregate_verdicts, which fails
+        closed on a missing verdict — see tests/test_reviewers.py. What matters
+        here is that run_task_review routes through it rather than reintroducing
+        an inline truthiness check.
+        """
         import inspect
 
         from minions.engine import dev
 
         source = inspect.getsource(dev.run_task_review)
+
         assert 'verdict == "approve" or (verdict is None)' not in source
-        assert "verdict is None" in source, "a missing verdict must still be handled explicitly"
+        assert "aggregate_verdicts" in source, "the verdict decision must go through the fail-closed aggregator"
 
     def test_merge_is_unreachable_without_an_explicit_approval(self):
-        """The None branch must return before anything can merge."""
+        """Anything short of approval must return before the merge call.
+
+        aggregate_verdicts collapses a missing verdict to request_changes, and
+        that branch — plus the discuss branch — must exit ahead of merge_mr.
+        """
         import inspect
 
         from minions.engine import dev
 
         source = inspect.getsource(dev.run_task_review)
-        none_branch = source.index("if verdict is None:")
-        merge_call = source.index("merge_mr")
-        approved_assign = source.index('approved = verdict == "approve"')
+        aggregated = source.index("aggregate_verdicts(verdicts)")
+        blocked = source.index('if verdict == "request_changes":')
+        discuss = source.index('if verdict == "discuss":')
+        merge_call = source.index("merge_provider.merge_mr")
 
-        assert none_branch < approved_assign < merge_call, "the missing-verdict guard must precede approval and merge"
-        # The guard has to actually leave the function, not just log.
-        assert "return" in source[none_branch:approved_assign]
+        assert aggregated < blocked < discuss < merge_call, "non-approval branches must precede the merge"
+        # Both guards have to leave the function, not merely log.
+        assert source[blocked:discuss].count("return") >= 1
+        assert source[discuss:merge_call].count("return") >= 1
 
 
 class TestRetryOrFail:

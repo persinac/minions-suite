@@ -17,7 +17,7 @@ import httpx
 from fastmcp import FastMCP
 
 from ..config import Config
-from ..core.models import AgentRole, Job, JobStatus, Message, Subtask, SubtaskStatus, Task, TaskStatus, _now
+from ..core.models import AgentRole, JobStatus, Message, Subtask, SubtaskStatus, Task, TaskStatus, _now
 from ..core.state_transitions import InvalidTransitionError, PreconditionError
 from ..db import AbstractDatabase
 

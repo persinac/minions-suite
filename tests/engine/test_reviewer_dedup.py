@@ -120,11 +120,23 @@ class TestDedupKey:
 
 
 class TestGuardSourceKeysOnSpecialty:
-    def test_run_task_review_compares_specialty(self):
-        """Guards the call site, not just the predicate copied into this file."""
+    def test_run_task_review_guards_against_a_second_fanout(self):
+        """Dedup moved up a level once fan-out landed.
+
+        Per-specialty dedup made sense when each reviewer was created
+        independently. Now the whole fan-out is created in one pass, so the guard
+        asks whether a review already ran for this PR at all — per-specialty
+        checking would let a re-entry bolt stragglers onto a concluded review.
+
+        The tasks.specialty column still carries the lens, and the DB index on
+        (pr_url, specialty) still exists; only the guard's granularity changed.
+        """
         import inspect
 
         from minions.engine import dev
 
         source = inspect.getsource(dev.run_task_review)
-        assert "t.specialty" in source, "dedup must key on specialty or fan-out collapses to one review"
+
+        assert "AgentRole.CODE_REVIEWER" in source
+        assert "not fanning out again" in source, "a second fan-out must be refused"
+        assert "specialty=specialty" in inspect.getsource(dev._run_one_specialist), "each reviewer must record its lens"

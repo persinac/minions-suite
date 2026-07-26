@@ -12,7 +12,11 @@ findings a DBA is actually there to catch. `project_registry.infer_profile`
 matches on paths alone and would miss every one of them.
 """
 
+import logging
 import re
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 API = "api"
 BACKEND_ARCHITECTURE = "backend-architecture"
@@ -172,3 +176,23 @@ def aggregate_verdicts(verdicts: dict[str, str | None]) -> tuple[str, str]:
     if abstained:
         reason += f" (n/a: {', '.join(abstained)})"
     return APPROVE, reason
+
+
+# --- Persona loading --------------------------------------------------------
+
+_PROMPT_DIR = Path(__file__).resolve().parent.parent / "prompts" / "reviewers"
+
+
+def load_persona(specialty: str) -> str:
+    """The reviewer persona for a specialty, or "" if it has no prompt file.
+
+    Returning "" rather than raising is deliberate: a missing persona should
+    degrade that specialist to a generic review, not take down the whole fan-out
+    and lose the four reviewers that do have prompts.
+    """
+    path = _PROMPT_DIR / f"{specialty}.md"
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        logger.warning("No reviewer persona at %s — %s will review without a lens", path, specialty)
+        return ""

@@ -36,6 +36,12 @@ def _mock_engine(db):
     # raising on comparison.
     engine.config.max_jobs_per_hour = 1000
     engine.config.max_jobs_per_month = 10000
+    # Real numbers: the reviewer fan-out compares these against int/float, and a
+    # MagicMock satisfies attribute access while raising on comparison.
+    engine.config.job_cost_limit_usd = 1000.0
+    engine.config.agent_cost_limit_usd = 100.0
+    engine.config.require_ci_pass = False
+    engine.config.model_reviewer = "test-reviewer-model"
     engine.config.classifier_enabled = False
     engine.config.model_easy = "test-easy"
     engine.config.model_medium = "test-medium"
@@ -832,10 +838,16 @@ class TestRevisionCompletionRace:
 
 
 class TestReviewAgentCreation:
-    """Regression tests for double-agent creation in run_task_review."""
+    """Regression tests for double-agent creation in run_task_review.
 
-    async def test_creates_exactly_one_agent(self, db, sample_job, make_task):
-        """run_task_review must create exactly one agent, not two."""
+    Originally "exactly one agent". Now one per specialist — the fan-out creates
+    N reviewer tasks. The property being protected is unchanged: each reviewer
+    gets exactly ONE agent, and run_agent receives it rather than creating a
+    second internally.
+    """
+
+    async def test_creates_one_agent_per_specialist(self, db, sample_job, make_task):
+        """One agent per reviewer task — never two for the same reviewer."""
         from unittest.mock import patch
 
         from minions.engine.dev import run_task_review
@@ -867,15 +879,19 @@ class TestReviewAgentCreation:
 
                 await run_task_review(engine, job, task)
 
-                # run_agent must receive the pre-created agent
-                assert mock_run.call_count == 1
-                call_kwargs = mock_run.call_args.kwargs
-                assert call_kwargs.get("agent") is not None, "run_agent must receive agent= to prevent double creation"
+                # Every reviewer must receive its pre-created agent.
+                assert mock_run.call_count >= 1, "the fan-out ran no reviewers at all"
+                for call in mock_run.call_args_list:
+                    assert call.kwargs.get("agent") is not None, "run_agent must receive agent= to prevent double creation"
 
-        # Verify only one agent was created in the DB for this job's reviewer tasks
+        # One agent per reviewer task — the double-creation regression would
+        # show up as more agents than tasks.
         agents = await db.get_agents_for_job(job.id)
         reviewer_agents = [a for a in agents if a.role == AgentRole.CODE_REVIEWER]
-        assert len(reviewer_agents) == 1
+        reviewer_tasks = [t for t in await db.get_tasks(job.id) if t.agent_role == AgentRole.CODE_REVIEWER]
+
+        assert len(reviewer_agents) == len(reviewer_tasks) == mock_run.call_count
+        assert len({t.specialty for t in reviewer_tasks}) == len(reviewer_tasks), "each specialist must be distinct"
 
     async def test_agent_uses_project_model(self, db, sample_job, make_task):
         """The reviewer agent should use the project model, not engine.config.model."""
@@ -910,10 +926,12 @@ class TestReviewAgentCreation:
 
                 await run_task_review(engine, job, task)
 
-        # The agent in the DB should have the project model, not the engine default
+        # Every reviewer agent should use the project model, not the engine
+        # default and not the reviewer tier — an explicitly pinned project model
+        # outranks both.
         agents = await db.get_agents_for_job(job.id)
         reviewer_agents = [a for a in agents if a.role == AgentRole.CODE_REVIEWER]
-        assert len(reviewer_agents) == 1
+        assert reviewer_agents, "no reviewer agents were created"
         assert reviewer_agents[0].model == "claude-sonnet-4-6"
 
 

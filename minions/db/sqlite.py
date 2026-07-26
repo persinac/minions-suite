@@ -826,7 +826,7 @@ def _row_to_job(row) -> Job:
         mr_url=row["mr_url"],
         error=row["error"],
         external_id=row["external_id"],
-        difficulty=row["difficulty"] if "difficulty" in row.keys() else None,
+        difficulty=row["difficulty"] if "difficulty" in row.keys() else None,  # noqa: SIM118 - sqlite3.Row `in` tests values, not keys
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -852,7 +852,7 @@ def _row_to_task(row) -> Task:
         error=row["error"],
         mr_url=row["mr_url"],
         mr_id=row["mr_id"],
-        specialty=row["specialty"] if "specialty" in row.keys() else None,
+        specialty=row["specialty"] if "specialty" in row.keys() else None,  # noqa: SIM118 - sqlite3.Row `in` tests values, not keys
         verdict=row["verdict"],
         comments_posted=row["comments_posted"] or 0,
         created_at=row["created_at"],
