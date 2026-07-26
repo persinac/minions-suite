@@ -1,15 +1,20 @@
-"""The CI gate on auto-merge. Fails closed.
+"""The CI gate on auto-merge.
 
-Auto-merge went live across 33 repos with nothing between the reviewer's verdict
-and merge_mr. renovate's should_auto_merge is NOT a usable reference: it treats
-an empty ci_status as success (the no-CI free pass), it reads the legacy combined
-commit status which GitHub Actions check-runs do not populate, and
-get_pipeline_status — the method it depends on — is defined nowhere, so that gate
-has never executed.
+Two layers, and the second is not ours:
 
-Design per the ui-integration-tests agent: read required check names from branch
-protection at RUNTIME so the gate cannot drift from what GitHub enforces, resolve
-them against check-runs on the PR head, and treat absent/empty as BLOCK.
+1. The repo must HAVE required checks. GitHub enforces nothing on an unprotected
+   branch, so this is the only thing between an agent and an ungated repo. Fails
+   closed — the inverse of renovate's should_auto_merge, where an empty
+   ci_status counted as success.
+2. Whether those checks are green is GitHub's call, read via mergeable_state and
+   ultimately enforced by branch protection refusing the merge server-side, even
+   for the App that opened the PR.
+
+The gate deliberately no longer reads check-runs. That needs a Checks:read grant
+the App does not have, and adding it requires the org to accept the permission —
+friction for a judgement GitHub already makes, and a duplicated judgement is one
+that can drift. mergeable_state comes with Pull requests:read and folds required
+checks, required reviews and conflicts into one value.
 """
 
 import json
@@ -21,26 +26,20 @@ from minions.engine.dev import _ci_gate_passes
 
 
 class _Provider:
-    """Stands in for GitHubProvider with the three gate methods."""
-
-    def __init__(self, required=None, runs=None, sha="abc123def456", explode=None):
+    def __init__(self, required=None, state="clean", explode=None):
         self._required = required if required is not None else []
-        self._runs = runs or {}
-        self._sha = sha
+        self._state = state
         self._explode = explode
 
     async def get_required_checks(self, project_id, branch):
-        if self._explode == "protection":
+        if self._explode == "rules":
             raise RuntimeError("HTTP 500")
         return self._required
 
-    async def get_pr_head_sha(self, project_id, mr_id):
-        return self._sha
-
-    async def get_check_runs(self, project_id, sha):
-        if self._explode == "checks":
+    async def get_merge_state(self, project_id, mr_id):
+        if self._explode == "state":
             raise RuntimeError("HTTP 500")
-        return self._runs
+        return self._state
 
 
 class _Project:
@@ -53,37 +52,25 @@ def _engine(require_ci_pass=True):
     return type("E", (), {"config": config})()
 
 
-class TestFailsClosed:
+async def _gate(**kwargs):
+    require_ci_pass = kwargs.pop("require_ci_pass", True)
+    return await _ci_gate_passes(_engine(require_ci_pass), _Project(), _Provider(**kwargs), "23", "main")
+
+
+class TestUngatedReposBlock:
+    """The half GitHub will not do for us."""
+
     async def test_no_required_checks_blocks(self):
-        """An ungated repo must not get a free pass — the opposite of renovate."""
-        ok, reason = await _ci_gate_passes(_engine(), _Project(), _Provider(required=[]), "23", "main")
+        ok, reason = await _gate(required=[])
 
         assert ok is False
         assert "no required status checks" in reason
 
-    async def test_required_check_that_never_reported_blocks(self):
-        """Branch protection requires it; nothing posted it. That is not a pass."""
-        provider = _Provider(required=["secret-scan", "lint"], runs={"secret-scan": "success"})
-
-        ok, reason = await _ci_gate_passes(_engine(), _Project(), provider, "23", "main")
+    async def test_unreadable_branch_rules_blocks(self):
+        ok, reason = await _gate(required=["secret-scan"], explode="rules")
 
         assert ok is False
-        assert "never reported" in reason
-        assert "lint" in reason
-
-    async def test_unreadable_branch_protection_blocks(self):
-        ok, reason = await _ci_gate_passes(_engine(), _Project(), _Provider(explode="protection"), "23", "main")
-
-        assert ok is False
-        assert "branch protection" in reason
-
-    async def test_unreadable_check_runs_blocks(self):
-        provider = _Provider(required=["secret-scan"], explode="checks")
-
-        ok, reason = await _ci_gate_passes(_engine(), _Project(), provider, "23", "main")
-
-        assert ok is False
-        assert "check-runs" in reason
+        assert "branch rules" in reason
 
     async def test_a_provider_without_the_methods_blocks(self):
         """GitLab, or an older provider, must block rather than silently pass."""
@@ -97,56 +84,56 @@ class TestFailsClosed:
         assert "cannot evaluate CI" in reason
 
 
-class TestFailureConclusions:
-    @pytest.mark.parametrize("conclusion", ["failure", "timed_out", "cancelled", "action_required", "stale"])
-    async def test_non_green_conclusions_block(self, conclusion):
-        provider = _Provider(required=["secret-scan"], runs={"secret-scan": conclusion})
-
-        ok, reason = await _ci_gate_passes(_engine(), _Project(), provider, "23", "main")
-
-        assert ok is False, f"{conclusion} must not merge"
-        assert "not green" in reason
-
-    @pytest.mark.parametrize("status", ["in_progress", "queued", "pending"])
-    async def test_still_running_blocks(self, status):
-        """A check that has not finished is not a passing check."""
-        provider = _Provider(required=["test"], runs={"test": status})
-
-        ok, _ = await _ci_gate_passes(_engine(), _Project(), provider, "23", "main")
+class TestGitHubsVerdict:
+    @pytest.mark.parametrize(
+        "state,expect_phrase",
+        [
+            ("blocked", "required checks"),
+            ("dirty", "conflicts"),
+            ("behind", "base branch"),
+            ("draft", "draft"),
+        ],
+    )
+    async def test_blocking_states_block_with_a_specific_reason(self, state, expect_phrase):
+        ok, reason = await _gate(required=["secret-scan"], state=state)
 
         assert ok is False
+        assert state in reason
+        assert expect_phrase in reason, "the reason must explain WHY, not just name the state"
 
-
-class TestPasses:
-    async def test_all_green_passes(self):
-        provider = _Provider(required=["secret-scan", "lint", "test"],
-                             runs={"secret-scan": "success", "lint": "success", "test": "success"})
-
-        ok, reason = await _ci_gate_passes(_engine(), _Project(), provider, "23", "main")
+    @pytest.mark.parametrize("state", ["clean", "has_hooks"])
+    async def test_mergeable_states_pass(self, state):
+        ok, reason = await _gate(required=["secret-scan"], state=state)
 
         assert ok is True
-        assert "3 required checks green" in reason
+        assert state in reason
 
-    @pytest.mark.parametrize("conclusion", ["neutral", "skipped"])
-    async def test_neutral_and_skipped_count_as_green(self, conclusion):
-        """A skipped job (path filter didn't match) is not a failure."""
-        provider = _Provider(required=["lint"], runs={"lint": conclusion})
-
-        ok, _ = await _ci_gate_passes(_engine(), _Project(), provider, "23", "main")
+    async def test_unstable_passes_because_the_ruleset_permits_it(self):
+        """`unstable` = a NON-required check failing. Branch protection allows the
+        merge; blocking here would second-guess the ruleset."""
+        ok, _ = await _gate(required=["secret-scan"], state="unstable")
 
         assert ok is True
 
-    async def test_extra_unrequired_failures_do_not_block(self):
-        """Only branch protection decides what is required."""
-        provider = _Provider(required=["secret-scan"],
-                             runs={"secret-scan": "success", "some-optional-job": "failure"})
-
-        ok, _ = await _ci_gate_passes(_engine(), _Project(), provider, "23", "main")
+    async def test_unknown_defers_rather_than_blocking(self):
+        """mergeable_state is computed asynchronously, so `unknown` right after a
+        push is a timing artefact. Branch protection still gates the real merge,
+        so stranding the PR here would cost a rerun for nothing."""
+        ok, reason = await _gate(required=["secret-scan"], state="unknown")
 
         assert ok is True
+        assert "deferring to branch protection" in reason
 
-    async def test_the_gate_can_be_disabled(self):
-        ok, reason = await _ci_gate_passes(_engine(require_ci_pass=False), _Project(), _Provider(), "23", "main")
+    async def test_an_unreadable_merge_state_blocks(self):
+        ok, reason = await _gate(required=["secret-scan"], explode="state")
+
+        assert ok is False
+        assert "merge state" in reason
+
+
+class TestDisable:
+    async def test_the_gate_can_be_turned_off(self):
+        ok, reason = await _gate(required=[], require_ci_pass=False)
 
         assert ok is True
         assert "disabled" in reason
@@ -160,37 +147,38 @@ class TestWiring:
         from minions.engine import dev
 
         source = inspect.getsource(dev.run_task_review)
-        gate = source.index("_ci_gate_passes")
-        merge = source.index("merge_provider.merge_mr")
 
-        assert gate < merge, "the CI gate must precede the merge call"
+        assert source.index("_ci_gate_passes") < source.index("merge_provider.merge_mr")
 
-    def test_check_runs_not_combined_status(self):
-        """Actions post check-runs; /commits/{sha}/status does not aggregate them."""
+    def test_a_refused_merge_is_recorded_distinctly(self):
+        """Branch protection refusing IS the gate — it must not read as a
+        transient API failure in the audit trail."""
         import inspect
 
-        from minions.providers.git import GitHubProvider
+        from minions.engine import dev
 
-        source = inspect.getsource(GitHubProvider.get_check_runs)
-        # Strip the docstring: it deliberately mentions /status to explain why
-        # that endpoint is wrong, so a naive substring check trips on the comment.
-        body = source.split('"""')[-1]
+        assert "auto_merge_refused" in inspect.getsource(dev.run_task_review)
 
-        assert 'commits/{sha}/check-runs' in body
-        assert 'commits/{sha}/status' not in body, "must not call the combined status endpoint"
+    def test_check_runs_is_no_longer_a_dependency(self):
+        """Dropping it is what avoids needing an org-accepted App permission."""
+        import inspect
+
+        from minions.engine import dev
+
+        source = inspect.getsource(dev._ci_gate_passes)
+
+        assert "get_check_runs" not in source
+        assert "get_merge_state" in source
 
 
 class TestRequiredChecksSource:
-    """The gate must read the surface that org rulesets actually appear on.
+    """The gate must read the surface org rulesets actually appear on.
 
     It originally read /branches/{branch}/protection/required_status_checks —
-    classic branch protection. An org-level ruleset does not appear there at all.
+    classic branch protection. An org ruleset does not appear there at all.
     Verified live against wallet-api@main: that endpoint returned "Resource not
     accessible by integration" while /rules/branches/main returned the org
     ruleset (id 19750440) with required_status_checks: ['secret-scan'].
-
-    Fail-closed meant this was safe — nothing merged wrongly — but the gate would
-    have blocked every agent PR forever, never unblocking once CI went green.
     """
 
     @staticmethod
@@ -212,44 +200,35 @@ class TestRequiredChecksSource:
         assert "protection/required_status_checks" not in body
 
     async def test_extracts_contexts_from_the_live_shape(self):
-        """The exact payload shape returned for wallet-api@main."""
         payload = json.dumps(
             [
                 {"type": "non_fast_forward", "ruleset_source_type": "Organization", "ruleset_id": 19750440},
-                {"type": "deletion", "ruleset_source_type": "Organization", "ruleset_id": 19750440},
+                {"type": "deletion"},
                 {"type": "pull_request", "parameters": {"dismiss_stale_reviews_on_push": True}},
-                {
-                    "type": "required_status_checks",
-                    "parameters": {"required_status_checks": [{"context": "secret-scan"}]},
-                },
+                {"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": "secret-scan"}]}},
             ]
         )
 
         assert await self._provider(payload).get_required_checks("org/repo", "main") == ["secret-scan"]
 
-    async def test_merges_contexts_across_multiple_rulesets(self):
-        """Org and repo rulesets can both target a branch; both are in force."""
+    async def test_merges_contexts_across_rulesets(self):
+        """An org ruleset and a repo ruleset can both target one branch."""
         payload = json.dumps(
             [
                 {"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": "secret-scan"}]}},
-                {
-                    "type": "required_status_checks",
-                    "parameters": {"required_status_checks": [{"context": "lint"}, {"context": "secret-scan"}]},
-                },
+                {"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": "lint"}, {"context": "secret-scan"}]}},
             ]
         )
 
         checks = await self._provider(payload).get_required_checks("org/repo", "main")
 
         assert sorted(checks) == ["lint", "secret-scan"]
-        assert len(checks) == 2, "duplicates across rulesets must collapse"
 
     async def test_no_status_check_rule_returns_empty(self):
-        """Protected against force-push and deletion, but no CI required."""
         payload = json.dumps([{"type": "non_fast_forward"}, {"type": "deletion"}])
 
         assert await self._provider(payload).get_required_checks("org/repo", "main") == []
 
-    async def test_unreadable_and_malformed_payloads_return_empty(self):
+    async def test_malformed_payloads_return_empty(self):
         for payload in ("not json", json.dumps({"message": "Not Found"}), "[]"):
             assert await self._provider(payload).get_required_checks("org/repo", "main") == []

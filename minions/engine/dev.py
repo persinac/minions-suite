@@ -127,34 +127,58 @@ async def _try_complete_task(engine: JobEngine, task: Task, label: str) -> None:
                 logger.warning("%s: could not fail task %s: %s", label, task.id, e)
 
 
-PASSING_CHECK_CONCLUSIONS = {"success", "neutral", "skipped"}
+# mergeable_state values that mean GitHub would accept the merge.
+# `unstable` = a NON-required check is failing; branch protection permits it, so
+# overriding that here would be this gate second-guessing the ruleset.
+MERGEABLE_STATES = {"clean", "unstable", "has_hooks"}
+
+# Why each refusal, for a log line that points at the actual problem.
+BLOCKING_STATES = {
+    "blocked": "required checks or reviews not satisfied",
+    "dirty": "merge conflicts with the base branch",
+    "behind": "base branch has moved and strict checks are required",
+    "draft": "pull request is still a draft",
+}
 
 
 async def _ci_gate_passes(engine: JobEngine, project, provider, mr_id: str, target_branch: str) -> tuple[bool, str]:
-    """True if every required check is green on the PR head.
+    """Whether an agent PR may be merged.
 
-    Fails CLOSED. A repo with no required checks configured blocks agent merges
-    rather than sailing through — that is deliberate pressure to gate the
-    least-verified repos, not an oversight. renovate's should_auto_merge does the
-    opposite (empty ci_status counts as success); do not copy it.
+    Two layers, and the second one is not ours:
 
-    Reads required check names from branch protection at runtime rather than a
-    baked-in list, so this can never drift from what GitHub itself enforces. And
-    reads check-runs, not the combined commit status: GitHub Actions posts
-    check-runs, which are NOT aggregated into /commits/{sha}/status, so a
-    status-only gate sees a fully-gated repo as empty.
+    1. The repo must HAVE required checks. GitHub does not enforce anything on an
+       unprotected branch, so this is the only thing standing between an agent
+       and an ungated repo. Fails CLOSED — deliberate pressure on the
+       least-verified repos, the inverse of renovate's should_auto_merge where an
+       empty ci_status counts as success.
+
+    2. Whether those checks are green is GitHub's call, read via mergeable_state
+       and ultimately enforced by branch protection refusing the merge —
+       server-side, even for the App that opened the PR.
+
+    Deliberately no longer reads check-runs. That needs a Checks:read grant the
+    App does not have, and adding it requires the org to accept the permission.
+    It was duplicating a judgement GitHub already makes, and a duplicated
+    judgement is one that can drift. mergeable_state arrives with Pull
+    requests:read and folds required checks, required reviews and conflicts into
+    one value.
+
+    mergeable_state is computed asynchronously, so `unknown` is normal right
+    after a push. That is not treated as failure: the merge is attempted and
+    branch protection decides. Blocking on `unknown` would strand PRs on a
+    timing artefact.
     """
     if not engine.config.require_ci_pass:
         return True, "CI gate disabled (require_ci_pass=false)"
 
-    for method in ("get_required_checks", "get_check_runs", "get_pr_head_sha"):
+    for method in ("get_required_checks", "get_merge_state"):
         if not hasattr(provider, method):
             return False, f"provider cannot evaluate CI ({method} unavailable) — blocking"
 
     try:
         required = await provider.get_required_checks(project.project_id, target_branch)
     except Exception as e:
-        return False, f"could not read branch protection: {str(e)[:120]}"
+        return False, f"could not read branch rules: {str(e)[:120]}"
 
     if not required:
         return False, (
@@ -163,20 +187,19 @@ async def _ci_gate_passes(engine: JobEngine, project, provider, mr_id: str, targ
         )
 
     try:
-        sha = await provider.get_pr_head_sha(project.project_id, mr_id)
-        runs = await provider.get_check_runs(project.project_id, sha)
+        state = await provider.get_merge_state(project.project_id, mr_id)
     except Exception as e:
-        return False, f"could not read check-runs: {str(e)[:120]}"
+        return False, f"could not read merge state: {str(e)[:120]}"
 
-    missing = [name for name in required if name not in runs]
-    if missing:
-        return False, f"required checks never reported: {missing}"
+    if state in BLOCKING_STATES:
+        return False, f"GitHub reports mergeable_state={state} ({BLOCKING_STATES[state]}); required: {required}"
 
-    failed = [f"{name}={runs[name]}" for name in required if runs[name] not in PASSING_CHECK_CONCLUSIONS]
-    if failed:
-        return False, f"required checks not green: {failed}"
+    if state in MERGEABLE_STATES:
+        return True, f"GitHub reports mergeable_state={state}; required checks satisfied: {required}"
 
-    return True, f"all {len(required)} required checks green on {sha[:8]}"
+    # `unknown` and anything GitHub adds later. Let the merge attempt decide
+    # rather than inventing a verdict — branch protection is still in force.
+    return True, f"mergeable_state={state} (not yet computed) — deferring to branch protection on merge; required: {required}"
 
 
 async def _retry_or_fail_review(engine: JobEngine, task: Task, reason: str) -> None:
@@ -764,6 +787,17 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
                 else:
                     logger.info("CI gate passed for task %s: %s", task.id, ci_reason)
                     merge_result = await merge_provider.merge_mr(project.project_id, mr_id)
+
+                    # Branch protection refusing the merge IS the gate — the
+                    # pre-check above is only a hint, and mergeable_state can be
+                    # `unknown` when it runs. Record the refusal distinctly so it
+                    # does not read as a transient API failure.
+                    if not merge_result.get("merged"):
+                        detail = str(merge_result.get("error", "unknown"))
+                        await engine.db.record_event(
+                            job.id, "auto_merge_refused", "engine", f"task={task.id} {detail[:200]}"
+                        )
+                        logger.warning("Merge refused for task %s (branch protection or conflict): %s", task.id, detail[:200])
                 if merge_result.get("merged"):
                     logger.info("Auto-merged MR %s for task %s", mr_id, task.id)
                 else:

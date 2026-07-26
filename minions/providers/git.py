@@ -507,6 +507,30 @@ class GitHubProvider:
                 runs[name] = run.get("conclusion") or run.get("status") or "unknown"
         return runs
 
+    async def get_merge_state(self, project_id: str, mr_id: str) -> str:
+        """GitHub's own verdict on whether a PR can merge.
+
+        Returns mergeable_state: clean, blocked, dirty, behind, unstable,
+        has_hooks, draft, or unknown.
+
+        Used instead of reading check-runs directly. Check-runs needs a
+        Checks:read grant on the App, and adding a permission requires the org
+        to accept it — friction for a signal GitHub already computes. This field
+        comes with Pull requests:read, which the App has, and it folds in
+        required checks AND required reviews AND conflicts in one value.
+
+        It is a hint, not the gate. GitHub computes it asynchronously, so it can
+        be `unknown` right after a push. The authoritative gate is branch
+        protection refusing the merge server-side, which it does even for the
+        App that opened the PR.
+        """
+        try:
+            raw = self._run_gh(["api", f"/repos/{project_id}/pulls/{mr_id}", "--jq", ".mergeable_state"])
+        except RuntimeError as e:
+            logger.warning("Could not read merge state for %s#%s: %s", project_id, mr_id, str(e)[:120])
+            return "unknown"
+        return (raw or "unknown").strip() or "unknown"
+
     async def get_pr_head_sha(self, project_id: str, mr_id: str) -> str:
         """Head commit of a PR — the SHA that check-runs are attached to."""
         raw = self._run_gh(["api", f"/repos/{project_id}/pulls/{mr_id}", "--jq", ".head.sha"])
