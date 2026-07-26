@@ -26,6 +26,9 @@ spec:
         runAsUser: 1000
         runAsGroup: 1000
         fsGroup: 1000
+        # Skip the recursive chown of every mounted volume unless the volume
+        # root's ownership is actually wrong. See minion-suite/deployment.yaml.
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: minion-dashboard

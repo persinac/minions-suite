@@ -30,6 +30,14 @@ spec:
         runAsUser: 1000
         runAsGroup: 1000
         fsGroup: 1000
+        # Without this the kubelet recursively chowns EVERY file on the /repos
+        # PVC on every single mount. That volume holds git checkouts for 33
+        # repos, so the pod sat in Init:0/2 behind
+        # VolumePermissionChangeInProgress for minutes — and it gets worse as
+        # more repos are cloned, turning a routine rollout into an outage that
+        # scales with usage. OnRootMismatch chowns only when the volume root's
+        # ownership is already wrong, which after the first mount it never is.
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile: {type: RuntimeDefault}
       initContainers:
         # Mandatory, not defensive. `--server` runs preflight and, on failure,
