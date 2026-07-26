@@ -158,7 +158,22 @@ spec:
               readOnly: true
           resources:
             requests: {memory: "1Gi", cpu: "500m"}
-            limits: {memory: "4Gi", cpu: "2"}
+            # 4Gi was not enough to hold an agent AND the test suite it shells
+            # out to run. In-process agents execute inside THIS container: the
+            # engine holds the whole conversation in memory (one engineer
+            # reached 1.3M input tokens) and then the agent runs the target
+            # repo's tests as a subprocess — management-api is 1367 tests.
+            #
+            # Every failed run died at the same subtask, "run pytest to verify
+            # no regressions", with the code changes already written. The
+            # container went down, the pod entered Completed (exit 0, so no
+            # OOMKilled event and no restart to find), and the ReplicaSet
+            # replaced it — which read as mysterious pod churn for hours.
+            #
+            # The node has 62Gi allocatable at 12% requested, so this is
+            # headroom that already exists. It scales with the largest test
+            # suite an agent may run, not with minions itself.
+            limits: {memory: "12Gi", cpu: "3"}
       volumes:
         # In-process agents check out repos under repo_base_dir (/repos,
         # config.py:242). Phase 2 K8s dispatch clones into a per-Job emptyDir
