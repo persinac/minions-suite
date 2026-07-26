@@ -21,10 +21,12 @@ Two things are set up here:
   me who you are" — the agent would do all its work and fail at the last step.
 
 Known limitation: checkouts are keyed by ``repo_path`` from the registry, so two
-jobs targeting the same repo share one working tree on the PVC. This function
-therefore never resets an existing checkout — doing so would delete the
-uncommitted work of a job already running there. It fetches instead and reports
-what it found, leaving the branch state to the agent. Concurrent jobs against a
+jobs targeting the same repo share one working tree on the PVC. A DIRTY tree is
+therefore never reset — doing so would delete the uncommitted work of a job
+already running there. A CLEAN tree is returned to the default branch, because
+it has nothing to lose and leaving it parked on the previous job's branch is its
+own hazard: a branch cut from there inherits commits the current job did not
+make, which auto_merge would then land under an unrelated ticket. Concurrent jobs against a
 single repo still need per-job worktrees; that arrives with K8s dispatch, which
 gives each Job its own emptyDir.
 """
@@ -102,8 +104,9 @@ def _is_git_repo(path: Path) -> bool:
 async def ensure_checkout(clone_url: str, dest: str, default_branch: str = "main") -> bool:
     """Make sure `dest` holds a usable checkout of `clone_url`.
 
-    Clones when absent. When present, fetches but does NOT reset — see the
-    module docstring. Returns True when the checkout is usable.
+    Clones when absent. When present, fetches, then returns a CLEAN tree to
+    `default_branch` while leaving a DIRTY one alone — see the module docstring.
+    Returns True when the checkout is usable.
     """
     if not clone_url:
         logger.warning("No clone_url configured for %s — agents will run against a bare directory", dest)
@@ -121,13 +124,40 @@ async def ensure_checkout(clone_url: str, dest: str, default_branch: str = "main
         _, branch = await _run_git("rev-parse", "--abbrev-ref", "HEAD", cwd=dest)
         _, dirty = await _run_git("status", "--porcelain", cwd=dest)
         if dirty:
+            # Somebody may be mid-work here. Resetting would delete it, which is
+            # why this function has never reset at all.
             logger.warning(
                 "Checkout %s has %d uncommitted file(s) on branch %s from a previous job — not resetting",
                 dest,
                 len(dirty.splitlines()),
                 branch,
             )
+        elif branch != default_branch:
+            # CLEAN tree on a stale branch: nothing to lose, so return to base.
+            #
+            # The docstring's warning is about destroying uncommitted work; a
+            # clean tree has none. Leaving it parked on the last job's branch is
+            # its own hazard: job 2e9cd9e3 started with management-api still on
+            # feat-job-7c2f5e39-management-api carrying that job's commit, so a
+            # branch cut from there inherits work the current job did not do and
+            # its ticket does not describe — which auto_merge would then land.
+            #
+            # It also confuses the agent. Finding its changes apparently already
+            # made, it has nothing to commit, and the git steps go strange from
+            # there.
+            code, out = await _run_git("checkout", "--force", default_branch, cwd=dest)
+            if code != 0:
+                logger.warning("Could not return %s to %s: %s", dest, default_branch, out)
+                return True
+            code, out = await _run_git("reset", "--hard", f"origin/{default_branch}", cwd=dest)
+            if code != 0:
+                logger.warning("Could not reset %s to origin/%s: %s", dest, default_branch, out)
+                return True
+            logger.info("Checkout %s returned from stale branch %s to %s", dest, branch, default_branch)
         else:
+            # Already on base — still fast-forward, or the agent starts from a
+            # stale main and its diff includes commits already merged upstream.
+            await _run_git("reset", "--hard", f"origin/{default_branch}", cwd=dest)
             logger.info("Checkout %s up to date on branch %s", dest, branch)
         return True
 
