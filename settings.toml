@@ -184,6 +184,17 @@ provider = "github"
 # TRELLO_API_KEY + TRELLO_TOKEN + TRELLO_BOARD_ID are all present. Those live in
 # Doppler mcp-minions/prd, so it activates automatically in this environment.
 
+[production.pollers.trello]
+# One job admitted from the queue per 8 hours. Agent tokens dominate the bill —
+# an engineer alone hit $8.18 on job 095146b8 — so how often a job may START is
+# the only reliable cap on total spend. Also leaves a window to push prompt or
+# config changes between runs rather than mid-flight.
+#
+# Separate from poll_interval on purpose: the same loop monitors running jobs
+# and moves their cards, so throttling the poll itself would strand finished
+# cards in "In progress" for 8 hours.
+min_job_interval = 28800
+
 [production.pollers.gitlab_issues]
 enabled = false
 

@@ -299,6 +299,18 @@ class Config:
     # treats every ticket in it as work, including ones it has no toolchain
     # for and can only fail at. Opt-in by default.
     trello_require_label: bool = True
+    # Minimum gap between two jobs admitted FROM THE QUEUE, in seconds. 0 disables.
+    #
+    # Deliberately separate from trello_poll_interval: the same loop also runs
+    # _monitor_jobs(), which moves cards for finished work, so slowing the poll
+    # to throttle spend would also leave completed cards sitting in "In progress"
+    # for hours. This throttles intake only — monitoring stays responsive.
+    #
+    # Measured against job CREATION time in the database, not an in-process
+    # timer, so a pod restart cannot reset the clock and let a fresh job through
+    # early. Does not gate MCP submit_spec: a human asking for work directly is
+    # not the runaway case this guards against.
+    trello_min_job_interval: int = 0
 
     # Renovate auto-merge (optional)
     renovate_enabled: bool = False
@@ -419,6 +431,7 @@ class Config:
             trello_board_id=os.getenv("TRELLO_BOARD_ID", ""),  # credential-adjacent
             trello_poll_interval=_env_or_int("TRELLO_POLL_INTERVAL", _get_nested("pollers", "trello", "poll_interval"), 180),
             trello_require_label=_env_or_bool("TRELLO_REQUIRE_LABEL", _get_nested("pollers", "trello", "require_label"), True),
+            trello_min_job_interval=_env_or_int("TRELLO_MIN_JOB_INTERVAL", _get_nested("pollers", "trello", "min_job_interval"), 0),
             # -- Pollers: Renovate --
             renovate_enabled=_env_or_bool("RENOVATE_ENABLED", _get_nested("pollers", "renovate", "enabled"), False),
             renovate_poll_interval=_env_or_int("RENOVATE_POLL_INTERVAL", _get_nested("pollers", "renovate", "poll_interval"), 60),

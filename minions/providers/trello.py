@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -126,6 +126,31 @@ class TrelloPoller:
         if self._active:
             logger.info("Rehydrated %d active job(s) from DB", len(self._active))
 
+    async def _intake_interval_elapsed(self) -> bool:
+        """Whether enough time has passed since the last job to admit another.
+
+        Throttles how fast the queue is drained, independently of how often we
+        poll — `_poll` also monitors running jobs and moves their cards, so
+        slowing the whole loop to cap spend would strand finished cards in
+        "In progress" for hours.
+
+        Measured against job creation time in the database rather than an
+        in-process timestamp: a pod restart must not reset the clock and let a
+        job through early. Counts ALL jobs in the window, including ones
+        submitted over MCP, so a manual submission also pushes the queue's next
+        pickup out — the point is to cap total spend, not to cap one source.
+        """
+        interval = self.config.trello_min_job_interval
+        if interval <= 0:
+            return True
+
+        since = (datetime.now(UTC) - timedelta(seconds=interval)).isoformat()
+        recent = await self.db.count_jobs_since(since)
+        if recent > 0:
+            logger.debug("Trello intake throttled: %d job(s) started within the last %ds", recent, interval)
+            return False
+        return True
+
     async def _poll(self):
         """One poll cycle: check for new cards, monitor running jobs."""
         await self._monitor_jobs()
@@ -134,6 +159,9 @@ class TrelloPoller:
         active_count = max(len(self._active), len(db_active))
 
         if active_count >= self.config.max_concurrent_jobs:
+            return
+
+        if not await self._intake_interval_elapsed():
             return
 
         cards = await self._get_cards(self._list_ids[LIST_ONDECK], require_minion_label=self.config.trello_require_label)
@@ -276,5 +304,5 @@ def _format_elapsed(started_at: str) -> str:
         elif secs < 3600:
             return f"{secs // 60}m {secs % 60}s"
         return f"{secs // 3600}h {(secs % 3600) // 60}m"
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return "?"
