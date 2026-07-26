@@ -674,7 +674,74 @@ async def get_review_feedback(engine: JobEngine, job_id: str, task: Task) -> str
             feedback_parts.append(msg.content)
     if feedback_parts:
         return "\n\n---\n\n".join(feedback_parts)
-    return "The reviewer requested changes but no specific feedback was found in messages."
+
+    # Nothing in the messages table — which is the NORMAL case, not an edge one.
+    #
+    # The specialist fan-out posts its findings as GitHub PR reviews and writes
+    # nothing here, so this lookup has always come up empty and every revision
+    # agent received the fallback string below instead of the review. It was
+    # then told to revise without being told what was wrong: on job 263b8b3e
+    # three reviewers unanimously blocked PR #81 with file-and-line-cited
+    # findings, the revision engineer ran to completion (627k tokens, status
+    # done) and committed nothing, and the dedup guard correctly refused to
+    # re-review an unchanged PR. The loop looked healthy at every layer while
+    # accomplishing nothing.
+    #
+    # So go and read the reviews from where they actually live.
+    pr_reviews = await _fetch_pr_review_bodies(engine, task)
+    if pr_reviews:
+        return pr_reviews
+
+    # Genuinely nothing to act on. Say so plainly rather than implying the
+    # reviewer simply had no comments — a revision agent with no feedback
+    # cannot succeed, and should not burn a full budget discovering that.
+    return (
+        "FEEDBACK LOOKUP FAILED: the reviewers requested changes but their comments could not be "
+        "retrieved from either the message log or the pull request. Do not guess at what to change. "
+        "Report this failure instead of making speculative edits."
+    )
+
+
+async def _fetch_pr_review_bodies(engine: JobEngine, task: Task) -> str:
+    """Review bodies for `task`'s PR, straight from the git provider.
+
+    The reviewers' actual output lives on the PR, not in the messages table.
+    Returns "" on any failure — a provider hiccup must not be mistaken for
+    "the reviewer had nothing to say", which is why the caller distinguishes
+    empty-from-here from feedback-found.
+    """
+    import json as _json
+    import re as _re
+    import subprocess
+
+    url = task.pr_url or task.mr_url or ""
+    match = _re.search(r"github\.com/([^/\s]+/[^/\s]+)/pull/(\d+)", url)
+    if not match:
+        return ""
+    repo, number = match.group(1), match.group(2)
+
+    try:
+        result = subprocess.run(
+            ["gh", "api", f"repos/{repo}/pulls/{number}/reviews", "--jq", "[.[] | select(.body != \"\") | {state, body}]"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            logger.warning("Could not fetch PR reviews for %s#%s: %s", repo, number, (result.stderr or "")[:160])
+            return ""
+        reviews = _json.loads(result.stdout or "[]")
+    except Exception as e:
+        logger.warning("Could not fetch PR reviews for %s#%s: %s", repo, number, e)
+        return ""
+
+    blocking = [r for r in reviews if r.get("state") == "CHANGES_REQUESTED"]
+    chosen = blocking or reviews
+    if not chosen:
+        return ""
+
+    logger.info("Loaded %d PR review(s) as revision feedback for task %s", len(chosen), task.id)
+    return "\n\n---\n\n".join(r.get("body", "") for r in chosen)
 
 
 async def _run_one_specialist(
