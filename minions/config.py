@@ -215,6 +215,15 @@ class Config:
     # classifier still pulls this down to the easy tier on trivial tickets.
     model_reviewer: str = "claude-sonnet-5"
 
+    # Engineer override. Empty = follow the difficulty tier, so behaviour is
+    # unchanged until set deliberately. This is the lever that matters: the
+    # engineer was 79% of the one measured job's cost, and its workload is
+    # input-dominated (3.85M in vs 53k out), so a cheaper input rate compounds.
+    # Provider prefix is load-bearing — 'moonshot/kimi-k2.6' is priced by
+    # LiteLLM, 'openai/kimi-k2.6' is not, and an unpriced model makes the spend
+    # ceilings silently inert. assert_priceable refuses that.
+    model_engineer: str = ""
+
     # Git provider defaults
     git_provider: str = "gitlab"
     gitlab_url: str = ""
@@ -368,6 +377,7 @@ class Config:
             model_medium=_env_or("MODEL_MEDIUM", _get("engine", "model_medium"), "claude-sonnet-5"),
             model_hard=_env_or("MODEL_HARD", _get("engine", "model_hard"), "claude-opus-5"),
             model_reviewer=_env_or("MODEL_REVIEWER", _get("engine", "model_reviewer"), "claude-sonnet-5"),
+            model_engineer=_env_or("MODEL_ENGINEER", _get("engine", "model_engineer"), ""),
             agent_log_dir=_env_or("AGENT_LOG_DIR", _get("engine", "agent_log_dir"), str(base / "logs" / "agents")),
             agent_dispatch_mode=_env_or("AGENT_DISPATCH_MODE", _get("engine", "agent_dispatch_mode"), "in_process"),
             # -- Database --

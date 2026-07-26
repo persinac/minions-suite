@@ -6,10 +6,8 @@ for the same task. ENGINE_ENABLED is the primary defence (one engine per
 deployment); `expected_status` is the backstop when that is broken by hand.
 """
 
-import pytest
 
 from minions.core.models import Job, JobStatus
-
 
 # The state machine only permits single steps (JOB_TRANSITIONS), so a fixture
 # cannot jump straight to an arbitrary status — it has to walk the happy path.

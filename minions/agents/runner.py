@@ -99,6 +99,16 @@ async def run_agent(
         role_cfg = timeout_cfg.roles.get(task.agent_role)
         timeout = role_cfg.task_timeout_seconds if role_cfg else config.agent_timeout
 
+        # Refuse a model LiteLLM cannot price while ceilings are configured.
+        # completion_cost() returns 0 for an unknown model, so the limits below
+        # would never fire while the config still claims they are on — worse than
+        # having no limits, because nothing looks wrong. Checked here rather than
+        # at config load because the model is resolved per agent (difficulty
+        # tier, reviewer/engineer override, per-project pin).
+        from ..classifier import assert_priceable
+
+        assert_priceable(model, config, role=str(task.agent_role) if task and task.agent_role else "agent")
+
         # Turns and dollars are both bounded. Turns alone were not a cost
         # control: at 100 turns a single engineer billed $20.57 by turn 64 with
         # room to spend half as much again. The cost limit is the real ceiling;

@@ -532,7 +532,7 @@ async def run_engineer(engine: JobEngine, job: Job, task: Task, is_revision: boo
         else:
             await engine.db.update_task(task.id, **update_kwargs)
 
-    agent = Agent(job_id=job.id, role=task.agent_role, task_id=task.id, model=resolve_model(engine.config, job.difficulty))
+    agent = Agent(job_id=job.id, role=task.agent_role, task_id=task.id, model=resolve_model(engine.config, job.difficulty, is_engineer=True))
     agent = await engine.db.create_agent(agent)
 
     action = "retry" if is_retry else ("revision" if is_revision else "development")

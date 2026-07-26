@@ -24,28 +24,27 @@ def _make_agent(agent_id="agent-1", job_id="job-1", task_id="task-1", role=Agent
 
 
 def _mock_engine(db):
-    """Build a minimal mock engine wired to a real in-memory DB."""
+    """Build a minimal mock engine wired to a real in-memory DB.
+
+    config is a REAL Config, not a MagicMock. A MagicMock satisfies every
+    attribute access and returns a MagicMock, which silently becomes garbage the
+    moment production code compares it to a number or hands it to pydantic. That
+    cost three separate debugging rounds as ceilings, caps and model overrides
+    were added — each new config field broke these tests in a way that looked
+    like a product bug. Overriding named fields on a real Config fails loudly
+    instead, and new fields arrive with sane defaults.
+    """
+    from minions.config import Config
+
     engine = MagicMock()
     engine.db = db
-    engine.config = MagicMock()
+    engine.config = Config.from_env()
     engine.config.model = "test-model"
     engine.config.arbiter_enabled = False
     engine.config.max_revisions = 3
-    # Real numbers, not MagicMocks: launch_spec_analyst compares these against
-    # int/float, and a MagicMock silently satisfies attribute access while
-    # raising on comparison.
-    engine.config.max_jobs_per_hour = 1000
-    engine.config.max_jobs_per_month = 10000
-    # Real numbers: the reviewer fan-out compares these against int/float, and a
-    # MagicMock satisfies attribute access while raising on comparison.
-    engine.config.job_cost_limit_usd = 1000.0
-    engine.config.agent_cost_limit_usd = 100.0
-    engine.config.require_ci_pass = False
-    engine.config.model_reviewer = "test-reviewer-model"
     engine.config.classifier_enabled = False
-    engine.config.model_easy = "test-easy"
-    engine.config.model_medium = "test-medium"
-    engine.config.model_hard = "test-hard"
+    engine.config.require_ci_pass = False
+    engine.config.model_engineer = ""
     engine.registry = {}
     engine._k8s_enabled = False
     engine._has_running_agent = AsyncMock(return_value=False)
@@ -871,8 +870,10 @@ class TestReviewAgentCreation:
         mock_result._review_verdict = "approve"
         mock_result._review_comments_posted = 0
 
-        with patch("minions.engine.dev.run_agent", new_callable=AsyncMock, return_value=mock_result) as mock_run:
-            with patch("minions.engine.review._create_provider_for_project") as mock_provider_factory:
+        with (
+            patch("minions.engine.dev.run_agent", new_callable=AsyncMock, return_value=mock_result) as mock_run,
+            patch("minions.engine.review._create_provider_for_project") as mock_provider_factory,
+        ):
                 mock_provider = AsyncMock()
                 mock_provider.get_changed_files.return_value = ["file.py"]
                 mock_provider_factory.return_value = mock_provider
@@ -918,8 +919,10 @@ class TestReviewAgentCreation:
         mock_result._review_verdict = "approve"
         mock_result._review_comments_posted = 0
 
-        with patch("minions.engine.dev.run_agent", new_callable=AsyncMock, return_value=mock_result) as mock_run:
-            with patch("minions.engine.review._create_provider_for_project") as mock_provider_factory:
+        with (
+            patch("minions.engine.dev.run_agent", new_callable=AsyncMock, return_value=mock_result),
+            patch("minions.engine.review._create_provider_for_project") as mock_provider_factory,
+        ):
                 mock_provider = AsyncMock()
                 mock_provider.get_changed_files.return_value = []
                 mock_provider_factory.return_value = mock_provider

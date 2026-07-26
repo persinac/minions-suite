@@ -9,7 +9,6 @@ first, with no error: the job reports a clean review, having actually run one of
 five. That is the failure this file pins down.
 """
 
-import pytest
 
 from minions.core.models import AgentRole, Task, TaskStatus
 

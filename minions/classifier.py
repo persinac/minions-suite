@@ -209,7 +209,58 @@ async def classify_difficulty(spec: str, config) -> tuple[str | None, str]:
     return difficulty, reason
 
 
-def resolve_model(config, difficulty: str | None, project_model: str = "", is_reviewer: bool = False) -> str:
+class UnpriceableModelError(RuntimeError):
+    """Raised when a configured model has no cost data and ceilings are enabled."""
+
+
+def is_priceable(model: str) -> bool:
+    """Whether LiteLLM can compute a cost for this model string.
+
+    Matters because the spend ceilings are derived from litellm.completion_cost,
+    which returns 0.0 for an unknown model. A model LiteLLM cannot price does not
+    make agents free — it makes the $8 agent limit and the $25 job limit silently
+    inert, which is strictly worse than having no limits, because the config
+    still says they are on.
+
+    Provider prefixes matter here: `moonshot/kimi-k2.6` is priced,
+    `openai/kimi-k2.6` routes fine and is NOT, and bare `kimi-k2.6` does not
+    route at all.
+    """
+    import litellm
+
+    if not model:
+        return False
+    if model in litellm.model_cost:
+        return True
+    # LiteLLM also matches on the bare name for some providers.
+    return model.split("/")[-1] in litellm.model_cost
+
+
+def assert_priceable(model: str, config, role: str = "agent") -> None:
+    """Refuse an unpriceable model while spend ceilings are supposed to apply.
+
+    Allowed when both ceilings are disabled: the guard exists to protect the
+    ceilings, so with none configured there is nothing to protect and a model
+    LiteLLM has not catalogued yet should not be blocked.
+    """
+    if is_priceable(model):
+        return
+
+    ceilings_on = (getattr(config, "agent_cost_limit_usd", 0) or 0) > 0 or (getattr(config, "job_cost_limit_usd", 0) or 0) > 0
+
+    if not ceilings_on:
+        logger.warning("Model %r has no LiteLLM cost data; spend will record as $0 (ceilings are disabled)", model)
+        return
+
+    raise UnpriceableModelError(
+        f"Model {model!r} for {role} has no LiteLLM cost data, so completion_cost() returns 0 "
+        f"and the configured spend ceilings would never fire. Use a priced model string "
+        f"(provider prefix matters: 'moonshot/kimi-k2.6' is priced, 'openai/kimi-k2.6' is not), "
+        f"or set AGENT_COST_LIMIT_USD=0 and JOB_COST_LIMIT_USD=0 to accept unbounded spend deliberately."
+    )
+
+
+def resolve_model(config, difficulty: str | None, project_model: str = "", is_reviewer: bool = False, is_engineer: bool = False) -> str:
     """Pick the model for an agent.
 
     Precedence: an explicit per-project model wins (someone chose it
@@ -239,5 +290,14 @@ def resolve_model(config, difficulty: str | None, project_model: str = "", is_re
             if difficulty == EASY and tier_model:
                 return tier_model
             return reviewer_default
+
+    if is_engineer:
+        # Engineers are ~79% of job cost and the workload is input-dominated
+        # (3.85M in vs 53k out on the one measured job), so this is the lever
+        # worth pointing at a cheaper vendor. Empty = follow the difficulty tier,
+        # which keeps behaviour unchanged until someone sets it deliberately.
+        engineer_default = getattr(config, "model_engineer", "")
+        if engineer_default:
+            return engineer_default
 
     return tier_model or config.model

@@ -8,8 +8,6 @@ verdicts collected and collapsed, and the merge decision taken from the result.
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 from minions.core.models import Agent, AgentRole, Task, TaskStatus
 
 

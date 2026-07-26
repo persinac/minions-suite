@@ -6,6 +6,8 @@ goes wrong leaves the job unclassified, and unclassified jobs use the default
 model. It can make a job cheaper or leave it alone, never break it.
 """
 
+import typing
+
 import pytest
 
 from minions.classifier import EASY, HARD, MEDIUM, _parse, classify_difficulty, resolve_model, score_to_difficulty
@@ -180,7 +182,7 @@ class TestFailOpen:
             message = _Msg()
 
         class _Resp:
-            choices = [_Choice()]
+            choices: typing.ClassVar = [_Choice()]
 
         async def _fake(**kwargs):
             return _Resp()
@@ -203,7 +205,7 @@ class TestFailOpen:
             message = _Msg()
 
         class _Resp:
-            choices = [_Choice()]
+            choices: typing.ClassVar = [_Choice()]
 
         async def _fake(**kwargs):
             seen.update(kwargs)

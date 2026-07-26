@@ -12,7 +12,6 @@ now on for every project, so that same path merges to main.
 Found by the ui-integration-tests agent while scoping the CI gate.
 """
 
-import pytest
 
 from minions.core.models import AgentRole, Task, TaskStatus
 

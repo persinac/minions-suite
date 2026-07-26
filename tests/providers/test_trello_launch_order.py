@@ -13,7 +13,6 @@ max_concurrent_jobs did not throttle it either: the slot count is derived from
 active jobs, and no job ever got created, so there were always free slots.
 """
 
-import pytest
 
 from minions.config import Config
 

@@ -30,7 +30,7 @@ class TestConnectionStrings:
 
         assert REDACTED in out
         for secret in ("hunter2", "s3cr3tpw", "natspass", "guest:guest"):
-            assert secret not in out or secret == "guest:guest" and "guest:[REDACTED]" in out
+            assert secret not in out or (secret == "guest:guest" and "guest:[REDACTED]" in out)
 
     def test_scheme_host_and_user_survive(self):
         """A fully-masked URL is useless for debugging — keep what is not secret."""
