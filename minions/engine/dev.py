@@ -2,7 +2,7 @@
 
 import json
 import logging
-from datetime import UTC
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from ..agents.prompt import build_agent_prompt
@@ -25,6 +25,51 @@ async def _all_subtasks_terminal(engine: JobEngine, task_id: str) -> bool:
     if not subtasks:
         return True  # No subtasks — nothing to gate on
     return all(s.status in SUBTASK_TERMINAL for s in subtasks)
+
+
+# Upper bound on how long a stale-looking agent may defer orphan recovery.
+# Past this, the agent is judged regardless of ordering — deferring forever
+# would turn a slow recovery into a silent hang, which is the worse failure.
+ORPHAN_GRACE_SECONDS = 60
+
+
+def _parse_ts(value) -> datetime | None:
+    """Parse a timestamp that may already be a datetime or an ISO string."""
+    if not value:
+        return None
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value
+
+
+def _agent_predates_current_attempt(agent, task: Task) -> bool:
+    """True if `agent` is a leftover from an attempt before the task's current one.
+
+    Claiming a task sets it IN_PROGRESS and *then* spawns run_engineer, which
+    creates the new agent row — so for a moment the newest agent on record
+    started BEFORE the task was last modified. Recovering against it consumes an
+    attempt for work that is already being redone: on job 095146b8 that ate
+    attempt 3 six seconds after attempt 2, and the task failed with
+    max_attempts exhausted having only ever run a single agent.
+
+    An agent that started at or after the task's last update belongs to this
+    attempt and is judged normally, so a genuinely orphaned task still recovers
+    immediately. Unreadable timestamps also fall through to judging. And the
+    deferral is bounded by ORPHAN_GRACE_SECONDS, so a task whose updated_at
+    moved for some unrelated reason cannot defer recovery forever.
+    """
+    agent_started = _parse_ts(getattr(agent, "started_at", None))
+    task_updated = _parse_ts(getattr(task, "updated_at", None))
+    if not agent_started or not task_updated:
+        return False
+    if agent_started >= task_updated:
+        return False
+    return (datetime.now(UTC) - task_updated).total_seconds() < ORPHAN_GRACE_SECONDS
 
 
 async def _label_minions_mr(engine: JobEngine, task: Task) -> None:
@@ -87,6 +132,25 @@ async def _try_complete_task(engine: JobEngine, task: Task, label: str) -> None:
     current = await engine.db.get_task(task.id)
     if current:
         task = current
+
+    # Single-owner guard. TWO paths land here for the same finished agent:
+    # run_engineer's own completion handler, and the poll loop's IN_PROGRESS
+    # orphan recovery, which sees `latest_agent.status == "done"` and concludes
+    # nobody updated the task. They fire ~1s apart, and each one that reaches
+    # the retry branch below increments `attempt` off its own stale read.
+    #
+    # On job 095146b8 that burned all three attempts in TWELVE SECONDS
+    # (attempt 2 logged twice, then 3, then FAILED) without ever launching a
+    # second agent -- so max_attempts=3 behaved as max_attempts=1 and a
+    # cost-limited engineer got no real retry.
+    #
+    # Whoever wins moves the task out of IN_PROGRESS; the loser sees that here
+    # and returns. This is the retry-path instance of the same ambiguity that
+    # wedged revisions: "nobody handled this" is indistinguishable from
+    # "someone else is handling it right now" unless one of them claims it.
+    if task.status != TaskStatus.IN_PROGRESS:
+        logger.debug("%s: task %s is already %s — completion handled elsewhere", label, task.id, task.status)
+        return
 
     needs_pr = task.agent_role in engineer_roles
     has_pr = bool(task.pr_url)
@@ -1012,6 +1076,17 @@ async def manage_dev_tasks(engine: JobEngine, job: Job):
                     latest_agent = await engine.db.get_agent_for_task(task.id)
 
             if latest_agent and latest_agent.status in ("failed", "done"):
+                # The agent may be a leftover from the PREVIOUS attempt: a task
+                # is claimed (IN_PROGRESS) before run_engineer creates the new
+                # agent row, so briefly the newest agent on record is the old
+                # finished one. Recovering against it consumes an attempt for
+                # work that is already being redone — on job 095146b8 that ate
+                # attempt 3 six seconds after attempt 2, and the task failed
+                # with max_attempts exhausted having only ever run one agent.
+                if _agent_predates_current_attempt(latest_agent, task):
+                    logger.debug("orphan recovery: agent %s predates task %s's current attempt — deferring", latest_agent.id, task.id)
+                    continue
+
                 if latest_agent.status == "done":
                     # Agent succeeded but task wasn't updated — check subtasks first
                     await _try_complete_task(engine, task, "orphan recovery")
