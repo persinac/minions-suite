@@ -105,9 +105,19 @@ def cmd_doctor(args):
 
 def _report_repo(repo: str):
     full = f"{ORG}/{repo}"
-    print(f"\n  {full}")
 
-    rules = gh_json("api", f"/repos/{full}/rules/branches/main")
+    # Resolve the default branch rather than assuming `main`. Five of the fleet's
+    # repos are on `master`, and hardcoding `main` reported them as ungated when
+    # the ruleset covered them correctly — a scary-looking false positive.
+    code, branch = gh("api", f"/repos/{full}", "--jq", ".default_branch")
+    if code != 0 or not branch:
+        print(f"\n  {full}")
+        bad("cannot resolve default branch")
+        return
+
+    print(f"\n  {full}  (default branch: {branch})")
+
+    rules = gh_json("api", f"/repos/{full}/rules/branches/{branch}")
     if rules is None:
         bad(f"{full}: cannot read branch rules")
         return
