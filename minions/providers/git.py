@@ -278,8 +278,13 @@ class GitHubProvider:
     def __init__(self, token: str = ""):
         self.token = token
 
-    def _run_gh(self, args: list[str], timeout: int = 30) -> str:
-        """Run a gh CLI command and return stdout."""
+    def _run_gh(self, args: list[str], timeout: int = 30, stdin: str | None = None) -> str:
+        """Run a gh CLI command and return stdout.
+
+        `stdin` feeds a JSON body to `gh api --input -`. Review comment bodies
+        contain newlines, quotes and backticks; passing those as argv is a
+        quoting minefield, and `--field` form-encodes rather than sending JSON.
+        """
         env = None
         if self.token:
             import os
@@ -291,6 +296,7 @@ class GitHubProvider:
             text=True,
             timeout=timeout,
             env=env,
+            input=stdin,
         )
         if result.returncode != 0:
             raise RuntimeError(f"gh {' '.join(args)} failed: {result.stderr[:200]}")
@@ -367,21 +373,60 @@ class GitHubProvider:
         ]
 
     async def post_inline_comment(self, project_id: str, mr_id: str, comment: InlineComment) -> dict:
-        # GitHub doesn't support inline PR comments via gh CLI easily.
-        # Fall back to a regular comment with file/line reference.
-        body = f"**{comment.file_path}:{comment.line}**\n\n{comment.body}"
-        self._run_gh(
-            [
-                "pr",
-                "comment",
-                mr_id,
-                "--repo",
+        """Post a genuinely inline review comment, anchored to path:line.
+
+        Previously this always degraded to a top-level PR comment, on the belief
+        that gh could not do inline. `gh pr comment` cannot, but `gh api` posts
+        to the pulls/{n}/comments endpoint fine — it just needs the head SHA and
+        a JSON body rather than form fields.
+
+        Anchoring is the point: the reviewer personas each require exactly one
+        `<new-path>:<line>` per finding so it lands on the offending line. A
+        top-level blob of twenty findings is markedly less useful to whoever has
+        to act on it.
+
+        Falls back to a top-level comment when the line is not part of the diff
+        (GitHub 422s those). A finding is never dropped — worst case it loses its
+        anchor and says so.
+        """
+        try:
+            sha = await self.get_pr_head_sha(project_id, mr_id)
+        except RuntimeError as e:
+            logger.warning("Could not resolve head SHA for %s#%s: %s", project_id, mr_id, str(e)[:120])
+            return await self._post_unanchored(project_id, mr_id, comment, "head SHA unavailable")
+
+        payload = {
+            "commit_id": sha,
+            "path": comment.file_path,
+            "line": comment.line,
+            "side": comment.side,
+            "body": comment.body,
+        }
+
+        try:
+            self._run_gh(
+                ["api", "--method", "POST", f"/repos/{project_id}/pulls/{mr_id}/comments", "--input", "-"],
+                stdin=json.dumps(payload),
+            )
+            return {"posted": True, "inline": True, "path": comment.file_path, "line": comment.line}
+        except RuntimeError as e:
+            # 422 is the common one: the line is not in the diff, so it cannot be
+            # anchored. Unprocessable, not retryable — degrade rather than lose it.
+            logger.info(
+                "Inline anchor rejected for %s:%s on %s#%s (%s) — posting unanchored",
+                comment.file_path,
+                comment.line,
                 project_id,
-                "--body",
-                body,
-            ]
-        )
-        return {"posted": True, "inline": False}
+                mr_id,
+                str(e)[:120],
+            )
+            return await self._post_unanchored(project_id, mr_id, comment, "line not in diff")
+
+    async def _post_unanchored(self, project_id: str, mr_id: str, comment: InlineComment, reason: str) -> dict:
+        """Last-resort top-level comment, keeping the location in the text."""
+        body = f"**{comment.file_path}:{comment.line}**\n\n{comment.body}\n\n_(not anchored inline: {reason})_"
+        self._run_gh(["pr", "comment", mr_id, "--repo", project_id, "--body", body])
+        return {"posted": True, "inline": False, "reason": reason}
 
     async def get_required_checks(self, project_id: str, branch: str) -> list[str]:
         """Required status-check names from branch protection, or [] if none.
