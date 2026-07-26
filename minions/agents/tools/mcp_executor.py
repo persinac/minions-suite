@@ -11,14 +11,40 @@ communicate with the MCP server over HTTP (separate path).
 """
 
 import asyncio
+import contextlib
 import json
 import logging
+import os
+import signal
 import subprocess
 from pathlib import Path
 
 from ...core.models import AgentRole, Job, Task
 
 logger = logging.getLogger(__name__)
+
+
+def _kill_process_group(proc) -> None:
+    """SIGKILL the process group of a subprocess started with start_new_session.
+
+    Only safe BECAUSE of start_new_session=True: the group id equals the child's
+    pid, so this can never reach the server that spawned it. Killing the group
+    rather than the process matters because `sh -c "a | b"` leaves children that
+    outlive their parent shell.
+    """
+    if proc.returncode is not None:
+        return
+    with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        return
+    with contextlib.suppress(ProcessLookupError, OSError):
+        proc.kill()
+
+
+async def _reap(proc, timeout: float = 5.0) -> None:
+    """Wait for a killed subprocess so it does not linger as a zombie."""
+    with contextlib.suppress(TimeoutError, ProcessLookupError):
+        await asyncio.wait_for(proc.wait(), timeout=timeout)
 
 # State tools that route through the MCP server, mapped to the context
 # parameters that must be injected before calling the MCP function.
@@ -209,12 +235,36 @@ class McpToolExecutor:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=self.working_dir,
+                # Put the command in its own session/process group.
+                #
+                # In-process agents run INSIDE the server container, where the
+                # server is PID 1. Without this the shell and everything it
+                # spawns share PID 1's process group, so any command that
+                # signals its group — `kill 0`, a test harness tearing down its
+                # own workers, a Makefile's cleanup trap, `pkill -f python` —
+                # delivers that signal to the MCP server too. uvicorn handles
+                # SIGTERM by shutting down gracefully and exiting 0, which
+                # presents as a pod in Completed replaced at restarts=0: no
+                # crash, no OOM, no eviction, nothing for a crash-shaped
+                # diagnostic to find.
+                start_new_session=True,
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
             out = stdout.decode("utf-8", errors="replace")[:20_000]
             err = stderr.decode("utf-8", errors="replace")[:5_000]
             return json.dumps({"returncode": proc.returncode, "stdout": out, "stderr": err})
         except TimeoutError:
+            # The timeout previously returned while leaving the command RUNNING.
+            # A leaked `pytest` or dev server keeps burning CPU and holding the
+            # workspace for the rest of the pod's life, and the agent is told it
+            # timed out while the work is still happening underneath it.
+            #
+            # Kill the whole group, not just the shell: `sh -c "a | b"` leaves
+            # children that outlive their parent. start_new_session above is
+            # what makes this safe — the group is the command's own, so this
+            # cannot signal the server.
+            _kill_process_group(proc)
+            await _reap(proc)
             return json.dumps({"error": f"Command timed out after {timeout}s"})
         except Exception as e:
             return json.dumps({"error": str(e)})
