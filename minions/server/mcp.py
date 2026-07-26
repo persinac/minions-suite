@@ -121,12 +121,27 @@ async def _verify_reported_pr(pr_url: str, pr_number: int, branch_name: str) -> 
     if not pr_number:
         return False, "no PR number supplied"
 
+    url = pr_url or ""
+
     # owner/repo comes from the URL the agent reported, so this works for any
     # target repo without threading project config through.
-    match = re.search(r"github\.com/([^/]+/[^/]+)/pull/", pr_url or "")
+    #
+    # Matched leniently — `github.com/owner/repo` — and NOT requiring the
+    # `/pull/<n>` tail. The first version of this check required the tail and
+    # returned "nothing to verify" when it was absent, which meant a MALFORMED
+    # GitHub url sailed straight through the gate it was written to be. Job
+    # c08d3efb reported "https://github.com/flippin-balls/management-api/pull"
+    # — no number — and the pipeline advanced to PR_OPEN and launched three
+    # Opus reviewers against a PR that did not exist, exactly the failure this
+    # function exists to prevent.
+    match = re.search(r"github\.com/([^/\s]+/[^/\s]+)", url)
     if not match:
+        if "github.com" in url:
+            return False, f"malformed GitHub PR url: {url!r}"
+        # A GitLab MR or similar goes through a different path; do not invent a
+        # verdict for a provider this function cannot check.
         return True, "not a GitHub PR URL — nothing to verify"
-    repo = match.group(1)
+    repo = match.group(1).removesuffix(".git")
 
     try:
         result = subprocess.run(

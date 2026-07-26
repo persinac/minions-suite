@@ -130,3 +130,43 @@ class TestWiring:
         gate = body.index("_verify_reported_pr")
         transition = body.index("_propose_transition")
         assert gate < transition, "verification must precede the PR_OPEN transition"
+
+class TestMalformedUrls:
+    """The first version of this check required the url to contain `/pull/<n>`
+    and treated anything else as "not a GitHub PR URL — nothing to verify". A
+    truncated url therefore bypassed the gate entirely.
+
+    Job c08d3efb reported `.../management-api/pull` with no number. Three Opus
+    reviewers launched against a PR that did not exist — the exact failure the
+    verification was written to stop, reintroduced by the fix for it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_truncated_github_url_is_rejected(self):
+        with patch("subprocess.run", return_value=_completed(1, stderr="Not Found (HTTP 404)")):
+            ok, _ = await _verify_reported_pr("https://github.com/flippin-balls/management-api/pull", 81, "feat/x")
+
+        assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_a_github_url_with_no_repo_path_is_rejected(self):
+        ok, why = await _verify_reported_pr("https://github.com/", 81, "feat/x")
+
+        assert ok is False
+        assert "malformed" in why
+
+    @pytest.mark.asyncio
+    async def test_the_repo_is_still_extracted_without_the_pull_tail(self):
+        """Lenient matching must still find owner/repo so the API call works."""
+        with patch("subprocess.run", return_value=_completed(0, stdout="feat/x\n")) as run:
+            ok, _ = await _verify_reported_pr("https://github.com/flippin-balls/management-api/pull", 81, "feat/x")
+
+        assert ok is True
+        assert "repos/flippin-balls/management-api/pulls/81" in " ".join(run.call_args[0][0])
+
+    @pytest.mark.asyncio
+    async def test_a_non_github_url_still_passes_through(self):
+        """Do not invent a verdict for a provider this cannot check."""
+        ok, _ = await _verify_reported_pr("https://gitlab.com/x/y/-/merge_requests/3", 3, "feat/x")
+
+        assert ok is True
