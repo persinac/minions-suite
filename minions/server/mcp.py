@@ -11,6 +11,7 @@ validation, circuit breaking, and anomaly detection.
 
 import json
 import logging
+import os
 from pathlib import Path
 
 import httpx
@@ -99,6 +100,60 @@ async def _propose_transition(entity_type: str, entity_id: str, to_status: str, 
             to_status,
         )
     return response
+
+
+async def _verify_reported_pr(pr_url: str, pr_number: int, branch_name: str) -> tuple[bool, str]:
+    """Whether a self-reported PR exists and belongs to the branch claimed.
+
+    Returns (ok, reason). Fails CLOSED on a definite "no such PR" and OPEN on an
+    inconclusive result — a transient GitHub error must not fail a job whose
+    work is genuinely finished, whereas a confirmed non-existent PR must never
+    be allowed to advance the pipeline.
+
+    The branch check is the part that matters for safety. Existence alone still
+    permits an agent to name someone else's open PR, which with auto_merge on
+    would merge their work under this job's ticket. An agent cannot fake having
+    pushed the branch.
+    """
+    import re
+    import subprocess
+
+    if not pr_number:
+        return False, "no PR number supplied"
+
+    # owner/repo comes from the URL the agent reported, so this works for any
+    # target repo without threading project config through.
+    match = re.search(r"github\.com/([^/]+/[^/]+)/pull/", pr_url or "")
+    if not match:
+        return True, "not a GitHub PR URL — nothing to verify"
+    repo = match.group(1)
+
+    try:
+        result = subprocess.run(
+            ["gh", "api", f"repos/{repo}/pulls/{pr_number}", "--jq", ".head.ref"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={**os.environ},
+        )
+    except Exception as e:
+        # A network or binary problem is inconclusive, not proof of absence.
+        # Failing a job whose work is genuinely finished would be worse.
+        logger.warning("Could not verify PR %s (%s) — allowing", pr_number, e)
+        return True, "verification unavailable"
+
+    combined = f"{result.stdout}{result.stderr}"
+    if result.returncode != 0:
+        if "404" in combined or "Not Found" in combined or "Could not resolve" in combined:
+            return False, f"PR #{pr_number} does not exist in {repo}"
+        logger.warning("PR verification for %s inconclusive (rc=%s) — allowing: %s", pr_number, result.returncode, combined[:160])
+        return True, "verification inconclusive"
+
+    head = (result.stdout or "").strip()
+    if branch_name and head and head != branch_name:
+        return False, f"PR #{pr_number} has head branch {head!r}, not {branch_name!r}"
+
+    return True, "ok"
 
 
 async def _label_mr(config: Config | None, job_id: str, service: str, pr_url: str, pr_number: int | None) -> None:
@@ -425,6 +480,30 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
     async def report_pr(task_id: str, pr_url: str, pr_number: int, branch_name: str) -> str:
         """Report that a PR has been opened for a task."""
         try:
+            # Confirm the PR exists before believing the agent.
+            #
+            # This is self-reported. The agent supplies a URL and a number, and
+            # everything downstream — the specialist review fan-out, the merge
+            # gate, auto-merge — treats it as fact. The only test was
+            # `bool(task.pr_url)`, i.e. "is the string non-empty".
+            #
+            # Job 2e9cd9e3 reported pull/80 having created nothing; 80 was
+            # simply the next free number. The task advanced to PR_OPEN and
+            # three specialist reviewers launched against a PR that did not
+            # exist and billed for it. The system even had proof — labelling
+            # returned "Could not resolve to a PullRequest with the number 80"
+            # — and logged it as a warning while the pipeline carried on.
+            #
+            # The dangerous variant is a number that resolves to a REAL but
+            # unrelated PR: with auto_merge on, this pipeline would review and
+            # merge somebody else's work under this job's ticket. Checking the
+            # head branch as well as existence closes that, since the agent
+            # cannot claim a PR it did not push the branch for.
+            verified, why = await _verify_reported_pr(pr_url, pr_number, branch_name)
+            if not verified:
+                logger.warning("report_pr REJECTED for task %s (pr=%s branch=%s): %s", task_id, pr_number, branch_name, why)
+                return json.dumps({"error": f"PR {pr_number} not accepted: {why}. Open the PR, then report it."})
+
             if _nats_client:
                 task = await db.get_task(task_id)
                 if not task:
