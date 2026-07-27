@@ -280,6 +280,31 @@ class Config:
     # Agent dispatch mode: "in_process" (LiteLLM loop) or "k8s" (Kubernetes Jobs)
     agent_dispatch_mode: str = "in_process"
 
+    # Who runs the ENGINEER roles specifically.
+    #
+    # "in_process" — the LiteLLM loop, billed per token against the API key.
+    # "external"   — the engine publishes a claimable work item and runs no
+    #                agent itself. A herder (a Claude Code session holding a
+    #                subscription) claims it over MCP, does the work, and reports
+    #                back through the same report_pr / update_task_status tools.
+    #
+    # Scoped to engineers on purpose. They are the largest share of spend that is
+    # pure inference: on job 793821e8 orchestration (spec analyst + arbiter) was
+    # $0.05 of $10.66, and everything above that was work a subscription already
+    # pays for. Reviewers stay in_process until the fan-out is proven, because
+    # they are the part that demonstrably works.
+    #
+    # Reversible per role and per deployment: flipping this back to in_process
+    # restores today's behaviour with no other change, which matters when the
+    # herder's rate-limit budget is needed elsewhere.
+    engineer_dispatch: str = "in_process"
+
+    # How long a claimable work item may sit unclaimed before the engine gives up
+    # waiting and runs it in-process itself. Without this a herder that is asleep,
+    # rate-limited or crashed stalls every job silently — the failure mode is a
+    # queue that looks healthy and never moves. 0 disables the fallback.
+    herder_claim_timeout_seconds: int = 900
+
     # K8s dispatch settings
     k8s_dispatch: bool = False
     k8s_namespace: str = "minion-suite"
@@ -410,6 +435,8 @@ class Config:
             model_finisher=_env_or("MODEL_FINISHER", _get("engine", "model_finisher"), ""),
             agent_log_dir=_env_or("AGENT_LOG_DIR", _get("engine", "agent_log_dir"), str(base / "logs" / "agents")),
             agent_dispatch_mode=_env_or("AGENT_DISPATCH_MODE", _get("engine", "agent_dispatch_mode"), "in_process"),
+            engineer_dispatch=_env_or("ENGINEER_DISPATCH", _get("engine", "engineer_dispatch"), "in_process"),
+            herder_claim_timeout_seconds=_env_or_int("HERDER_CLAIM_TIMEOUT_SECONDS", _get("engine", "herder_claim_timeout_seconds"), 900),
             # -- Database --
             postgres_url=_build_postgres_url(),  # secret — always from env
             postgres_pool_min=_env_or_int("PG_POOL_MIN", _get("database", "pool_min"), 2),

@@ -48,6 +48,25 @@ def _parse_ts(value) -> datetime | None:
     return value
 
 
+def _seconds_since(timestamp: str | None) -> float:
+    """Age in seconds of an ISO timestamp, or 0.0 when it cannot be read.
+
+    0.0 on failure is the safe direction here: the one caller uses this to
+    decide whether a work item has waited long enough to give up on a herder,
+    and an unreadable timestamp should postpone that decision rather than
+    trigger a duplicate in-process run.
+    """
+    if not timestamp:
+        return 0.0
+    try:
+        parsed = datetime.fromisoformat(timestamp)
+    except (TypeError, ValueError):
+        return 0.0
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - parsed).total_seconds()
+
+
 def _agent_predates_current_attempt(agent, task: Task) -> bool:
     """True if `agent` is a leftover from an attempt before the task's current one.
 
@@ -674,8 +693,20 @@ async def launch_engineers(engine: JobEngine, job: Job):
         engine._spawn(run_engineer(engine, job, t, is_revision=True), name=f"eng-rev-{t.id[:8]}")
 
 
-async def run_engineer(engine: JobEngine, job: Job, task: Task, is_revision: bool = False, is_retry: bool = False):
-    """Run a single engineering agent for a task."""
+async def run_engineer(
+    engine: JobEngine,
+    job: Job,
+    task: Task,
+    is_revision: bool = False,
+    is_retry: bool = False,
+    force_in_process: bool = False,
+):
+    """Run a single engineering agent for a task.
+
+    `force_in_process` overrides engineer_dispatch="external" for this call. Set
+    by the unclaimed-work-item fallback, which has already waited for a herder
+    and must not publish the same item a second time.
+    """
     project, service = engine._resolve_service(task.service)
     if not service:
         logger.error("Unknown service %s for task %s", task.service, task.id)
@@ -762,6 +793,31 @@ async def run_engineer(engine: JobEngine, job: Job, task: Task, is_revision: boo
                 return
         else:
             await engine.db.update_task(task.id, **update_kwargs)
+
+    # External dispatch: publish the work and run nothing here.
+    #
+    # The task stays IN_PROGRESS with NO agent row, which is exactly what makes
+    # this safe — orphan recovery only acts when it finds a finished or dead
+    # agent, so a task with none is left alone rather than retried out from
+    # under whoever is about to claim it. claim_engineer_work creates the row.
+    #
+    # Deliberately after the branch/PR bookkeeping above, so a claimed item
+    # arrives with branch_name and any inherited PR already set and the herder
+    # does not have to re-derive them.
+    if engine.config.engineer_dispatch == "external" and not force_in_process:
+        await engine.db.record_event(
+            job.id,
+            "work_item_published",
+            "engine",
+            f"task={task.id} role={task.agent_role} service={task.service} revision={task.revision_count}",
+        )
+        logger.info(
+            "Task %s (%s on %s) published for external claim — no in-process agent launched",
+            task.id,
+            task.agent_role,
+            task.service,
+        )
+        return
 
     agent = Agent(job_id=job.id, role=task.agent_role, task_id=task.id, model=resolve_model(engine.config, job.difficulty, is_engineer=True))
     agent = await engine.db.create_agent(agent)
@@ -1426,6 +1482,29 @@ async def manage_dev_tasks(engine: JobEngine, job: Job):
         elif task.status == TaskStatus.IN_PROGRESS:
             # Check if the agent is actually dead (orphaned task)
             latest_agent = await engine.db.get_agent_for_task(task.id)
+
+            # Unclaimed external work item. A task IN_PROGRESS with no agent row
+            # at all is the state external dispatch leaves behind, and it is
+            # invisible to every check below — they all require an agent to
+            # reason about. Left alone it is a job that looks healthy and never
+            # moves, which is the worst failure mode this system has.
+            #
+            # So: wait a bounded time for a herder, then run it in-process.
+            # Falling back costs API tokens; not falling back costs the job.
+            if latest_agent is None and engine.config.engineer_dispatch == "external" and engine.config.herder_claim_timeout_seconds > 0:
+                waited = _seconds_since(task.updated_at)
+                if waited >= engine.config.herder_claim_timeout_seconds:
+                    logger.warning(
+                        "Task %s went unclaimed for %ds — falling back to in-process dispatch",
+                        task.id,
+                        int(waited),
+                    )
+                    await engine.db.record_event(job.id, "herder_claim_timeout", "engine", f"task={task.id} waited={int(waited)}s")
+                    engine._spawn(
+                        run_engineer(engine, job, task, is_revision=(task.revision_count or 0) > 0, force_in_process=True),
+                        name=f"eng-fallback-{task.id[:8]}",
+                    )
+                continue
 
             # Detect stuck 'starting' agents — if started > 2 min ago, it's orphaned
             if latest_agent and latest_agent.status == "starting":

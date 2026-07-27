@@ -18,7 +18,7 @@ import httpx
 from fastmcp import FastMCP
 
 from ..config import Config
-from ..core.models import AgentRole, JobStatus, Message, Subtask, SubtaskStatus, Task, TaskStatus, _now
+from ..core.models import Agent, AgentRole, JobStatus, Message, Subtask, SubtaskStatus, Task, TaskStatus, _now
 from ..core.state_transitions import InvalidTransitionError, PreconditionError
 from ..db import AbstractDatabase
 
@@ -241,6 +241,118 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
         """Queue a new code review by creating a review-type job with a CODE_REVIEWER task."""
         job, task = await db.create_review_job(project, mr_url, mr_id)
         return json.dumps({"job_id": job.id, "task_id": task.id, "status": str(job.status), "project": project})
+
+    # =========================================================================
+    # External worker ("herder") intake
+    # =========================================================================
+
+    @mcp.tool()
+    async def claim_engineer_work(worker: str = "herder") -> str:
+        """Claim one engineering work item, or report that none is waiting.
+
+        For an external worker running on a subscription rather than the API
+        key. When engineer_dispatch="external" the engine publishes tasks and
+        launches nothing, so the work sits here until something claims it.
+
+        Returns everything needed to do the job without further lookups: the
+        repo and branch, the spec, and — on a revision — the reviewers' findings
+        already formatted as the same numbered checklist an in-process agent
+        would receive. Returns {"work": null} when the queue is empty.
+
+        Claiming CREATES the agent row, so cost, turns and attribution land in
+        the same tables as an in-process run and the dashboard does not care
+        which side executed it.
+        """
+        from types import SimpleNamespace
+
+        from ..engine.dev import get_review_feedback
+        from ..project_registry import build_registry
+
+        engineer_roles = {AgentRole.BACKEND_ENGINEER, AgentRole.FRONTEND_ENGINEER, AgentRole.DATABASE_ENGINEER}
+
+        active = await db.get_active_jobs()
+        for job in active:
+            for task in await db.get_tasks(job.id):
+                if task.agent_role not in engineer_roles or task.status != TaskStatus.IN_PROGRESS:
+                    continue
+
+                # An agent row means somebody already owns this task — either a
+                # previous claim or an in-process run. Only an unowned task is
+                # claimable. NOTE: check-then-create, so two herders racing
+                # could both win. Fine for a single worker; a second one needs a
+                # unique index on (task_id, status) rather than a tighter check
+                # here, because the race is in the database, not this function.
+                if any(a.status in ("starting", "running") for a in await db.get_agents_for_job(job.id) if a.task_id == task.id):
+                    continue
+
+                registry = build_registry(config.projects_file if config else "projects.yaml")
+                service = None
+                project_name = ""
+                for proj in registry.values():
+                    if proj.services and task.service in proj.services:
+                        service, project_name = proj.services[task.service], proj.name
+                        break
+                if not service:
+                    logger.warning("claim_engineer_work: no service %s in registry for task %s", task.service, task.id)
+                    continue
+
+                is_revision = (task.revision_count or 0) > 0 and bool(task.pr_url)
+                feedback = ""
+                if is_revision:
+                    feedback = await get_review_feedback(SimpleNamespace(db=db), job.id, task)
+
+                agent = await db.create_agent(Agent(job_id=job.id, role=task.agent_role, task_id=task.id, model=f"herder:{worker}", status="running"))
+                await db.record_event(job.id, "work_item_claimed", worker, f"task={task.id} agent={agent.id} revision={task.revision_count}")
+                logger.info("Work item %s claimed by %s (agent=%s)", task.id, worker, agent.id)
+
+                return json.dumps(
+                    {
+                        "work": {
+                            "agent_id": agent.id,
+                            "task_id": task.id,
+                            "job_id": job.id,
+                            "role": str(task.agent_role),
+                            "title": task.title,
+                            "description": task.description,
+                            "spec": job.spec,
+                            "project": project_name,
+                            "service": task.service,
+                            "repo_path": service.repo_path,
+                            "clone_url": service.clone_url,
+                            "default_branch": service.default_branch,
+                            "branch_name": task.branch_name,
+                            "pr_url": task.pr_url,
+                            "pr_number": task.pr_number,
+                            "is_revision": is_revision,
+                            "revision_count": task.revision_count,
+                            "review_feedback": feedback,
+                        }
+                    }
+                )
+
+        return json.dumps({"work": None})
+
+    @mcp.tool()
+    async def release_engineer_work(agent_id: str, reason: str = "released") -> str:
+        """Hand a claimed item back without completing it.
+
+        A herder that cannot finish — rate-limited, interrupted, out of its
+        depth — must say so rather than going quiet. Marking the agent failed
+        releases the task: with no live agent it becomes claimable again, and
+        the engine's own timeout fallback can pick it up in-process.
+
+        Not calling this is the bad path, which is why the engine also has
+        herder_claim_timeout_seconds. This just makes the fast, honest exit
+        available.
+        """
+        agent = await db.get_agent(agent_id)
+        if not agent:
+            return json.dumps({"error": f"Agent {agent_id} not found"})
+        await db.update_agent(agent_id, status="failed", finished_at=_now(), error=f"released by herder: {reason}"[:200])
+        if agent.job_id:
+            await db.record_event(agent.job_id, "work_item_released", "herder", f"agent={agent_id} reason={reason[:80]}")
+        logger.info("Work item released by herder (agent=%s): %s", agent_id, reason)
+        return json.dumps({"released": True, "agent_id": agent_id})
 
     @mcp.tool()
     async def get_review_status(job_id: str) -> str:
