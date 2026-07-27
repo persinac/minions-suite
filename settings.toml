@@ -203,6 +203,20 @@ log_level = "INFO"
 # make the MCP port unreachable from outside the pod.
 mcp_host = "0.0.0.0"
 
+[production.engine]
+# Engineers run on a herder (a Claude Code session holding a subscription), not
+# on the metered API key. The engine publishes the work item and launches
+# nothing; claim_engineer_work hands it to whoever asks.
+#
+# Reviewers are deliberately NOT moved. On job 793821e8 they were right in all
+# four rounds and caught a coverage regression that CI passed — that is the part
+# worth paying for, and it stays in_process until a fan-out is proven.
+#
+# If no herder claims within herder_claim_timeout_seconds the engine runs the
+# item in-process anyway, so this degrades to today's behaviour rather than
+# stalling. Flip back to "in_process" to disable entirely.
+engineer_dispatch = "external"
+
 [production.nats]
 enabled = true
 
