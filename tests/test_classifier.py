@@ -227,11 +227,26 @@ class TestReviewerModel:
         assert resolve_model(config, HARD, is_reviewer=True) == config.model_reviewer
         assert resolve_model(config, HARD, is_reviewer=False) == config.model_hard
 
-    def test_reviewers_stay_cheap_on_easy_tickets(self):
-        """The reviewer default must not make an easy ticket MORE expensive."""
+    def test_reviewers_hold_their_model_even_on_easy_tickets(self):
+        """model_reviewer is a FLOOR, not a tier.
+
+        This previously dropped to the cheap tier on easy tickets. Job 33c89d9b
+        was classified easy and its reviewers caught an escaping fix resting on
+        an undocumented parser grammar, plus a change giving `None` a third
+        meaning on a widely-used lookup. Both would have merged. Difficulty
+        scores how hard a ticket is to IMPLEMENT, not how hard the diff is to
+        JUDGE — and a small change to a security path is easy to write and
+        unforgiving to get wrong.
+        """
         config = Config.from_env()
 
-        assert resolve_model(config, EASY, is_reviewer=True) == config.model_easy
+        assert resolve_model(config, EASY, is_reviewer=True) == config.model_reviewer
+
+    def test_the_reviewer_model_is_the_same_at_every_difficulty(self):
+        config = Config.from_env()
+
+        picks = {resolve_model(config, d, is_reviewer=True) for d in (EASY, MEDIUM, HARD, None)}
+        assert picks == {config.model_reviewer}
 
     def test_a_pinned_project_model_still_wins(self):
         config = Config.from_env()

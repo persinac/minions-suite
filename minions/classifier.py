@@ -269,11 +269,13 @@ def resolve_model(
     deliberately), then the reviewer default, then the difficulty tier, then the
     global default.
 
-    Reviewers get their own default because they fan out. One engineer runs per
-    task; up to five specialists review its output, so reviewer cost multiplies
-    against a job ceiling the engineer has already eaten into. An easy ticket
-    still pulls everything down to the cheap tier — the reviewer default only
-    applies from medium upward, where it would otherwise be Opus.
+    Reviewers get their own model at EVERY difficulty — a floor, not a tier.
+    Difficulty scores how hard a ticket is to implement, which says nothing about
+    how hard the resulting diff is to judge, and the two come apart precisely
+    where it matters: a small change to a security path is easy to write and
+    unforgiving to get wrong. Reviewers also fan out ~3x and re-run each revision
+    round, so they are the most leveraged quality decision here. Lower
+    model_reviewer to make review cheaper; do not let it vary per ticket.
     """
     if is_finisher:
         # Pinned to the cheap tier and NOT subject to project_model, which is
@@ -301,9 +303,26 @@ def resolve_model(
     if is_reviewer:
         reviewer_default = getattr(config, "model_reviewer", "")
         if reviewer_default:
-            # Never spend *more* than the tier: an easy ticket keeps Haiku.
-            if difficulty == EASY and tier_model:
-                return tier_model
+            # A FLOOR, not a tier. Reviewers get model_reviewer at every
+            # difficulty, including easy.
+            #
+            # This used to drop to the tier on easy tickets so a reviewer default
+            # could not make a cheap ticket dearer. The saving was real and the
+            # trade turned out to be bad. Job 33c89d9b was classified easy: its
+            # reviewers caught an escaping fix resting on an undocumented parser
+            # grammar, and a change that gave `None` a third meaning on a lookup
+            # used across the codebase. Both would have merged. Neither is
+            # plausibly caught a tier down.
+            #
+            # Difficulty scores how hard the ticket is to IMPLEMENT. It says
+            # nothing about how hard the diff is to JUDGE, and the two come apart
+            # exactly where it hurts — a small change to a security path is easy
+            # to write and unforgiving to get wrong.
+            #
+            # Reviewers also fan out ~3x and re-run every revision round, so they
+            # are the most leveraged quality decision in the system and the last
+            # place to economise. To make review cheaper, lower model_reviewer
+            # itself; do not make it vary per ticket.
             return reviewer_default
 
     if is_engineer:

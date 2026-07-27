@@ -101,7 +101,7 @@ class TestReviewerResolution:
         c.model_reviewer = "claude-sonnet-5"
         return c
 
-    @pytest.mark.parametrize("difficulty", [MEDIUM, HARD, None])
+    @pytest.mark.parametrize("difficulty", [EASY, MEDIUM, HARD, None])
     def test_an_unpinned_project_gets_the_reviewer_default(self, config, difficulty, tmp_path):
         project = _registry(tmp_path, BARE)["svc"]
 
@@ -114,15 +114,13 @@ class TestReviewerResolution:
 
         assert resolve_model(config, HARD, project.model, is_reviewer=True) != "claude-opus-5"
 
-    def test_easy_still_floors_to_the_cheap_tier(self, config, tmp_path):
-        """Deliberate and pre-existing: a reviewer default must not make an easy
-        ticket MORE expensive. Worth knowing this means Haiku reviewers on easy
-        work — job 33c89d9b was classified easy, and its reviewers caught two
-        subtle design issues. If that trade stops looking right, this is the
-        line to change."""
+    def test_easy_tickets_no_longer_drop_reviewers_to_haiku(self, config, tmp_path):
+        """model_reviewer is a floor. Reviewers fan out ~3x and re-run every
+        revision round, so varying them per ticket economises on the most
+        leveraged quality decision in the system."""
         project = _registry(tmp_path, BARE)["svc"]
 
-        assert resolve_model(config, EASY, project.model, is_reviewer=True) == "claude-haiku-4-5"
+        assert resolve_model(config, EASY, project.model, is_reviewer=True) == "claude-sonnet-5"
 
     def test_a_deliberate_pin_still_overrides_everything(self, config):
         assert resolve_model(config, HARD, "moonshot/kimi-k2.6", is_reviewer=True) == "moonshot/kimi-k2.6"
