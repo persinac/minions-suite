@@ -772,6 +772,10 @@ async def _run_one_specialist(
             agent_role=AgentRole.CODE_REVIEWER,
             status=TaskStatus.IN_PROGRESS,
             specialty=specialty,
+            # Lets the fan-out guard tell "already reviewed THIS revision"
+            # from "already reviewed an older one". Without it a revision can
+            # never be re-reviewed and the PR stays blocked forever.
+            revision_count=task.revision_count,
             mr_url=task.pr_url or "",
             mr_id=mr_id,
             pr_url=task.pr_url or "",
@@ -851,8 +855,27 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
     # monitor pass while a job looks stuck — that spawned duplicate reviewers
     # before this guard existed ($4.87 for a review needed once).
     existing = await engine.db.get_tasks(job.id)
+    # Scoped to the CURRENT revision, not just the PR.
+    #
+    # Keyed on pr_url alone this blocked re-review forever: once reviewer
+    # tasks existed for a PR, no amount of new commits produced a fresh
+    # review. Job 7d835e9e hit exactly that - reviewers requested changes,
+    # the revision agent received their feedback and pushed a real fix
+    # (commit 20342315), and this guard then refused to look at it. The PR
+    # sat CHANGES_REQUESTED against a diff that had already been corrected,
+    # so it could never become mergeable and the job could never finish.
+    #
+    # revision_count is stamped onto each reviewer task at creation, so a
+    # revision bumping it makes the previous round stop matching and a new
+    # fan-out is allowed - while a re-entry within the SAME revision still
+    # matches and is still blocked, which is what this guard was built for.
     already = [
-        t for t in existing if t.agent_role == AgentRole.CODE_REVIEWER and t.status != TaskStatus.FAILED and (t.pr_url or "") == (task.pr_url or "")
+        t
+        for t in existing
+        if t.agent_role == AgentRole.CODE_REVIEWER
+        and t.status != TaskStatus.FAILED
+        and (t.pr_url or "") == (task.pr_url or "")
+        and (t.revision_count or 0) == (task.revision_count or 0)
     ]
     if already:
         logger.info(
