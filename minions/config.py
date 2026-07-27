@@ -184,6 +184,16 @@ class Config:
     job_cost_limit_usd: float = 25.0
     agent_max_turns: int = 60
 
+    # How long shutdown waits for in-flight in-process agents before giving up
+    # on them. Every rollout SIGTERMs the pod, and stop() used to mark running
+    # agents failed the instant it was called — so a routine image bump threw
+    # away an agent fifteen minutes and a couple of dollars into its run, with
+    # its work uncommitted. Draining lets those land instead.
+    #
+    # Must stay BELOW the pod's terminationGracePeriodSeconds or the kubelet
+    # SIGKILLs mid-drain and the wait buys nothing. See deployment.yaml.
+    shutdown_grace_seconds: float = 300.0
+
     # Block auto-merge unless every branch-protection required check is green
     # on the PR head. FAIL-CLOSED: a repo with no required checks blocks agent
     # merges, which is deliberate pressure to gate the least-verified repos.
@@ -379,6 +389,7 @@ class Config:
             agent_cost_limit_usd=_env_or_float("AGENT_COST_LIMIT_USD", _get("engine", "agent_cost_limit_usd"), 8.0),
             job_cost_limit_usd=_env_or_float("JOB_COST_LIMIT_USD", _get("engine", "job_cost_limit_usd"), 25.0),
             agent_max_turns=_env_or_int("AGENT_MAX_TURNS", _get("engine", "agent_max_turns"), 60),
+            shutdown_grace_seconds=_env_or_float("SHUTDOWN_GRACE_SECONDS", _get("engine", "shutdown_grace_seconds"), 300.0),
             require_ci_pass=_env_or_bool("REQUIRE_CI_PASS", _get("engine", "require_ci_pass"), True),
             max_jobs_per_hour=_env_or_int("MAX_JOBS_PER_HOUR", _get("engine", "max_jobs_per_hour"), 20),
             max_jobs_per_month=_env_or_int("MAX_JOBS_PER_MONTH", _get("engine", "max_jobs_per_month"), 500),

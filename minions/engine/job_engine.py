@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 from typing import TYPE_CHECKING
 
 import httpx
@@ -396,10 +397,19 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
         task.add_done_callback(self._background_tasks.discard)
         return task
 
-    async def stop(self):
+    async def stop(self, grace_seconds: float | None = None):
+        # Stop dispatching first, so the drain below is bounded by the agents
+        # already in flight and cannot be extended by new ones.
         self._running = False
 
-        # Mark in-process agents as failed (K8s agents continue independently)
+        if grace_seconds is None:
+            grace_seconds = self.config.shutdown_grace_seconds
+
+        await self._drain_in_process_agents(grace_seconds)
+
+        # Whatever is still running has outlasted the grace period. K8s agents
+        # are excluded throughout — they run in their own pods and survive this
+        # one independently.
         try:
             running_agents = await self.db.get_running_agents()
             for agent in running_agents:
@@ -414,6 +424,64 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
             task.cancel()
         self._background_tasks.clear()
         logger.info("Job engine stopping")
+
+    async def _drain_in_process_agents(self, grace_seconds: float) -> None:
+        """Wait for in-flight in-process agents to land their work.
+
+        A rollout SIGTERMs the pod for reasons that have nothing to do with the
+        job running inside it — an image bump, a config change, an ArgoCD sync.
+        Marking those agents failed immediately discarded real work and real
+        spend: an engineer fifteen minutes into a run lost everything, and the
+        job restarted from zero on the next poll.
+
+        Nothing here can rescue an agent that needs longer than the grace
+        period; the LLM conversation lives in memory and does not survive the
+        process. What this buys is the common case, where an agent is a turn or
+        two from committing and pushing. Combined with the engineer prompt's
+        branch-first / commit-per-subtask ordering, a drained agent leaves
+        recoverable work on a branch rather than a dirty tree.
+
+        Bounded on purpose. The pod's terminationGracePeriodSeconds is the hard
+        backstop — the kubelet SIGKILLs regardless, so a slow drain delays a
+        rollout but can never wedge one.
+        """
+        if grace_seconds <= 0:
+            return
+
+        deadline = time.monotonic() + grace_seconds
+        announced = False
+
+        while time.monotonic() < deadline:
+            try:
+                in_flight = [a for a in await self.db.get_running_agents() if not a.k8s_job_name]
+            except Exception:
+                # A DB blip during shutdown must not hold the process open;
+                # fall through and let the caller mark what it can.
+                logger.debug("Could not poll running agents while draining", exc_info=True)
+                return
+
+            if not in_flight:
+                if announced:
+                    logger.info("Drain complete — all in-process agents finished")
+                return
+
+            if not announced:
+                announced = True
+                logger.info(
+                    "Shutdown requested with %d in-process agent(s) still running — draining for up to %.0fs",
+                    len(in_flight),
+                    grace_seconds,
+                )
+                try:
+                    await self.db.record_event(
+                        None, "engine_draining", "engine", f"agents_in_flight={len(in_flight)} grace_seconds={grace_seconds:.0f}"
+                    )
+                except Exception:
+                    logger.debug("Could not record drain event", exc_info=True)
+
+            await asyncio.sleep(2)
+
+        logger.warning("Drain grace period of %.0fs expired — remaining agents will be marked failed", grace_seconds)
 
     # =========================================================================
     # Startup recovery

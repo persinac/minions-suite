@@ -20,6 +20,15 @@ spec:
         app.kubernetes.io/name: minion-suite
         app.kubernetes.io/component: orchestration
     spec:
+      # The engine drains in-flight in-process agents on SIGTERM
+      # (shutdown_grace_seconds, default 300s) rather than failing them
+      # instantly. This MUST exceed that, or the kubelet SIGKILLs mid-drain and
+      # the wait buys nothing — the default of 30s did exactly that.
+      #
+      # The cost is that a rollout landing mid-job takes up to this long. That
+      # is the intended trade: an agent fifteen minutes and a couple of dollars
+      # into a run is worth more than a fast image bump.
+      terminationGracePeriodSeconds: 360
       imagePullSecrets:
         - name: ecr-creds
       tolerations:

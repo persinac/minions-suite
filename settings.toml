@@ -66,6 +66,19 @@ job_cost_limit_usd = 25.0
 # real controls — max_turns only exists to stop a cheap agent looping forever.
 agent_max_turns = 120
 
+# On SIGTERM, wait this long for in-flight in-process agents to land their work
+# before marking them failed. Every rollout signals the pod for reasons that have
+# nothing to do with the job inside it, and shutdown used to fail those agents
+# instantly — discarding the same runs the comment above is about.
+#
+# This cannot rescue an agent that needs longer than the grace period: the LLM
+# conversation lives in memory and does not survive the process. It buys the
+# common case, where an agent is a turn or two from committing.
+#
+# MUST stay below the pod's terminationGracePeriodSeconds (360s in
+# k8s/base/minion-suite/deployment.yaml) or the kubelet SIGKILLs mid-drain.
+shutdown_grace_seconds = 300.0
+
 # --- Job admission rate caps ------------------------------------------------
 # The cost ceilings bound what one job spends; these bound how many jobs get to
 # spend at all — the difference between one bad job and a bad afternoon. Set
