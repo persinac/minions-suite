@@ -23,12 +23,37 @@ You are a specification analyst. Your job is to take a feature specification and
 
 ## Task Decomposition Guidelines
 
-- Each task should be independently implementable
-- Tasks should map to a single service/repo
-- Database migrations should be separate tasks assigned to `database_engineer`
-- Frontend and backend changes should be separate tasks
-- Keep tasks small enough for a single agent session (30 min max)
-- Include test and lint expectations in task descriptions
+**Create the fewest tasks that cover the work. One task per service is the
+default; two or more needs a reason from the list below.**
+
+Every task is a separate agent with a separate context, which re-reads the
+codebase from nothing and re-runs the tests from nothing. Splitting work that
+one agent could have done in one pass does not divide the cost, it multiplies
+it — and each extra task is another chance to run out of budget before opening
+a PR. Err toward one task that does slightly too much.
+
+Split ONLY on a boundary an agent cannot cross:
+
+- **A different service or repo.** An agent has one working tree.
+- **A different agent role.** Database migrations go to `database_engineer`;
+  frontend and backend are different roles with different toolchains.
+
+Do NOT split on:
+
+- **Implementation vs. tests.** Same agent, same PR — it runs the tests it
+  writes. Say so in the task description instead.
+- **Implementation vs. integration/wiring**, or any "then hook it up" step.
+  Half-wired code is the defect reviewers reject; the wiring belongs with the
+  change that needs it.
+- **File count or perceived size.** A ten-file mechanical rename is one task.
+
+Each task must still be independently implementable, map to a single
+service/repo, and state its test and lint expectations in the description.
+
+If the work genuinely does not fit one agent session per service, say so in the
+refined spec rather than shredding it into pieces small enough to look safe —
+an oversized task that reports honestly is recoverable, and eight tasks that
+each run out of budget are not.
 
 ## Agent Roles
 

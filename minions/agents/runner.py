@@ -23,6 +23,40 @@ from .tools.definitions import REVIEW_TOOL_DEFINITIONS, ToolExecutor, get_tools_
 logger = logging.getLogger(__name__)
 
 
+def _log_read_stats(agent, tool_executor) -> None:
+    """Report how much of this agent's input was content it already had.
+
+    Emitted at completion beside cost and turns so the three can be correlated
+    over a run of jobs. Purely observational for now: the fix (serving a stub
+    for a repeat read) is a behaviour change and should be argued from these
+    numbers rather than from the assumption that produced them.
+
+    Guarded on the method rather than the type — reviewers use a different
+    executor that has no filesystem tools at all.
+    """
+    stats_fn = getattr(tool_executor, "read_stats", None)
+    if not callable(stats_fn):
+        return
+    try:
+        stats = stats_fn()
+    except Exception:
+        logger.debug("Could not collect read stats for agent %s", agent.id, exc_info=True)
+        return
+
+    if not stats.get("rereads"):
+        return
+
+    logger.info(
+        "Agent %s read accounting: %d file(s), %d read(s), %d re-read(s) costing >=%d chars re-sent; worst: %s",
+        agent.id,
+        stats["files_read"],
+        stats["total_reads"],
+        stats["rereads"],
+        stats["reread_chars"],
+        ", ".join(f"{k}x{n}" for k, n in stats["worst"]) or "-",
+    )
+
+
 async def run_agent(
     job: Job,
     task: Task,
@@ -197,6 +231,10 @@ async def run_agent(
             agent.cost_usd,
             agent.num_turns,
         )
+
+        # Re-read accounting, logged next to cost so the two can be correlated
+        # across runs. Measurement only — nothing changes behaviour on it yet.
+        _log_read_stats(agent, tool_executor)
 
     except Exception as e:
         agent.status = "failed"

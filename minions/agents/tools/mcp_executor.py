@@ -46,6 +46,38 @@ async def _reap(proc, timeout: float = 5.0) -> None:
     with contextlib.suppress(TimeoutError, ProcessLookupError):
         await asyncio.wait_for(proc.wait(), timeout=timeout)
 
+
+# Roughly 1k and 250 tokens at ~4 chars/token. Command output is re-sent on
+# every subsequent turn, so an oversized result is not paid once — it is paid
+# for the rest of the agent's life. 94% of spend is input for exactly this
+# reason.
+_STDOUT_BUDGET = 4_000
+_STDERR_BUDGET = 1_000
+
+
+def _elide(text: str, budget: int) -> str:
+    """Trim `text` to `budget` chars, keeping BOTH ends.
+
+    The previous `[:20_000]` kept only the head, which is precisely backwards
+    for the command agents run most. A pytest run puts the failing assertion
+    partway down and the line that actually answers "did it pass" — the
+    `5 failed, 100 passed` summary — at the very bottom. Truncating the tail
+    threw that away, so the agent could not tell success from failure and ran
+    the suite again to find out: a second full-cost turn to recover information
+    that was already in the first one.
+
+    Keeping two thirds of the budget at the head and one third at the tail
+    preserves the first error and the verdict together.
+    """
+    if len(text) <= budget:
+        return text
+
+    head = (budget * 2) // 3
+    tail = budget - head
+    dropped = len(text) - budget
+    return f"{text[:head]}\n... [{dropped} chars elided — showing first {head} and last {tail}] ...\n{text[-tail:]}"
+
+
 # State tools that route through the MCP server, mapped to the context
 # parameters that must be injected before calling the MCP function.
 # Format: tool_name -> list of (param_name, context_attr) pairs to inject.
@@ -130,6 +162,15 @@ class McpToolExecutor:
         self.project_name = project_name
         # Cache resolved MCP tool functions
         self._tool_cache: dict[str, object] = {}
+        # Re-read accounting. A file read a second time is already verbatim in
+        # the conversation, and the whole prefix is re-sent every turn — so the
+        # duplicate is not paid once, it is paid for every remaining turn. This
+        # is a suspected large share of "2.6M input tokens for a 3-file change",
+        # but nothing has ever measured it. Counting first, deliberately:
+        # serving a stub instead of the content is a behaviour change that
+        # should be justified by data rather than by the theory above.
+        self._read_counts: dict[str, int] = {}
+        self._reread_chars = 0
 
     async def execute(self, tool_name: str, arguments: dict) -> str:
         try:
@@ -212,7 +253,39 @@ class McpToolExecutor:
         if len(lines) > 500:
             lines = lines[:500]
             lines.append("... [truncated at 500 lines — use start_line/end_line for specific ranges]")
-        return "\n".join(lines)
+        body = "\n".join(lines)
+
+        # Key on the requested range, not just the path: re-reading lines
+        # 200-260 after reading 1-100 is a legitimately different result, and
+        # counting it as waste would overstate the problem.
+        key = f"{path}:{args.get('start_line') or ''}-{args.get('end_line') or ''}"
+        self._read_counts[key] = self._read_counts.get(key, 0) + 1
+        if self._read_counts[key] > 1:
+            self._reread_chars += len(body)
+            logger.info(
+                "Agent %s re-read %s (read #%d, %d chars) — already verbatim in its context",
+                self.agent_id,
+                key,
+                self._read_counts[key],
+                len(body),
+            )
+        return body
+
+    def read_stats(self) -> dict:
+        """Re-read accounting for this agent, for logging at completion.
+
+        `reread_chars` is the cost of ONE re-send. The real cost is that
+        multiplied by the turns remaining after it, since the whole prefix goes
+        back over the wire each turn — so treat this as a floor, not a total.
+        """
+        repeats = {k: n for k, n in self._read_counts.items() if n > 1}
+        return {
+            "files_read": len(self._read_counts),
+            "total_reads": sum(self._read_counts.values()),
+            "rereads": sum(n - 1 for n in repeats.values()),
+            "reread_chars": self._reread_chars,
+            "worst": sorted(repeats.items(), key=lambda kv: -kv[1])[:3],
+        }
 
     async def _write_file(self, args: dict) -> str:
         path = args.get("path", "")
@@ -250,8 +323,8 @@ class McpToolExecutor:
                 start_new_session=True,
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-            out = stdout.decode("utf-8", errors="replace")[:20_000]
-            err = stderr.decode("utf-8", errors="replace")[:5_000]
+            out = _elide(stdout.decode("utf-8", errors="replace"), _STDOUT_BUDGET)
+            err = _elide(stderr.decode("utf-8", errors="replace"), _STDERR_BUDGET)
             return json.dumps({"returncode": proc.returncode, "stdout": out, "stderr": err})
         except TimeoutError:
             # The timeout previously returned while leaving the command RUNNING.
