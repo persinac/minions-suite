@@ -50,7 +50,21 @@ max_revisions = 3
 # by running N agents.
 agent_cost_limit_usd = 8.0
 job_cost_limit_usd = 25.0
-agent_max_turns = 60
+# Raised from 60 after measuring four runs of the same ticket: the engineer
+# consistently spent its whole turn budget on the file edits and died before
+# "create branch, commit, push, open PR" — the three steps that produce the
+# deliverable.
+#
+#   19cbee54  $2.71  2.00M tokens  died before git
+#   67f250f4  $4.45  2.79M tokens  died before git
+#   dbc956ff  $0.93  2.65M tokens  died before git
+#
+# Crucially dbc956ff spent $0.93 against an $8 per-agent ceiling: it did not run
+# out of MONEY, it ran out of TURNS. Raising this costs nothing on a job that
+# finishes early and buys the git sequence room on one that does not. Spend is
+# still bounded by agent_cost_limit_usd and job_cost_limit_usd, which are the
+# real controls — max_turns only exists to stop a cheap agent looping forever.
+agent_max_turns = 120
 
 # --- Job admission rate caps ------------------------------------------------
 # The cost ceilings bound what one job spends; these bound how many jobs get to
