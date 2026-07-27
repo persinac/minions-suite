@@ -107,9 +107,21 @@ class TestClaiming:
 
         work = (await _call(mcp_client, "claim_engineer_work", {"worker": "herder"}))["work"]
 
-        for field in ("task_id", "job_id", "agent_id", "role", "spec", "service", "repo_path", "clone_url", "default_branch"):
+        for field in ("task_id", "job_id", "agent_id", "role", "spec", "service", "engine_repo_path", "clone_url", "default_branch"):
             assert field in work, f"work item missing {field}"
         assert work["spec"].startswith("Neutralize CSV")
+
+    async def test_the_engine_path_is_named_for_whose_path_it_is(self, mcp_client, db):
+        """It is the engine's checkout inside its own container. The first real
+        herder run was on a different machine entirely, where that path does not
+        exist — a plain "repo_path" invites working in the wrong directory."""
+        await _job_with_engineer_task(db)
+
+        work = (await _call(mcp_client, "claim_engineer_work", {"worker": "herder"}))["work"]
+
+        assert "repo_path" not in work
+        assert work["engine_repo_path"] == "/repos/management-api"
+        assert work["clone_url"].endswith("management-api.git")
 
     async def test_claiming_creates_the_agent_row(self, mcp_client, db):
         """Cost and attribution must land in the same tables as an in-process
@@ -170,6 +182,38 @@ class TestClaiming:
         payload = await _call(mcp_client, "claim_engineer_work", {"worker": "herder"})
 
         assert payload["work"] is None
+
+
+class TestCompleting:
+    async def test_completing_closes_the_claim(self, mcp_client, db):
+        """The first real herder run left its agent "running" forever, which
+        makes the shutdown drain wait its full grace period and makes the
+        orphaned-checkout reset think the repo is still owned."""
+        await _job_with_engineer_task(db)
+        work = (await _call(mcp_client, "claim_engineer_work", {"worker": "a"}))["work"]
+
+        payload = await _call(mcp_client, "complete_engineer_work", {"agent_id": work["agent_id"], "summary": "opened PR 84"})
+
+        assert payload["completed"] is True
+        agent = await db.get_agent(work["agent_id"])
+        assert agent.status == "done"
+        assert agent.finished_at
+
+    async def test_zero_cost_is_recorded_not_left_null(self, mcp_client, db):
+        """A subscription run genuinely costs nothing, but recording it keeps
+        "free by design" distinguishable from "never reported" — the model
+        column says herder:<worker>, so the zero is meaningful."""
+        await _job_with_engineer_task(db)
+        work = (await _call(mcp_client, "claim_engineer_work", {"worker": "a"}))["work"]
+
+        await _call(mcp_client, "complete_engineer_work", {"agent_id": work["agent_id"]})
+
+        agent = await db.get_agent(work["agent_id"])
+        assert agent.cost_usd == 0.0
+        assert agent.model.startswith("herder:")
+
+    async def test_completing_an_unknown_agent_errors_cleanly(self, mcp_client):
+        assert "error" in await _call(mcp_client, "complete_engineer_work", {"agent_id": "nope"})
 
 
 class TestReleasing:

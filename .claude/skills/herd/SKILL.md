@@ -36,10 +36,13 @@ identifying this session.
 
 `{"work": null}` means the queue is empty. Say so and stop — do not invent work.
 
-The item contains everything needed: `task_id`, `job_id`, `spec`, `service`,
-`repo_path`, `clone_url`, `default_branch`, `branch_name`, `pr_url`,
+The item contains everything needed: `task_id`, `job_id`, `agent_id`, `spec`,
+`service`, `clone_url`, `default_branch`, `branch_name`, `pr_url`,
 `is_revision`, and — on a revision — `review_feedback` already formatted as a
 numbered findings checklist.
+
+`engine_repo_path` is the **engine's** checkout inside its own container. Unless
+you share that filesystem it does not exist for you — work from `clone_url`.
 
 **You now own this task.** Nothing else will touch it until you report or
 release, and the engine will run it in-process itself after
@@ -47,8 +50,13 @@ release, and the engine will run it in-process itself after
 
 ## 2. Work
 
-Check out `repo_path`. If `branch_name` is set, use it; otherwise cut
-`feat/job-<job-id-prefix>/<slug>` from `default_branch`.
+Get a checkout from `clone_url`. If a local clone already exists, **use a git
+worktree** rather than switching branches in it — that tree may be the user's,
+with its own uncommitted state, and a checked-out branch left behind is a mess
+someone else has to find.
+
+If `branch_name` is set, use it; otherwise cut `feat/job-<job-id-prefix>/<slug>`
+from `default_branch`.
 
 **Branch first, commit as you go.** Not stylistic: an engineer that runs out of
 budget with uncommitted work on no branch loses everything, which is how three
@@ -76,13 +84,23 @@ Any output is a removed test. Restore it or justify it in the PR body.
 
 ## 3. Report
 
-Push, open the PR, then call `report_pr(task_id, pr_url, pr_number, branch_name)`.
+Push, open the PR, then **both** of:
+
+1. `report_pr(task_id, pr_url, pr_number, branch_name)`
+2. `complete_engineer_work(agent_id, summary)`
 
 **Nothing downstream happens until `report_pr` lands.** The PR exists on GitHub
 but the state machine cannot see it, so the task sits in `IN_PROGRESS` until the
 claim times out and an in-process agent redoes your work.
 
-Then `update_task_status(task_id, "done")`.
+**And the claim is not closed until `complete_engineer_work` lands.** Skipping it
+deadlocks the revision loop: `claim_engineer_work` will not re-offer a task that
+still has a live agent, and the engine's revision dispatcher will not dispatch
+one either — each defers to the other and the job stops with reviewers already
+voted. That happened on the first real run and had to be cleared by hand.
+
+Reporting the PR without closing the claim is the single easiest way to wedge a
+job. Do both.
 
 ## If you cannot finish
 

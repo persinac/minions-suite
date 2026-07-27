@@ -317,7 +317,12 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
                             "spec": job.spec,
                             "project": project_name,
                             "service": task.service,
-                            "repo_path": service.repo_path,
+                            # The ENGINE's checkout path, inside its own
+                            # container. Only usable by a worker sharing that
+                            # filesystem. A herder anywhere else must ignore it
+                            # and work from clone_url — which is why the key is
+                            # named for whose path it is.
+                            "engine_repo_path": service.repo_path,
                             "clone_url": service.clone_url,
                             "default_branch": service.default_branch,
                             "branch_name": task.branch_name,
@@ -331,6 +336,32 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
                 )
 
         return json.dumps({"work": None})
+
+    @mcp.tool()
+    async def complete_engineer_work(agent_id: str, summary: str = "", cost_usd: float = 0.0) -> str:
+        """Mark a claimed item finished. Call this after report_pr.
+
+        Without it the claim never closes. The first real herder run left its
+        agent row "running" forever, and that is not cosmetic: get_running_agents
+        feeds the shutdown drain, which then waits its full grace period on a
+        finished job; it feeds the orphaned-checkout reset, which treats a live
+        agent as "someone is mid-work" and so refuses to clear a dirty tree for
+        the next job; and the stale-heartbeat check eventually reports it.
+
+        cost_usd defaults to 0.0 because a subscription-backed run genuinely
+        costs nothing per token. That is deliberately still recorded rather than
+        left NULL — the model column says herder:<worker>, so a zero there means
+        "free by design" and can be told apart from a metered agent that failed
+        to report.
+        """
+        agent = await db.get_agent(agent_id)
+        if not agent:
+            return json.dumps({"error": f"Agent {agent_id} not found"})
+        await db.update_agent(agent_id, status="done", finished_at=_now(), cost_usd=cost_usd)
+        if agent.job_id:
+            await db.record_event(agent.job_id, "work_item_completed", "herder", f"agent={agent_id} {summary[:120]}")
+        logger.info("Work item completed by herder (agent=%s, $%.4f)", agent_id, cost_usd)
+        return json.dumps({"completed": True, "agent_id": agent_id, "cost_usd": cost_usd})
 
     @mcp.tool()
     async def release_engineer_work(agent_id: str, reason: str = "released") -> str:
