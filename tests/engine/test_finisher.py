@@ -165,7 +165,19 @@ class TestFallbackContract:
         e.db.get_agents_for_job = AsyncMock(return_value=agents or [])
         e.db.get_job = AsyncMock(return_value=None)
         e.db.get_task = AsyncMock(return_value=task)
+        e.db.create_agent = AsyncMock(side_effect=lambda a: a)
+        e.db.record_event = AsyncMock()
+        e._nats_agent_status = AsyncMock()
         e.config = Config.from_env()
+
+        # Close the coroutine instead of leaking it: _spawn is what makes the
+        # run background, so the test must not execute it, but an un-awaited
+        # coroutine warns.
+        def _spawn(coro, name=""):
+            coro.close()
+            return MagicMock()
+
+        e._spawn = MagicMock(side_effect=_spawn)
         return e
 
     async def test_one_finisher_per_task(self):
@@ -173,17 +185,18 @@ class TestFallbackContract:
         condition that triggered it is still true — without this it re-fires
         forever instead of retrying."""
         from minions.core.models import Task
-        from minions.engine.dev import _run_finisher
+        from minions.engine.dev import _spawn_finisher
 
         task = Task(job_id="j1", title="t", description="d", service="svc", agent_role=AgentRole.BACKEND_ENGINEER)
         prior = Agent(job_id="j1", role=AgentRole.FINISHER, task_id=task.id, model="claude-haiku-4-5")
         engine = self._engine(agents=[prior])
 
-        assert await _run_finisher(engine, task, "test") is False
+        assert await _spawn_finisher(engine, task, "test") is False
+        engine._spawn.assert_not_called()
 
     async def test_an_unrelated_prior_agent_does_not_block_it(self):
         from minions.core.models import Task
-        from minions.engine.dev import _run_finisher
+        from minions.engine.dev import _spawn_finisher
 
         task = Task(job_id="j1", title="t", description="d", service="svc", agent_role=AgentRole.BACKEND_ENGINEER)
         other = Agent(job_id="j1", role=AgentRole.BACKEND_ENGINEER, task_id=task.id, model="m")
@@ -192,31 +205,62 @@ class TestFallbackContract:
 
         # Declines because the job is missing, not because of the prior agent —
         # it got far enough to look the job up.
-        assert await _run_finisher(engine, task, "test") is False
+        assert await _spawn_finisher(engine, task, "test") is False
         engine.db.get_job.assert_awaited()
 
     async def test_it_never_raises(self):
         """It sits on the path that decides whether a task advances, retries or
         fails. Throwing here strands the task in IN_PROGRESS with no owner."""
         from minions.core.models import Task
-        from minions.engine.dev import _run_finisher
+        from minions.engine.dev import _spawn_finisher
 
         task = Task(job_id="j1", title="t", description="d", service="svc", agent_role=AgentRole.BACKEND_ENGINEER)
         engine = self._engine()
         engine.db.get_agents_for_job = AsyncMock(side_effect=RuntimeError("db gone"))
 
-        assert await _run_finisher(engine, task, "test") is False
+        assert await _spawn_finisher(engine, task, "test") is False
 
     async def test_it_declines_when_no_service_resolves(self):
         from minions.core.models import Job, Task
-        from minions.engine.dev import _run_finisher
+        from minions.engine.dev import _spawn_finisher
 
         task = Task(job_id="j1", title="t", description="d", service="svc", agent_role=AgentRole.BACKEND_ENGINEER)
         engine = self._engine()
         engine.db.get_job = AsyncMock(return_value=Job(spec="s"))
         engine._resolve_service = MagicMock(return_value=(None, None))
 
-        assert await _run_finisher(engine, task, "test") is False
+        assert await _spawn_finisher(engine, task, "test") is False
+        engine._spawn.assert_not_called()
+
+    async def test_the_agent_runs_in_the_background(self):
+        """THE reason this is split. One caller of _try_complete_task is the
+        poll loop's orphan recovery, which drives job advancement, review checks
+        and deploy monitoring for the whole engine. Awaiting an LLM agent there
+        stalls all of it for minutes — which is why run_engineer is spawned too.
+        """
+        from minions.core.models import Job, Task
+        from minions.engine.dev import _spawn_finisher
+
+        task = Task(job_id="j1", title="t", description="d", service="svc", agent_role=AgentRole.BACKEND_ENGINEER)
+        engine = self._engine()
+        engine.db.get_job = AsyncMock(return_value=Job(spec="s"))
+        engine._resolve_service = MagicMock(return_value=(MagicMock(), MagicMock(repo_path="/repos/svc", default_branch="main")))
+        engine._run_in_process = AsyncMock()
+
+        assert await _spawn_finisher(engine, task, "test") is True
+        engine._spawn.assert_called_once()
+        engine._run_in_process.assert_not_awaited(), "the agent must not run inline"
+
+    async def test_a_started_finisher_owns_the_retry(self):
+        """_try_complete_task returns without retrying once one is spawned, so
+        the spawned run must perform the retry itself on failure — otherwise a
+        finisher that cannot open a PR silently strands the task."""
+        import inspect
+
+        from minions.engine.dev import _finish_task
+
+        source = inspect.getsource(_finish_task)
+        assert "_retry_or_fail" in source
 
     def test_success_is_judged_by_the_pr_not_the_exit_status(self):
         """An agent can finish cleanly having called nothing. Trusting its exit

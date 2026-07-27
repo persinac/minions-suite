@@ -55,7 +55,15 @@ def _mock_engine(db):
     engine._run_in_process = AsyncMock()
     engine._nats_agent_status = AsyncMock()
     engine._trello_comment = AsyncMock()
-    engine._spawn = MagicMock()
+
+    # Close the coroutine rather than leaking it. Tests assert that work was
+    # spawned, not that it ran, but an un-awaited coroutine emits a warning that
+    # then shows up attributed to whichever unrelated test runs next.
+    def _spawn(coro, name=""):
+        coro.close()
+        return MagicMock()
+
+    engine._spawn = MagicMock(side_effect=_spawn)
     engine._maybe_dry_run = MagicMock(side_effect=lambda x: x)
     engine._on_job_terminal = AsyncMock()
     return engine
@@ -170,19 +178,52 @@ class TestEngineerCompletion:
         updated = await db.get_task(task.id)
         assert updated.status == TaskStatus.PR_OPEN
 
-    async def test_task_retried_on_success_without_pr(self, db, sample_job, make_task):
-        """When engineer finishes without creating a PR, task should be retried."""
+    async def test_finisher_is_spawned_when_engineer_produces_no_pr(self, db, sample_job, make_task):
+        """The engineer wrote the code and ran out of budget before git. That is
+        the finisher's entire reason to exist, so it gets first refusal here —
+        retrying the engineer would re-do the expensive half to reach the cheap
+        half. The spawned run owns the outcome, including the retry if it cannot
+        open a PR.
+        """
         from minions.engine.dev import run_engineer
 
         job = sample_job
         task = make_task(job.id)
         task = await db.create_task(task)
         engine = _mock_engine(db)
-        engine._resolve_service.return_value = (MagicMock(), MagicMock(repo_path="/tmp"))
+        engine._resolve_service.return_value = (MagicMock(), MagicMock(repo_path="/tmp", default_branch="main"))
         done_agent = _make_agent(status="done")
         engine._run_in_process.return_value = done_agent
 
         await run_engineer(engine, job, task)
+
+        spawned = [c for c in engine._spawn.call_args_list if "finish-" in str(c)]
+        assert spawned, "a finisher should have been spawned instead of an immediate retry"
+
+        # Not retried inline — the finisher owns it now.
+        updated = await db.get_task(task.id)
+        assert updated.status == TaskStatus.IN_PROGRESS
+        assert updated.attempt == 1
+
+    async def test_retry_still_happens_when_the_finisher_declines(self, db, sample_job, make_task):
+        """The finisher is layered in front of retry, never a replacement.
+
+        A finisher already ran for this task, so it declines — one shot each,
+        or the no-PR condition that triggers it would re-fire forever. What
+        happens next must be exactly the pre-finisher behaviour.
+        """
+        from minions.engine.dev import _try_complete_task
+
+        job = sample_job
+        task = make_task(job.id)
+        task = await db.create_task(task)
+        await db.update_task(task.id, status=TaskStatus.IN_PROGRESS)
+        await db.create_agent(Agent(job_id=job.id, role=AgentRole.FINISHER, task_id=task.id, model="claude-haiku-4-5"))
+
+        engine = _mock_engine(db)
+        engine._resolve_service.return_value = (MagicMock(), MagicMock(repo_path="/tmp", default_branch="main"))
+
+        await _try_complete_task(engine, await db.get_task(task.id), "test")
 
         updated = await db.get_task(task.id)
         assert updated.status == TaskStatus.PENDING
@@ -693,8 +734,10 @@ class TestSubtaskGating:
         assert updated.status == TaskStatus.FAILED
         assert "incomplete subtasks" in updated.error
 
-    async def test_task_retried_with_no_subtasks_and_no_pr(self, db, sample_job, make_task):
-        """Engineer task with no subtasks but no PR should retry."""
+    async def test_task_not_done_with_no_subtasks_and_no_pr(self, db, sample_job, make_task):
+        """An engineer task without a PR is never complete, whatever its
+        subtasks say. It now goes to a finisher rather than straight to a retry,
+        but the gate itself is what matters here: it must not reach DONE."""
         from minions.engine.dev import run_engineer
 
         job = sample_job
@@ -702,14 +745,14 @@ class TestSubtaskGating:
         task = await db.create_task(task)
 
         engine = _mock_engine(db)
-        engine._resolve_service.return_value = (MagicMock(), MagicMock(repo_path="/tmp"))
+        engine._resolve_service.return_value = (MagicMock(), MagicMock(repo_path="/tmp", default_branch="main"))
         engine._run_in_process.return_value = _make_agent(status="done")
 
         await run_engineer(engine, job, task)
 
         updated = await db.get_task(task.id)
-        assert updated.status == TaskStatus.PENDING
-        assert updated.attempt == 2
+        assert updated.status not in (TaskStatus.DONE, TaskStatus.PR_OPEN)
+        assert [c for c in engine._spawn.call_args_list if "finish-" in str(c)]
 
     async def test_task_pr_open_with_mixed_terminal_subtasks(self, db, sample_job, make_task):
         """Engineer task with PR goes to PR_OPEN even with mix of completed/failed subtasks."""
