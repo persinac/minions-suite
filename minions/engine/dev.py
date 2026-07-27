@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -682,6 +683,9 @@ async def run_engineer(engine: JobEngine, job: Job, task: Task, is_revision: boo
         return
 
     context = None
+    # Only meaningful on the revision path, but bound here so the completion
+    # check below cannot depend on which branch of the chain ran.
+    sha_before_revision = ""
 
     if is_retry:
         checkpoint_summary = await build_checkpoint_summary(engine, task.id)
@@ -728,6 +732,10 @@ async def run_engineer(engine: JobEngine, job: Job, task: Task, is_revision: boo
 
         review_feedback = await get_review_feedback(engine, job.id, task)
         context = f"## Revision Context (revision {task.revision_count})\n\n{review_feedback}"
+
+        # Remembered so the completion path can tell whether this revision
+        # actually changed anything. See the no-op check after the agent runs.
+        sha_before_revision = await _pr_head_sha(task)
 
     else:
         # Fresh task — generate branch name per job+service so sequential tasks for the
@@ -785,6 +793,31 @@ async def run_engineer(engine: JobEngine, job: Job, task: Task, is_revision: boo
 
     if result_agent.status == "done":
         if is_revision:
+            # A revision that pushed nothing must not buy another review round.
+            #
+            # Job 793821e8's third revision ran 38 turns, reported done, and
+            # committed nothing. The engine sent it back to PR_OPEN anyway and
+            # three Opus reviewers re-derived their verdict against a
+            # byte-identical diff — ~$2.4 to learn what was already known. The
+            # revision-scoped dedup guard cannot catch this: revision_count is
+            # bumped whether or not the agent produced anything, so the guard
+            # correctly sees a new revision of the same code.
+            #
+            # An unchanged head SHA is the honest signal. Fall through to the
+            # retry/fail path instead, which is where a revision that achieved
+            # nothing belongs.
+            sha_after = await _pr_head_sha(task)
+            if sha_before_revision and sha_after and sha_before_revision == sha_after:
+                logger.warning(
+                    "Revision %d for task %s pushed no commits (PR head still %s) — skipping re-review",
+                    task.revision_count,
+                    task.id,
+                    sha_after[:8],
+                )
+                await engine.db.record_event(job.id, "revision_no_op", "engine", f"task={task.id} revision={task.revision_count} sha={sha_after[:8]}")
+                await _retry_or_fail(engine, task.id, f"revision {task.revision_count} produced no commits", "run_engineer")
+                return
+
             # After a successful revision, move task back to PR_OPEN for re-review
             current_task = await engine.db.get_task(task.id)
             if current_task and current_task.status not in (TaskStatus.PR_OPEN, TaskStatus.IN_REVIEW, TaskStatus.MERGED, TaskStatus.DONE):
@@ -842,6 +875,39 @@ async def get_review_feedback(engine: JobEngine, job_id: str, task: Task) -> str
     )
 
 
+async def _pr_head_sha(task: Task) -> str:
+    """Current head SHA of `task`'s PR, or "" if it cannot be determined.
+
+    Used to tell a revision that changed something from one that changed
+    nothing. Returns "" on any failure, and callers treat "" as "cannot tell" —
+    an unknown SHA must never be mistaken for an unchanged one, because that
+    would suppress a legitimate re-review of real work.
+    """
+    import subprocess
+
+    url = task.pr_url or task.mr_url or ""
+    match = re.search(r"github\.com/([^/\s]+/[^/\s]+)/pull/(\d+)", url)
+    if not match:
+        return ""
+    repo, number = match.group(1), match.group(2)
+
+    try:
+        result = subprocess.run(
+            ["gh", "api", f"repos/{repo}/pulls/{number}", "--jq", ".head.sha"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except Exception as e:
+        logger.warning("Could not read PR head SHA for %s#%s: %s", repo, number, e)
+        return ""
+
+    if result.returncode != 0:
+        logger.warning("Could not read PR head SHA for %s#%s: %s", repo, number, (result.stderr or "")[:160])
+        return ""
+    return (result.stdout or "").strip()
+
+
 async def _fetch_pr_review_bodies(engine: JobEngine, task: Task) -> str:
     """Review bodies for `task`'s PR, straight from the git provider.
 
@@ -881,7 +947,66 @@ async def _fetch_pr_review_bodies(engine: JobEngine, task: Task) -> str:
         return ""
 
     logger.info("Loaded %d PR review(s) as revision feedback for task %s", len(chosen), task.id)
-    return "\n\n---\n\n".join(r.get("body", "") for r in chosen)
+    bodies = [r.get("body", "") for r in chosen]
+    return _as_checklist(bodies)
+
+
+# Reviewer findings are markdown bullets of the shape
+#   - **[warning]** path/to/file.py:26 — what is wrong
+# emitted by the specialist personas. Captures severity, location and text.
+_FINDING_RE = re.compile(r"^\s*[-*]\s+\*\*\[(?P<sev>[a-z]+)\]\*\*\s*(?P<rest>.+?)\s*$", re.MULTILINE)
+
+
+def _as_checklist(bodies: list[str]) -> str:
+    """Turn reviewer prose into an enumerated checklist with required dispositions.
+
+    Handed the raw review bodies, the revision agent reliably fixed the first or
+    most structural finding and silently dropped the rest. Job 793821e8: round 2
+    raised three findings and the revision addressed one; rounds 3 and 4 repeated
+    the two it skipped, verbatim and unanimously, and it never touched them. Each
+    dropped finding costs another full fan-out (~$2.2) plus a revision, and that
+    job died at max_revisions having spent $10.66 on a ten-line fix.
+
+    The feedback was never the problem — it was loaded correctly every round. The
+    problem is that prose has no structure to be accountable to. Numbering the
+    findings and demanding a per-item disposition makes skipping one an explicit
+    act rather than an oversight. Declining with a reason is a fine outcome;
+    silence is not.
+
+    Falls back to the raw text when nothing parses, still framed as "address
+    every point" — a persona that formats differently must not end up with
+    weaker instructions than one that matches the regex.
+    """
+    joined = "\n\n---\n\n".join(b for b in bodies if b)
+    findings = [m.group("sev").upper() + " — " + " ".join(m.group("rest").split()) for m in _FINDING_RE.finditer(joined)]
+
+    if findings:
+        numbered = "\n".join(f"{i}. [ ] {f}" for i, f in enumerate(findings, 1))
+        header = (
+            f"The reviewers requested changes. They raised {len(findings)} finding(s).\n"
+            f"You MUST account for EVERY one before you finish.\n\n"
+            f"=== FINDINGS CHECKLIST ===\n{numbered}\n\n"
+            f"=== HOW TO RESPOND ===\n"
+            f"Work through the list IN ORDER. For each numbered finding, do one of:\n"
+            f"  (a) FIX it, or\n"
+            f"  (b) DECLINE it, and say why in your final message.\n\n"
+            f"Declining with a reason is acceptable. Silently skipping one is not — the same\n"
+            f"reviewers will raise it again next round, and the task fails once the revision\n"
+            f"budget runs out.\n"
+            f"Before you finish, restate the list with each item marked FIXED or DECLINED.\n\n"
+            f"Restoring something a previous revision deleted counts as a fix. If a finding\n"
+            f"says a test or behaviour was removed, put it back rather than arguing it was\n"
+            f"unnecessary.\n\n"
+            f"=== FULL REVIEW TEXT ===\n"
+        )
+        return header + joined
+
+    return (
+        "The reviewers requested changes. Address EVERY point raised below, not just the\n"
+        "first or the easiest. Before you finish, list each point and state whether you\n"
+        "fixed it or are declining it and why.\n\n"
+        "=== FULL REVIEW TEXT ===\n" + joined
+    )
 
 
 async def _run_one_specialist(
