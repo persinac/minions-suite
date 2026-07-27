@@ -157,7 +157,20 @@ def build_registry(config_path: str) -> dict[str, ProjectConfig]:
         data = yaml.safe_load(f) or {}
 
     defaults = data.get("defaults", {})
-    default_model = defaults.get("model", "claude-opus-5")
+    # Empty, NOT a model name. ProjectConfig.model documents empty as "use the
+    # default", and a hardcoded fallback here quietly made that impossible:
+    # every project got a pinned model whether or not anyone asked for one.
+    #
+    # It matters because project_model is passed to resolve_model at exactly one
+    # call site — the reviewer fan-out — where it returns BEFORE the reviewer
+    # default or the difficulty tier is consulted. So this line, not any config
+    # anyone wrote, is why every reviewer ran on Opus while
+    # model_reviewer=claude-sonnet-5 sat unused and the classifier's verdict was
+    # ignored.
+    #
+    # Job 33c89d9b: classified EASY, engineer $0.00 on the herder, and still
+    # $4.76 of Opus reviewers out of $4.81 total.
+    default_model = defaults.get("model", "")
     default_provider = defaults.get("git_provider", "gitlab")
     default_gitlab_url = defaults.get("gitlab_url", "")
 

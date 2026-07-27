@@ -40,7 +40,22 @@
 # set to something that would fail confusingly.
 
 defaults:
-  model: claude-opus-5
+  # NO `model:` here, deliberately.
+  #
+  # A project model is passed to resolve_model at exactly ONE call site — the
+  # reviewer fan-out (engine/dev.py) — and it returns before either the reviewer
+  # default or the difficulty tier is consulted. So `model: claude-opus-5` here
+  # did not mean "this project prefers Opus"; it meant "every reviewer is Opus,
+  # always", silently overriding model_reviewer=claude-sonnet-5 AND the
+  # classifier.
+  #
+  # Job 33c89d9b is what that cost: classified EASY, engineer on the herder at
+  # $0.00, and still $4.76 of Opus reviewers out of a $4.81 total.
+  #
+  # Removing it lets the intended resolution apply: model_reviewer (Sonnet 5)
+  # for medium and hard, and the easy tier for easy tickets. Set `model:` on an
+  # INDIVIDUAL project only when that project genuinely needs its reviewers
+  # pinned, and know that it overrides everything when you do.
   git_provider: github
 
 projects:
