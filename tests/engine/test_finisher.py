@@ -287,6 +287,51 @@ class TestFallbackContract:
         assert "AgentRole.FINISHER" in source
 
 
+class TestRoleOverrideWiring:
+    """The role is overridden on a copy — everything keyed off the task must
+    still resolve to the ORIGINAL task."""
+
+    def _task(self):
+        from minions.core.models import Task
+
+        return Task(job_id="j1", title="t", description="d", service="svc", agent_role=AgentRole.BACKEND_ENGINEER)
+
+    def test_the_executor_still_targets_the_real_task(self):
+        """report_pr injects task_id from the executor. If the copy changed it,
+        the finisher would open a PR against nothing and the state machine would
+        never learn — silently, which is the exact failure this role exists to
+        prevent."""
+        from minions.agents.tools.mcp_executor import create_mcp_tool_executor
+        from minions.core.models import Job
+
+        task = self._task()
+        copy = task.model_copy(update={"agent_role": AgentRole.FINISHER})
+        executor = create_mcp_tool_executor(
+            mcp_server=MagicMock(),
+            job=Job(id="j1", spec="s"),
+            task=copy,
+            agent_id="a1",
+            working_dir="/repos/svc",
+            config=Config.from_env(),
+        )
+
+        assert executor.task_id == task.id
+        assert executor.agent_role == AgentRole.FINISHER
+
+    def test_report_pr_is_an_injected_state_tool(self):
+        """It routes through the MCP server with task_id injected, rather than
+        taking it from the model — so the agent cannot get it wrong."""
+        from minions.agents.tools.mcp_executor import _STATE_TOOL_INJECTIONS
+
+        assert ("task_id", "task_id") in _STATE_TOOL_INJECTIONS["report_pr"]
+
+    def test_the_copy_does_not_mutate_the_original(self):
+        task = self._task()
+        task.model_copy(update={"agent_role": AgentRole.FINISHER})
+
+        assert task.agent_role == AgentRole.BACKEND_ENGINEER
+
+
 class TestPromptBudget:
     @pytest.fixture(scope="class")
     def prompt(self) -> str:
