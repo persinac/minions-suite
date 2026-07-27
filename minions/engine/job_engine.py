@@ -644,7 +644,24 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
         # Without it every file and shell tool runs against a directory that
         # does not exist.
         if working_dir != "." and service and service.clone_url:
-            ok = await ensure_checkout(service.clone_url, working_dir, service.default_branch)
+            # Checkouts are shared per repo_path, so uncommitted files in the
+            # tree belong to *somebody* — but ensure_checkout cannot tell whose.
+            # If no agent other than the one we are about to start is running,
+            # nobody is mid-work and the dirt is orphaned: a previous job died
+            # holding it. Left alone it wedges the repo for every later job,
+            # whose diff then silently includes the dead job's edits.
+            #
+            # Excluding our own agent matters — it is already persisted as
+            # 'starting' by this point, so an unfiltered check is never empty
+            # and this would never fire.
+            running = await self.db.get_running_agents()
+            orphaned = not [a for a in running if a.id != agent.id]
+            ok = await ensure_checkout(
+                service.clone_url,
+                working_dir,
+                service.default_branch,
+                reset_dirty=orphaned,
+            )
             if not ok:
                 logger.error(
                     "Could not prepare checkout at %s for task %s — agent would run against an empty directory",

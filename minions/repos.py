@@ -21,14 +21,22 @@ Two things are set up here:
   me who you are" — the agent would do all its work and fail at the last step.
 
 Known limitation: checkouts are keyed by ``repo_path`` from the registry, so two
-jobs targeting the same repo share one working tree on the PVC. A DIRTY tree is
-therefore never reset — doing so would delete the uncommitted work of a job
-already running there. A CLEAN tree is returned to the default branch, because
-it has nothing to lose and leaving it parked on the previous job's branch is its
-own hazard: a branch cut from there inherits commits the current job did not
-make, which auto_merge would then land under an unrelated ticket. Concurrent jobs against a
-single repo still need per-job worktrees; that arrives with K8s dispatch, which
-gives each Job its own emptyDir.
+jobs targeting the same repo share one working tree on the PVC. A CLEAN tree is
+returned to the default branch, because it has nothing to lose and leaving it
+parked on the previous job's branch is its own hazard: a branch cut from there
+inherits commits the current job did not make, which auto_merge would then land
+under an unrelated ticket. Concurrent jobs against a single repo still need
+per-job worktrees; that arrives with K8s dispatch, which gives each Job its own
+emptyDir.
+
+A DIRTY tree is only reset when the caller passes ``reset_dirty``. The
+distinction that matters is *live work* versus *orphaned dirt*, and this module
+cannot tell them apart — it sees uncommitted files and nothing else. Refusing
+unconditionally (the original behaviour) is safe for the first case and wedges
+the repo forever in the second: a job that dies mid-edit leaves files behind, no
+later job will clear them, and every subsequent job on that repo inherits them
+into its diff. Only the engine knows whether an agent is actually running, so
+the engine makes the call and this function honours it.
 """
 
 import asyncio
@@ -101,11 +109,18 @@ def _is_git_repo(path: Path) -> bool:
     return (path / ".git").exists()
 
 
-async def ensure_checkout(clone_url: str, dest: str, default_branch: str = "main") -> bool:
+async def ensure_checkout(
+    clone_url: str,
+    dest: str,
+    default_branch: str = "main",
+    reset_dirty: bool = False,
+) -> bool:
     """Make sure `dest` holds a usable checkout of `clone_url`.
 
     Clones when absent. When present, fetches, then returns a CLEAN tree to
-    `default_branch` while leaving a DIRTY one alone — see the module docstring.
+    `default_branch`. A DIRTY tree is left alone unless `reset_dirty` is set,
+    which the caller does only once it has established that no agent is running
+    and the uncommitted files are therefore orphaned — see the module docstring.
     Returns True when the checkout is usable.
     """
     if not clone_url:
@@ -123,20 +138,41 @@ async def ensure_checkout(clone_url: str, dest: str, default_branch: str = "main
 
         _, branch = await _run_git("rev-parse", "--abbrev-ref", "HEAD", cwd=dest)
         _, dirty = await _run_git("status", "--porcelain", cwd=dest)
-        if dirty:
-            # Somebody may be mid-work here. Resetting would delete it, which is
-            # why this function has never reset at all.
+        if dirty and not reset_dirty:
+            # Somebody may be mid-work here. Resetting would delete it.
             logger.warning(
                 "Checkout %s has %d uncommitted file(s) on branch %s from a previous job — not resetting",
                 dest,
                 len(dirty.splitlines()),
                 branch,
             )
-        elif branch != default_branch:
-            # CLEAN tree on a stale branch: nothing to lose, so return to base.
+            return True
+
+        if dirty:
+            # Orphaned dirt: the caller established that nothing is running, so
+            # there is no work in progress to protect. `reset --hard` below
+            # handles tracked modifications, but NOT untracked files — a dead
+            # engineer that created new source files would otherwise leave them
+            # for the next job to pick up in its diff. `-d` for directories,
+            # deliberately no `-x`: ignored paths are build artefacts like
+            # .venv/ and node_modules/, and re-installing them every job is a
+            # cost with no correctness benefit.
+            logger.warning(
+                "Checkout %s: discarding %d uncommitted file(s) left on branch %s by a job that is no longer running",
+                dest,
+                len(dirty.splitlines()),
+                branch,
+            )
+            code, out = await _run_git("clean", "-fd", cwd=dest)
+            if code != 0:
+                logger.warning("Could not clean untracked files in %s: %s", dest, out)
+
+        if branch != default_branch:
+            # Tree with nothing left to lose — either it was clean, or it was
+            # dirty and the caller told us the owner is dead. Return it to base.
             #
-            # The docstring's warning is about destroying uncommitted work; a
-            # clean tree has none. Leaving it parked on the last job's branch is
+            # The docstring's warning is about destroying uncommitted work; by
+            # here there is none. Leaving it parked on the last job's branch is
             # its own hazard: job 2e9cd9e3 started with management-api still on
             # feat-job-7c2f5e39-management-api carrying that job's commit, so a
             # branch cut from there inherits work the current job did not do and
