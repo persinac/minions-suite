@@ -1452,6 +1452,32 @@ async def manage_dev_tasks(engine: JobEngine, job: Job):
             engine._spawn(run_engineer(engine, job, task, is_revision=True), name=f"eng-rev-{task.id[:8]}")
 
         elif task.status == TaskStatus.IN_REVIEW:
+            # An interrupted verdict transition. Recording "changes requested"
+            # and moving the task to IN_PROGRESS are two separate writes, so a
+            # crash, eviction or rollout between them commits the first and
+            # loses the second. What is left — IN_REVIEW carrying a
+            # changes_requested review_status — is handled by NOTHING: the
+            # revision dispatcher wants IN_PROGRESS, the recovery below wants a
+            # failed agent, and claim_engineer_work only offers IN_PROGRESS. The
+            # job wedges permanently while the arbiter logs an anomaly it cannot
+            # act on.
+            #
+            # Job 33c89d9b hit this exactly: verdict recorded 10:39:25, pod
+            # replaced 10:39:28. Finishing the transition here is the cure that
+            # also covers hard crashes, where no write-ordering would have
+            # helped.
+            if (task.review_status or "").startswith("changes_requested"):
+                try:
+                    await engine.db.update_task(task.id, status=TaskStatus.IN_PROGRESS, agent_role="")
+                    logger.warning(
+                        "Task %s was left IN_REVIEW with a changes_requested verdict — completing the interrupted transition",
+                        task.id,
+                    )
+                    await engine.db.record_event(job.id, "review_transition_recovered", "engine", f"task={task.id}")
+                except InvalidTransitionError as e:
+                    logger.warning("Could not complete interrupted review transition for %s: %s", task.id, e)
+                continue
+
             # IN_REVIEW tasks are handled by a spawned reviewer coroutine.
             # But detect stuck reviewers — if the latest agent is starting/failed, recover.
             latest_agent = await engine.db.get_agent_for_task(task.id)
