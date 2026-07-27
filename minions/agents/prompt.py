@@ -127,6 +127,7 @@ _ROLE_TO_PROMPT: dict[str, str] = {
     "database_engineer": "agents/engineer.md",
     "code_reviewer": "agents/code_reviewer.md",
     "deploy_monitor": "agents/deployer.md",
+    "finisher": "agents/finisher.md",
 }
 
 # Map agent_role to language inference

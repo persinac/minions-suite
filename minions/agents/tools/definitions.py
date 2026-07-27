@@ -498,6 +498,35 @@ ENGINEER_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     _HEARTBEAT_TOOL,
 ]
 
+# Finisher: the git sequence only.
+#
+# Derived from ENGINEER_TOOL_DEFINITIONS by name rather than redeclared, so a
+# schema change to create_pr or report_pr reaches both roles. Redeclaring these
+# would let the two drift, and the finisher is the one that has to get report_pr
+# exactly right — it is what drives the PR_OPEN transition.
+#
+# NOT included, deliberately: read_file, write_file, search_code and the subtask
+# tools. This agent does not read the codebase or change it. Withholding those
+# is most of the point — it is what keeps the context small and the run cheap,
+# and it makes "the finisher edited something" impossible rather than merely
+# discouraged. run_command stays because the agent must be able to see what it
+# is committing (git status/diff --stat) to write an honest PR body.
+_FINISHER_TOOL_NAMES = frozenset(
+    {
+        "run_command",
+        "create_branch",
+        "commit",
+        "push",
+        "create_pr",
+        "report_pr",
+        "update_task_status",
+        "send_heartbeat",
+    }
+)
+
+FINISHER_TOOL_DEFINITIONS: list[dict[str, Any]] = [t for t in ENGINEER_TOOL_DEFINITIONS if t["function"]["name"] in _FINISHER_TOOL_NAMES]
+
+
 # Database engineer tools (no subtask decomposition, no PR workflow)
 DB_ENGINEER_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     _fn(
@@ -661,6 +690,8 @@ def get_tools_for_role(role: str, memory_enabled: bool = False) -> list[dict[str
         tools = CODE_REVIEWER_TOOL_DEFINITIONS
     elif role == "deploy_monitor":
         tools = DEPLOY_TOOL_DEFINITIONS
+    elif role == "finisher":
+        tools = FINISHER_TOOL_DEFINITIONS
     else:
         tools = ENGINEER_TOOL_DEFINITIONS
 

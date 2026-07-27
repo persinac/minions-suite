@@ -43,7 +43,18 @@ class TestEnums:
         assert set(SubtaskStatus) == {"pending", "running", "completed", "failed"}
 
     def test_agent_role_values(self):
-        expected = {"spec_analyst", "arbiter", "backend_engineer", "frontend_engineer", "database_engineer", "code_reviewer", "deploy_monitor"}
+        expected = {
+            "spec_analyst",
+            "arbiter",
+            "backend_engineer",
+            "frontend_engineer",
+            "database_engineer",
+            "code_reviewer",
+            "deploy_monitor",
+            # Owns only the git sequence. A new role needs a prompt, a tool set
+            # and a model tier, which is why this set is asserted exactly.
+            "finisher",
+        }
         assert expected == {r.value for r in AgentRole}
 
     def test_orchestrator_is_arbiter_alias(self):

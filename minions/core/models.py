@@ -64,6 +64,12 @@ class AgentRole(StrEnum):
     CODE_REVIEWER = "code_reviewer"
     DEPLOY_MONITOR = "deploy_monitor"
 
+    # Owns only the git sequence: branch, commit, push, open PR, report it.
+    # That work is mechanical and needs almost no context, but it sat at the end
+    # of the engineer's turn budget and was the first thing starved when the
+    # engineer ran long — repeatedly producing finished edits and no PR.
+    FINISHER = "finisher"
+
     # Alias: ORCHESTRATOR resolves to ARBITER (same value = enum alias)
     ORCHESTRATOR = "arbiter"
 

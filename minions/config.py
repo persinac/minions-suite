@@ -234,6 +234,12 @@ class Config:
     # ceilings silently inert. assert_priceable refuses that.
     model_engineer: str = ""
 
+    # Finisher override. Empty = the easy tier, NOT the difficulty tier: the git
+    # sequence is the same work regardless of how hard the ticket was, so it is
+    # pinned cheap rather than scaled. Exists mainly as an escape hatch if a
+    # cheap model turns out to fumble `gh pr create`.
+    model_finisher: str = ""
+
     # Git provider defaults
     git_provider: str = "gitlab"
     gitlab_url: str = ""
@@ -401,6 +407,7 @@ class Config:
             model_hard=_env_or("MODEL_HARD", _get("engine", "model_hard"), "claude-opus-5"),
             model_reviewer=_env_or("MODEL_REVIEWER", _get("engine", "model_reviewer"), "claude-sonnet-5"),
             model_engineer=_env_or("MODEL_ENGINEER", _get("engine", "model_engineer"), ""),
+            model_finisher=_env_or("MODEL_FINISHER", _get("engine", "model_finisher"), ""),
             agent_log_dir=_env_or("AGENT_LOG_DIR", _get("engine", "agent_log_dir"), str(base / "logs" / "agents")),
             agent_dispatch_mode=_env_or("AGENT_DISPATCH_MODE", _get("engine", "agent_dispatch_mode"), "in_process"),
             # -- Database --

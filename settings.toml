@@ -105,6 +105,14 @@ classifier_max_chars = 6000
 model_easy = "claude-haiku-4-5"
 model_medium = "claude-sonnet-5"
 model_hard = "claude-opus-5"
+
+# The finisher runs branch/commit/push/create_pr/report_pr and nothing else. It
+# is pinned to the easy tier rather than the difficulty tier on purpose: that
+# sequence is identical whether the ticket was a typo or a rewrite, so letting a
+# hard ticket pull it to Opus would spend Opus rates on `git push`. Empty =
+# model_easy. Set this only if a cheap model turns out to fumble `gh pr create`.
+model_finisher = ""
+
 agent_timeout = 600
 agent_log_dir = "logs/agents"
 agent_dispatch_mode = "in_process"

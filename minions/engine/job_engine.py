@@ -722,8 +722,17 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
             # Excluding our own agent matters — it is already persisted as
             # 'starting' by this point, so an unfiltered check is never empty
             # and this would never fire.
+            #
+            # The finisher is the one role this must never apply to. It runs
+            # AFTER its engineer has exited, so no other agent is running and
+            # the tree looks orphaned by every test above — while the
+            # uncommitted files in it are the engineer's output and the entire
+            # reason the finisher was launched. Resetting there would delete the
+            # work in the name of protecting it, and the run would look
+            # successful: a clean tree, nothing to commit, no error anywhere.
             running = await self.db.get_running_agents()
-            orphaned = not [a for a in running if a.id != agent.id]
+            no_one_else_running = not [a for a in running if a.id != agent.id]
+            orphaned = no_one_else_running and task.agent_role != AgentRole.FINISHER
             ok = await ensure_checkout(
                 service.clone_url,
                 working_dir,

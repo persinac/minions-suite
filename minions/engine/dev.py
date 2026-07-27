@@ -173,6 +173,16 @@ async def _try_complete_task(engine: JobEngine, task: Task, label: str) -> None:
             logger.info("%s: task %s -> DONE (all subtasks terminal)", label, task.id)
         except InvalidTransitionError as e:
             logger.warning("%s: rejected task transition for %s: %s", label, task.id, e)
+    elif subtasks_done and needs_pr and not has_pr and await _run_finisher(engine, task, label):
+        # The edits are done and only the git sequence is missing. Retrying the
+        # whole engineer here re-reads the codebase, re-plans, and re-implements
+        # work that already exists on disk — at engineer rates — to reach the
+        # five mechanical calls it ran out of budget for. _run_finisher does
+        # just those, cheaply, and returns True once the PR is reported.
+        #
+        # Falls through to the retry below when it returns False, so a finisher
+        # that cannot find anything to push loses nothing.
+        return
     else:
         # Either subtasks incomplete or engineer didn't create a PR — retry
         reason = "agent finished with incomplete subtasks" if not subtasks_done else "agent finished without creating a PR"
@@ -189,6 +199,102 @@ async def _try_complete_task(engine: JobEngine, task: Task, label: str) -> None:
                 logger.warning("%s: task %s — %s and no retries left, marking FAILED", label, task.id, reason)
             except InvalidTransitionError as e:
                 logger.warning("%s: could not fail task %s: %s", label, task.id, e)
+
+
+async def _run_finisher(engine: JobEngine, task: Task, label: str) -> bool:
+    """Guarded entry point: never raises, so it cannot break task completion.
+
+    This sits in the middle of `_try_complete_task`, on the path that decides
+    whether a task advances, retries or fails. The finisher is an optimisation —
+    it saves a full engineer re-run — and an optimisation that can throw would
+    take the retry logic down with it and strand the task in IN_PROGRESS with no
+    owner. Anything unexpected here means "no finisher", which is exactly the
+    behaviour that existed before it.
+    """
+    try:
+        return await _finish_task(engine, task, label)
+    except Exception:
+        logger.exception("%s: finisher raised for task %s — falling back to retry", label, task.id)
+        return False
+
+
+async def _finish_task(engine: JobEngine, task: Task, label: str) -> bool:
+    """Run a cheap agent that does only branch/commit/push/create_pr/report_pr.
+
+    The engineer's failure mode is not that it cannot write the code — three
+    measured runs wrote the code and then died before git, because the git
+    sequence sits at the END of a turn budget the edits have already consumed.
+    Retrying the engineer to recover it re-does the expensive half to reach the
+    cheap half. This does the cheap half on its own.
+
+    Returns True only when a PR actually exists afterwards, verified by
+    re-reading the task rather than trusting the agent's exit status: an agent
+    that finishes cleanly without calling report_pr has not delivered anything,
+    and the caller must still fall back to a real retry.
+    """
+    existing = await engine.db.get_agents_for_job(task.job_id)
+    if any(a.task_id == task.id and a.role == AgentRole.FINISHER for a in existing):
+        # One shot per task. A finisher that failed to produce a PR will fail
+        # the same way again — the retry path is the honest next step, and
+        # without this the no-PR condition that got us here would re-trigger
+        # forever.
+        logger.info("%s: task %s already had a finisher — falling back to retry", label, task.id)
+        return False
+
+    job = await engine.db.get_job(task.job_id)
+    if not job:
+        return False
+    project, service = engine._resolve_service(task.service)
+    if not service:
+        logger.warning("%s: no service resolved for task %s — cannot run finisher", label, task.id)
+        return False
+
+    agent = Agent(
+        job_id=job.id,
+        role=AgentRole.FINISHER,
+        task_id=task.id,
+        model=resolve_model(engine.config, job.difficulty, is_finisher=True),
+    )
+    agent = await engine.db.create_agent(agent)
+    await engine.db.record_event(job.id, "agent_launched", "engine", f"agent={agent.id} role=finisher task={task.id} action=finish")
+    await engine._nats_agent_status(job.id, agent.id, str(AgentRole.FINISHER), "launched")
+    logger.info("%s: task %s has edits but no PR — launching finisher %s (%s)", label, task.id, agent.id[:8], agent.model)
+
+    # Override the role on a COPY. run_agent resolves both the prompt and the
+    # tool set from task.agent_role, and the row in the database must keep
+    # saying backend_engineer — that is what the task is, and the retry
+    # accounting and service-ownership checks read it.
+    finisher_task = task.model_copy(update={"agent_role": AgentRole.FINISHER})
+
+    context = (
+        f"The engineer working on this task has stopped. Its changes are in the working tree "
+        f"at {service.repo_path}, either uncommitted or committed but unpushed.\n\n"
+        f"Task: {task.title}\n{task.description}\n\n"
+        f"Branch to use if one is not already checked out: {task.branch_name or f'feat/job-{job.id[:8]}/{task.service}'}\n"
+        f"Base branch: {service.default_branch}"
+    )
+
+    result_agent = await engine._run_in_process(job, finisher_task, agent, project, service, context)
+
+    refreshed = await engine.db.get_task(task.id)
+    if refreshed and refreshed.pr_url:
+        try:
+            await engine.db.update_task(task.id, status=TaskStatus.PR_OPEN, agent_role="")
+            logger.info("%s: finisher opened PR for task %s -> PR_OPEN", label, task.id)
+        except InvalidTransitionError as e:
+            logger.warning("%s: finisher got a PR but transition was rejected for %s: %s", label, task.id, e)
+            return False
+        await _label_minions_mr(engine, refreshed)
+        return True
+
+    logger.warning(
+        "%s: finisher %s ended %s without reporting a PR for task %s — falling back to retry",
+        label,
+        agent.id[:8],
+        result_agent.status if result_agent else "unknown",
+        task.id,
+    )
+    return False
 
 
 # mergeable_state values that mean GitHub would accept the merge.
@@ -722,7 +828,7 @@ async def _fetch_pr_review_bodies(engine: JobEngine, task: Task) -> str:
 
     try:
         result = subprocess.run(
-            ["gh", "api", f"repos/{repo}/pulls/{number}/reviews", "--jq", "[.[] | select(.body != \"\") | {state, body}]"],
+            ["gh", "api", f"repos/{repo}/pulls/{number}/reviews", "--jq", '[.[] | select(.body != "") | {state, body}]'],
             capture_output=True,
             text=True,
             timeout=30,

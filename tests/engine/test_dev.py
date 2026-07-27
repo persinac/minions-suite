@@ -48,6 +48,10 @@ def _mock_engine(db):
     engine.registry = {}
     engine._k8s_enabled = False
     engine._has_running_agent = AsyncMock(return_value=False)
+    # Real code always returns a (project, service) pair; a bare MagicMock
+    # unpacks to nothing and surfaces as "not enough values to unpack" from
+    # whichever caller happens to touch it first.
+    engine._resolve_service = MagicMock(return_value=(None, None))
     engine._run_in_process = AsyncMock()
     engine._nats_agent_status = AsyncMock()
     engine._trello_comment = AsyncMock()
@@ -434,7 +438,13 @@ class TestOrphanRecovery:
         assert updated.status == TaskStatus.PR_OPEN
 
     async def test_done_agent_without_pr_retries(self, db, sample_job, make_task):
-        """Orphaned engineer task with done agent but no PR should retry."""
+        """Orphaned engineer task with done agent but no PR should retry.
+
+        A finisher is attempted first (that is the whole point of the role), but
+        it cannot resolve a service here, so it declines. The retry path must
+        still run exactly as before — the finisher is an optimisation layered in
+        front of this, never a replacement for it.
+        """
         from minions.engine.dev import manage_dev_tasks
 
         job = sample_job
@@ -874,16 +884,16 @@ class TestReviewAgentCreation:
             patch("minions.engine.dev.run_agent", new_callable=AsyncMock, return_value=mock_result) as mock_run,
             patch("minions.engine.review._create_provider_for_project") as mock_provider_factory,
         ):
-                mock_provider = AsyncMock()
-                mock_provider.get_changed_files.return_value = ["file.py"]
-                mock_provider_factory.return_value = mock_provider
+            mock_provider = AsyncMock()
+            mock_provider.get_changed_files.return_value = ["file.py"]
+            mock_provider_factory.return_value = mock_provider
 
-                await run_task_review(engine, job, task)
+            await run_task_review(engine, job, task)
 
-                # Every reviewer must receive its pre-created agent.
-                assert mock_run.call_count >= 1, "the fan-out ran no reviewers at all"
-                for call in mock_run.call_args_list:
-                    assert call.kwargs.get("agent") is not None, "run_agent must receive agent= to prevent double creation"
+            # Every reviewer must receive its pre-created agent.
+            assert mock_run.call_count >= 1, "the fan-out ran no reviewers at all"
+            for call in mock_run.call_args_list:
+                assert call.kwargs.get("agent") is not None, "run_agent must receive agent= to prevent double creation"
 
         # One agent per reviewer task — the double-creation regression would
         # show up as more agents than tasks.
@@ -923,11 +933,11 @@ class TestReviewAgentCreation:
             patch("minions.engine.dev.run_agent", new_callable=AsyncMock, return_value=mock_result),
             patch("minions.engine.review._create_provider_for_project") as mock_provider_factory,
         ):
-                mock_provider = AsyncMock()
-                mock_provider.get_changed_files.return_value = []
-                mock_provider_factory.return_value = mock_provider
+            mock_provider = AsyncMock()
+            mock_provider.get_changed_files.return_value = []
+            mock_provider_factory.return_value = mock_provider
 
-                await run_task_review(engine, job, task)
+            await run_task_review(engine, job, task)
 
         # Every reviewer agent should use the project model, not the engine
         # default and not the reviewer tier — an explicitly pinned project model

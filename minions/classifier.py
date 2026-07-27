@@ -260,7 +260,9 @@ def assert_priceable(model: str, config, role: str = "agent") -> None:
     )
 
 
-def resolve_model(config, difficulty: str | None, project_model: str = "", is_reviewer: bool = False, is_engineer: bool = False) -> str:
+def resolve_model(
+    config, difficulty: str | None, project_model: str = "", is_reviewer: bool = False, is_engineer: bool = False, is_finisher: bool = False
+) -> str:
     """Pick the model for an agent.
 
     Precedence: an explicit per-project model wins (someone chose it
@@ -273,6 +275,19 @@ def resolve_model(config, difficulty: str | None, project_model: str = "", is_re
     still pulls everything down to the cheap tier — the reviewer default only
     applies from medium upward, where it would otherwise be Opus.
     """
+    if is_finisher:
+        # Pinned to the cheap tier and NOT subject to project_model, which is
+        # the one override deliberately ignored here.
+        #
+        # Difficulty describes the ticket, and the finisher does not do the
+        # ticket — it runs branch/commit/push/create_pr/report_pr, which is the
+        # same mechanical sequence whether the change was a typo or a rewrite.
+        # Letting a hard ticket pull this to Opus would spend Opus rates on
+        # `git push`, which is the exact waste this role was introduced to
+        # remove. A project that pins Opus for its engineers means Opus for the
+        # code, not for the plumbing.
+        return getattr(config, "model_finisher", "") or config.model_easy or config.model
+
     if project_model:
         return project_model
 

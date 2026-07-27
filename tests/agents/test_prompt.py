@@ -153,12 +153,33 @@ class TestBuildAgentPrompt:
 
 class TestRoleMappings:
     def test_all_roles_have_prompt_mapping(self):
-        expected_roles = {"spec_analyst", "arbiter", "backend_engineer", "frontend_engineer", "database_engineer", "code_reviewer", "deploy_monitor"}
+        expected_roles = {
+            "spec_analyst",
+            "arbiter",
+            "backend_engineer",
+            "frontend_engineer",
+            "database_engineer",
+            "code_reviewer",
+            "deploy_monitor",
+            "finisher",
+        }
         assert set(_ROLE_TO_PROMPT.keys()) == expected_roles
+
+    def test_every_agent_role_is_mapped(self):
+        """The set above is hand-written, so it can agree with itself while
+        still missing a role that exists. A role with no mapping silently falls
+        back to the engineer prompt — which for the finisher would hand it the
+        very workflow it was created to avoid."""
+        from minions.core.models import AgentRole
+
+        assert {r.value for r in AgentRole} <= set(_ROLE_TO_PROMPT.keys())
 
     def test_engineer_roles_share_prompt(self):
         assert _ROLE_TO_PROMPT["backend_engineer"] == _ROLE_TO_PROMPT["frontend_engineer"]
         assert _ROLE_TO_PROMPT["backend_engineer"] == _ROLE_TO_PROMPT["database_engineer"]
+
+    def test_the_finisher_does_not_share_the_engineer_prompt(self):
+        assert _ROLE_TO_PROMPT["finisher"] != _ROLE_TO_PROMPT["backend_engineer"]
 
     def test_language_mappings(self):
         assert _ROLE_TO_LANGUAGE["backend_engineer"] == "python"
