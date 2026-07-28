@@ -49,6 +49,9 @@ class TrelloPoller:
         self._minion_label_id: str | None = None
         self._running = False
         self._active: dict[str, dict[str, Any]] = {}
+        # Edge-triggered, so the "nothing is labelled" warning is logged on the
+        # transition into that state rather than on every poll. See _get_cards.
+        self._label_gate_warned = False
 
     async def start(self):
         """Main polling loop."""
@@ -191,7 +194,36 @@ class TrelloPoller:
         if not require_minion_label:
             return cards
 
-        return [c for c in cards if any((label.get("name") or "").lower() == MINION_LABEL for label in c.get("labels", []))]
+        eligible = [c for c in cards if any((label.get("name") or "").lower() == MINION_LABEL for label in c.get("labels", []))]
+
+        # A full board and an empty queue look identical from outside, and this
+        # is the *normal* steady state once the label gate is on: on-deck is the
+        # team's backlog, so it is never empty, and the poller silently does
+        # nothing until somebody labels a card. On 2026-07-28 that state had
+        # held for days across 26 cards with not one log line describing it —
+        # every other explanation (throttling, concurrency, a crashed poller)
+        # writes a log, so silence pointed everywhere except the real cause.
+        #
+        # Edge-triggered on purpose. _intake_interval_elapsed only throttles
+        # once a job has actually STARTED, so while nothing is eligible it
+        # returns True on every cycle and this runs at the raw poll interval —
+        # 180s. Warning unconditionally would emit ~480 identical lines a day
+        # and become the noise it exists to cut through.
+        if cards and not eligible:
+            if not self._label_gate_warned:
+                logger.warning(
+                    "Trello intake is idle: %d card(s) in %s, none carrying the %r label. Nothing will be picked up until a card is labelled.",
+                    len(cards),
+                    LIST_ONDECK,
+                    MINION_LABEL,
+                )
+                self._label_gate_warned = True
+        elif eligible:
+            if self._label_gate_warned:
+                logger.info("Trello intake resumed: %d eligible card(s)", len(eligible))
+            self._label_gate_warned = False
+
+        return eligible
 
     async def _move_card(self, card_id: str, list_name: str):
         """Move a card to a different list."""
