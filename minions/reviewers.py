@@ -135,6 +135,33 @@ def normalise_verdict(raw: str | None) -> str | None:
     return _VERDICT_ALIASES.get(str(raw).strip().lower().replace("-", "_"))
 
 
+def missing_verdicts(verdicts: dict[str, str | None]) -> list[str]:
+    """Specialties that returned nothing usable, when NOTHING actually objected.
+
+    aggregate_verdicts fails closed on an absent verdict, which is right —
+    silence must never count as assent. But the caller then cannot tell "a
+    reviewer objected" from "a reviewer did not answer", and those want opposite
+    handling: the first needs a revision, the second needs that reviewer run
+    again.
+
+    Collapsing them cost two merges. Job 33c89d9b: api and backend-architecture
+    both APPROVED, pythonista returned nothing, and the forced revision round
+    came back with the opposite verdict on identical code. Job 2b63f1b6: two
+    approvals, zero findings, and a herder was asked to revise a PR nobody had
+    objected to.
+
+    Returns [] when there is a real objection, so a genuine block always goes to
+    revision and this can only ever short-circuit the no-objection case.
+    """
+    if not verdicts:
+        return []
+
+    resolved = {s: normalise_verdict(v) for s, v in verdicts.items()}
+    if any(v == REQUEST_CHANGES for v in resolved.values()):
+        return []
+    return sorted(s for s, v in resolved.items() if v is None)
+
+
 def aggregate_verdicts(verdicts: dict[str, str | None]) -> tuple[str, str]:
     """Collapse per-specialty verdicts into one decision.
 
