@@ -246,7 +246,12 @@ projects:
         clone_url: https://github.com/flippin-balls/directory-ui.git
         repo_path: /repos/directory-ui
         language: typescript
-        test_command: npm test
+        # Verified against the repo's package.json on 2026-07-29: there is no
+        # `test` script, so the previous `npm test` could only ever fail with
+        # "Missing script: test". `build` is the real gate -- it type-checks the
+        # whole project, which is the failure mode a frontend edit actually has.
+        install_command: npm ci
+        test_command: npm run build
         lint_command: npm run lint
         default_branch: main
         deploy_target: none
@@ -334,8 +339,13 @@ projects:
         clone_url: https://github.com/flippin-balls/flashback-heatmap.git
         repo_path: /repos/flashback-heatmap
         language: typescript
-        test_command: npm test
-        lint_command: npm run lint
+        # No `test` and no `lint` script in this repo -- scripts are build, dev,
+        # preview, rebuild, typecheck. Both commands here were fabricated.
+        # lint_command is left empty rather than pointed at something that does
+        # not exist; an empty one is simply omitted from the prompt.
+        install_command: npm ci
+        test_command: npm run typecheck
+        lint_command: ""
         default_branch: master
         deploy_target: none
 
@@ -568,6 +578,8 @@ projects:
         clone_url: https://github.com/flippin-balls/management-dashboard.git
         repo_path: /repos/management-dashboard
         language: typescript
+        # The only frontend repo where both declared scripts genuinely exist.
+        install_command: npm ci
         test_command: npm test
         lint_command: npm run lint
         default_branch: main
@@ -702,7 +714,11 @@ projects:
         clone_url: https://github.com/flippin-balls/store-front.git
         repo_path: /repos/store-front
         language: typescript
-        test_command: npm test
+        # No `test` script. `build` is the gate; the repo also has
+        # check:contrast and check:primitives if a design-system change ever
+        # wants a tighter one.
+        install_command: npm ci
+        test_command: npm run build
         lint_command: npm run lint
         default_branch: main
         deploy_target: none
@@ -748,8 +764,10 @@ projects:
         clone_url: https://github.com/flippin-balls/ui-integration-tests.git
         repo_path: /repos/ui-integration-tests
         language: typescript
+        # Has `test`, has no `lint`.
+        install_command: npm ci
         test_command: npm test
-        lint_command: npm run lint
+        lint_command: ""
         default_branch: main
         deploy_target: none
 

@@ -38,6 +38,32 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
+# Node.js — so the TypeScript/JavaScript repos are actually workable.
+#
+# Without it every frontend service in projects.yaml (directory-ui, store-front,
+# management-dashboard, flashback-heatmap, ui-integration-tests) was dead on
+# arrival: an agent would clone, edit, then fail at `npm ci` with "command not
+# found" and burn a whole attempt discovering the image could not build its
+# target. The label gate hid this — those tickets were never picked up, so the
+# gap never surfaced as a failure, only as work that silently could not start.
+#
+# NodeSource rather than COPY --from=node:*-slim: the copy approach has to match
+# the base image's Debian suite and glibc by hand, and python:3.14-slim moves
+# between suites on its own schedule. apt resolves that. Same pattern already
+# used above for gh and below for doppler.
+#
+# Pinned to a major so a rebuild cannot jump the runtime under the agents.
+ARG NODE_MAJOR=24
+RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+        | gpg --dearmor -o /usr/share/keyrings/nodesource.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" \
+        > /etc/apt/sources.list.d/nodesource.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/* \
+    && node --version \
+    && npm --version
+
 # AWS CLI v2
 RUN curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip \
     && unzip -q /tmp/awscli.zip -d /tmp \

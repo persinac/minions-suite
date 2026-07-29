@@ -251,6 +251,10 @@ def _build_task_context(
             lines.append(f"- Repo: `{service.clone_url}`")
         if service.default_branch:
             lines.append(f"- Default branch: `{service.default_branch}`")
+        # Before the test command, so the ordering in the prompt is the ordering
+        # the agent has to execute in.
+        if service.install_command:
+            lines.append(f"- Install command (run once in a fresh checkout, before tests): `{service.install_command}`")
         if service.test_command:
             lines.append(f"- Test command: `{service.test_command}`")
         if service.lint_command:

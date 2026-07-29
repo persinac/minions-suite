@@ -52,6 +52,15 @@ class ServiceTarget:
     deploy_target: str = ""  # e.g. "apprunner", "k8s", "amplify"
     language: str = ""
     framework: str = ""
+    # Run once in a fresh checkout before test/lint can work. Node repos need
+    # `npm ci`; without it `npm test` fails on a missing node_modules and the
+    # agent burns an attempt rediscovering that. Left empty for repos whose
+    # tooling needs no install step.
+    #
+    # Survives between runs: repos.py cleans with `git clean -fd`, deliberately
+    # not `-fdx`, so gitignored node_modules/.venv are preserved and this is a
+    # first-run cost rather than a per-attempt one.
+    install_command: str = ""
     test_command: str = ""
     lint_command: str = ""
     default_branch: str = "main"
@@ -136,6 +145,7 @@ def _parse_services(raw: dict) -> dict[str, ServiceTarget]:
             deploy_target=svc.get("deploy_target", ""),
             language=svc.get("language", ""),
             framework=svc.get("framework", ""),
+            install_command=svc.get("install_command", ""),
             test_command=svc.get("test_command", ""),
             lint_command=svc.get("lint_command", ""),
             default_branch=svc.get("default_branch", "main"),
