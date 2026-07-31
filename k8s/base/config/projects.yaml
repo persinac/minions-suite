@@ -641,14 +641,48 @@ projects:
       languages: [python]
       timeout: 1800
     services:
+      # The IPDB scraper half. Every bit of Python config lives in jobs/ --
+      # there is no pyproject.toml, pytest.ini or conftest.py at the repo root
+      # and every test_*.py sits under jobs/tests -- so a bare `pytest` from the
+      # checkout root runs with no project config against an uninstalled
+      # src-layout package. `ruff check .` from the root would also walk web/
+      # and .venv.
       pinball-db:
         project_id: flippin-balls/pinball-db
         git_provider: github
         clone_url: https://github.com/flippin-balls/pinball-db.git
         repo_path: /repos/pinball-db
         language: python
-        test_command: pytest
-        lint_command: ruff check .
+        test_command: cd jobs && pytest
+        lint_command: cd jobs && ruff check .
+        default_branch: main
+        deploy_target: none
+
+      # pinball-db is polyglot: a Python ETL in jobs/ and the Next.js 15 site
+      # behind db.flashbackfleet.com in web/, each its own project root with its
+      # own lockfile. A single service entry can only describe one of them, and
+      # it described the ETL -- so a change under web/ would have been handed
+      # `pytest`. That is exactly what the Pinball DB telemetry ticket needs.
+      #
+      # The name must be globally unique: _resolve_service matches by name
+      # across every project and returns the first hit, so a duplicate silently
+      # routes work to whichever project sorts first.
+      # Its OWN checkout of the same repo, not a second name for the same
+      # directory: repo_path must stay unique or two services can clobber each
+      # other's working tree, and repos.py resets a dirty tree with
+      # `git clean -fd`. Costs one extra clone; buys an invariant that has
+      # already caused a wedge once.
+      pinball-db-web:
+        project_id: flippin-balls/pinball-db
+        git_provider: github
+        clone_url: https://github.com/flippin-balls/pinball-db.git
+        repo_path: /repos/pinball-db-web
+        language: typescript
+        # web/ declares build, dev, lint, start -- no `test`, same as the other
+        # frontends. `build` type-checks the project, which is the real gate.
+        install_command: cd web && npm ci
+        test_command: cd web && npm run build
+        lint_command: cd web && npm run lint
         default_branch: main
         deploy_target: none
 

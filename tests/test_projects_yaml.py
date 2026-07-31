@@ -101,3 +101,70 @@ class TestServiceTargets:
         ]
 
         assert not leaky, f"Clone URLs with embedded credentials: {leaky}"
+
+
+class TestPolyglotRepos:
+    """One repo, two toolchains.
+
+    pinball-db holds a Python ETL in jobs/ and the Next.js site behind
+    db.flashbackfleet.com in web/. A single service entry can only carry one
+    `language`, one test_command and one lint_command, and it carried the ETL's
+    -- so a change under web/ was handed `pytest` from a checkout root that has
+    no pyproject.toml at all.
+
+    Splitting is only safe if the two halves stay genuinely separate, which is
+    what these assert.
+    """
+
+    def _by_clone_url(self, projects):
+        grouped = collections.defaultdict(list)
+        for project in projects.values():
+            for name, service in (project.get("services") or {}).items():
+                url = (service or {}).get("clone_url")
+                if url:
+                    grouped[url].append((name, service))
+        return {url: svcs for url, svcs in grouped.items() if len(svcs) > 1}
+
+    def test_services_sharing_a_repo_have_distinct_languages(self, projects):
+        """Two entries for one repo only earn their keep if they describe
+        different toolchains. Same language means the split is duplication, and
+        duplication is how the wrong test command survives a fix."""
+        offenders = {}
+        for url, services in self._by_clone_url(projects).items():
+            languages = [(svc or {}).get("language", "") for _, svc in services]
+            if len(set(languages)) != len(languages):
+                offenders[url] = languages
+
+        assert not offenders, f"Services share a repo AND a language: {offenders}"
+
+    def test_services_sharing_a_repo_do_not_share_a_checkout(self, projects):
+        """Covered generally by test_repo_paths_are_unique; asserted here too
+        because the tempting way to add a second toolchain is to reuse the first
+        one's repo_path, and these two agents would then fight over one tree."""
+        offenders = {}
+        for url, services in self._by_clone_url(projects).items():
+            paths = [(svc or {}).get("repo_path", "") for _, svc in services]
+            if len(set(paths)) != len(paths):
+                offenders[url] = paths
+
+        assert not offenders, f"Services share a repo AND a checkout dir: {offenders}"
+
+    def test_pinball_db_covers_both_halves(self, projects):
+        """The concrete case this exists for. Fails if either half is dropped."""
+        services = {name: svc for project in projects.values() for name, svc in (project.get("services") or {}).items() if "pinball-db" in name}
+
+        languages = {name: (svc or {}).get("language") for name, svc in services.items()}
+
+        assert "pinball-db" in services, "the Python ETL half is missing"
+        assert "pinball-db-web" in services, "the Next.js half is missing — a web/ change would be handed pytest"
+        assert set(languages.values()) == {"python", "typescript"}, languages
+
+    def test_the_python_half_runs_where_its_config_lives(self, projects):
+        """There is no pyproject.toml, pytest.ini or conftest.py at the repo
+        root — all of it is under jobs/ — so a bare `pytest` runs with no
+        project config against an uninstalled src-layout package."""
+        etl = next(svc for project in projects.values() for name, svc in (project.get("services") or {}).items() if name == "pinball-db")
+
+        assert etl["test_command"] != "pytest", "bare pytest runs from a root with no Python config"
+        assert "jobs" in etl["test_command"], etl["test_command"]
+        assert "jobs" in etl["lint_command"], etl["lint_command"]
