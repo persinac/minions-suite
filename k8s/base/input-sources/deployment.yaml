@@ -17,6 +17,11 @@ spec:
       labels:
         app.kubernetes.io/name: input-sources
         app.kubernetes.io/component: intake
+      annotations:
+        # See k8s/base/minion-suite/deployment.yaml for why this exists. This
+        # Deployment mounts the same ConfigMap and reads it the same way, so it
+        # goes stale the same way and needs the same trigger.
+        minion-suite/projects-checksum: "65c89ff072322132774149f0579c1c7e89d67570a58670678e36395b52507c80"
     spec:
       imagePullSecrets:
         - name: ecr-creds

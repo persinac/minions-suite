@@ -12,12 +12,18 @@ normally. These tests fail loudly instead.
 """
 
 import collections
+import hashlib
 from pathlib import Path
 
 import pytest
 import yaml
 
-PROJECTS_YAML = Path(__file__).resolve().parents[1] / "k8s" / "base" / "config" / "projects.yaml"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+PROJECTS_YAML = REPO_ROOT / "k8s" / "base" / "config" / "projects.yaml"
+K8S_BASE = REPO_ROOT / "k8s" / "base"
+
+CONFIG_MAP_NAME = "minion-suite-config-files"
+CHECKSUM_ANNOTATION = "minion-suite/projects-checksum"
 
 
 @pytest.fixture(scope="module")
@@ -168,3 +174,65 @@ class TestPolyglotRepos:
         assert etl["test_command"] != "pytest", "bare pytest runs from a root with no Python config"
         assert "jobs" in etl["test_command"], etl["test_command"]
         assert "jobs" in etl["lint_command"], etl["lint_command"]
+
+
+def _deployments_mounting_the_config() -> dict[str, dict]:
+    """Every base Deployment with a volume backed by the projects ConfigMap.
+
+    Derived from the manifests rather than hardcoded, so a Deployment added later
+    is covered the day it starts mounting the file.
+    """
+    found = {}
+    for manifest in sorted(K8S_BASE.glob("*/deployment.yaml")):
+        for doc in yaml.safe_load_all(manifest.read_text(encoding="utf-8")):
+            if not isinstance(doc, dict) or doc.get("kind") != "Deployment":
+                continue
+            volumes = (((doc.get("spec") or {}).get("template") or {}).get("spec") or {}).get("volumes") or []
+            mounts_config = any((v.get("configMap") or {}).get("name") == CONFIG_MAP_NAME for v in volumes if isinstance(v, dict))
+            if mounts_config:
+                found[str(manifest.relative_to(REPO_ROOT))] = doc
+    return found
+
+
+class TestConfigChecksum:
+    """projects.yaml only reaches the cluster if the pod template changes with it.
+
+    The ConfigMap has a stable name on purpose (config/kustomization.yaml explains
+    the prune race that motivated it), it is mounted with subPath so the kubelet
+    never refreshes the file, and build_registry reads it once at startup. A
+    projects.yaml-only commit therefore changes nothing ArgoCD can roll: it reports
+    Synced while the engine routes on whatever the file said when the pod started.
+
+    8b22888 split pinball-db into its ETL and its site and sat unapplied for twelve
+    days that way — the running pod had none of it, and the only visible symptom
+    would have been a web/ change handed `pytest`.
+
+    Stamping the file's sha256 into the pod template is what makes the edit roll the
+    pods. These fail when the stamp and the file disagree; scripts/sync-config-checksum.sh
+    fixes them.
+    """
+
+    @pytest.fixture(scope="class")
+    def expected_checksum(self) -> str:
+        if not PROJECTS_YAML.exists():
+            pytest.skip(f"{PROJECTS_YAML} not present")
+        return hashlib.sha256(PROJECTS_YAML.read_bytes()).hexdigest()
+
+    def test_some_deployment_mounts_the_config(self):
+        """Guards the other tests here: if the mount is renamed, they would all
+        vacuously pass over an empty set."""
+        assert _deployments_mounting_the_config(), f"No base Deployment mounts a ConfigMap named {CONFIG_MAP_NAME}"
+
+    def test_every_mounting_deployment_stamps_the_checksum(self, expected_checksum):
+        stale = {}
+        for path, doc in _deployments_mounting_the_config().items():
+            annotations = (((doc.get("spec") or {}).get("template") or {}).get("metadata") or {}).get("annotations") or {}
+            actual = annotations.get(CHECKSUM_ANNOTATION)
+            if actual != expected_checksum:
+                stale[path] = actual
+
+        assert not stale, (
+            f"Pod-template {CHECKSUM_ANNOTATION} does not match projects.yaml "
+            f"(expected {expected_checksum[:12]}…). Run scripts/sync-config-checksum.sh "
+            f"and commit the result, or the edit never reaches the cluster. Stale: {stale}"
+        )
