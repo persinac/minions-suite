@@ -1201,6 +1201,13 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
             agent_role: str | None = None,
         ) -> str:
             """Publish a fact to the project's shared tuplespace memory."""
+            # Same drop-on-the-floor bug that create_memory_note below was fixed
+            # for, and it outlived that fix here: `project` was accepted, mapped
+            # in mcp_executor.py, echoed back in the response so the agent saw
+            # success -- and never handed to out(), so the write landed in the
+            # tuplespace's startup scope (the first key in projects.yaml).
+            # Job 68576a15, a playfield-relay job, filed decision:task_plan_created
+            # under flashback-android.
             fact_id = await tuplespace.out(
                 category=category,
                 key=key,
@@ -1208,6 +1215,7 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
                 tags=tags,
                 agent_role=agent_role,
                 job_id=job_id,
+                project=project,
             )
             return json.dumps({"fact_id": fact_id, "project": project})
 
@@ -1220,7 +1228,13 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
             limit: int = 20,
         ) -> str:
             """Query shared facts from the project's tuplespace memory."""
-            facts = await tuplespace.rd(category=category, key_pattern=key_pattern, tags=tags, limit=limit)
+            # The read half of the same bug. Fixing only the write would be
+            # worse than fixing neither: facts would start landing under the
+            # right project while every query still asked the startup scope, so
+            # a correctly-written fact would read back as absent. The Redis
+            # backend swallows search errors and returns [], making that
+            # indistinguishable from "nothing learned yet".
+            facts = await tuplespace.rd(category=category, key_pattern=key_pattern, tags=tags, limit=limit, project=project)
             return json.dumps([f.model_dump() for f in facts])
 
         @mcp.tool()

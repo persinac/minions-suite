@@ -121,10 +121,18 @@ class TupleSpace:
         key_pattern: str | None = None,
         tags: list[str] | None = None,
         limit: int = 20,
+        project: str | None = None,
     ) -> list[Fact]:
-        """Non-destructive query for matching facts (Linda RD)."""
+        """Non-destructive query for matching facts (Linda RD).
+
+        `project` overrides the instance scope for this read, mirroring `out`.
+        Without it a read is pinned to the startup scope while writes may have
+        been steered elsewhere, so the two halves address different namespaces
+        and every query comes back empty.
+        """
         t0 = time.monotonic()
-        query_parts = [f"@project:{{{_escape_tag(self._project)}}}"]
+        read_project = project or self._project
+        query_parts = [f"@project:{{{_escape_tag(read_project)}}}"]
         if category:
             query_parts.append(f"@category:{{{_escape_tag(category)}}}")
         if key_pattern:
@@ -141,7 +149,7 @@ class TupleSpace:
         emit(
             MemoryTraceEvent(
                 op=TraceOp.L2_READ,
-                project=self._project,
+                project=read_project,
                 tier="l2",
                 duration_ms=(time.monotonic() - t0) * 1000,
                 details={"category": category, "key_pattern": key_pattern, "tags": tags, "result_count": len(facts)},
