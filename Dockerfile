@@ -70,8 +70,15 @@ RUN curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tm
     && /tmp/aws/install \
     && rm -rf /tmp/awscli.zip /tmp/aws
 
-# CircleCI CLI
-RUN curl -fsSL https://raw.githubusercontent.com/CircleCI-Public/circleci-cli/main/install.sh | bash
+# CircleCI CLI. Pinned, like dbmate below, and for a second reason: unpinned,
+# the installer resolves "latest" by HEADing github.com/.../releases/latest at
+# build time. That call returned 503 from inside the build while succeeding from
+# the host, which put a third-party availability blip directly on the critical
+# path of a release. Setting VERSION skips the lookup entirely.
+ARG CIRCLECI_CLI_VERSION=1.0.47993
+RUN curl -fsSL https://raw.githubusercontent.com/CircleCI-Public/circleci-cli/main/install.sh \
+    | VERSION="${CIRCLECI_CLI_VERSION}" bash \
+    && circleci version
 
 # dbmate — so schema migrations can be applied from inside the cluster against
 # the pod's own POSTGRES_URL. Without it there is no in-cluster migration path
