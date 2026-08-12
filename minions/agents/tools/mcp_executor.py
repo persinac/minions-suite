@@ -20,6 +20,7 @@ import subprocess
 from pathlib import Path
 
 from ...core.models import AgentRole, Job, Task
+from .args import coerce_line_number
 
 logger = logging.getLogger(__name__)
 
@@ -244,12 +245,18 @@ class McpToolExecutor:
         if not file_path.is_file():
             return json.dumps({"error": f"Not a file: {path}"})
         lines = file_path.read_text(encoding="utf-8", errors="replace").splitlines()
-        start = args.get("start_line")
-        end = args.get("end_line")
+        try:
+            start = coerce_line_number(args.get("start_line"), "start_line")
+            end = coerce_line_number(args.get("end_line"), "end_line")
+        except ValueError as e:
+            return json.dumps({"error": str(e)})
         if start is not None:
-            start = max(1, start) - 1
-            end_idx = end if end is not None else len(lines)
-            lines = lines[start:end_idx]
+            first = max(1, start) - 1
+            if end is not None:
+                end_idx = end
+            else:
+                end_idx = len(lines)
+            lines = lines[first:end_idx]
         if len(lines) > 500:
             lines = lines[:500]
             lines.append("... [truncated at 500 lines — use start_line/end_line for specific ranges]")
@@ -258,7 +265,11 @@ class McpToolExecutor:
         # Key on the requested range, not just the path: re-reading lines
         # 200-260 after reading 1-100 is a legitimately different result, and
         # counting it as waste would overstate the problem.
-        key = f"{path}:{args.get('start_line') or ''}-{args.get('end_line') or ''}"
+        #
+        # Key on the *coerced* values, or "507" and 507 are two keys for one
+        # range and the re-read accounting silently under-counts whenever a
+        # model varies how it types the argument.
+        key = f"{path}:{start or ''}-{end or ''}"
         self._read_counts[key] = self._read_counts.get(key, 0) + 1
         if self._read_counts[key] > 1:
             self._reread_chars += len(body)

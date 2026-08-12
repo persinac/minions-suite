@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from ...providers.git import GitProviderProtocol, InlineComment
+from .args import coerce_line_number
 
 logger = logging.getLogger(__name__)
 
@@ -207,11 +208,17 @@ class ToolExecutor:
             return json.dumps({"error": f"Not a file: {path}"})
 
         lines = file_path.read_text(encoding="utf-8", errors="replace").splitlines()
-        start = args.get("start_line")
-        end = args.get("end_line")
+        try:
+            start = coerce_line_number(args.get("start_line"), "start_line")
+            end = coerce_line_number(args.get("end_line"), "end_line")
+        except ValueError as e:
+            return json.dumps({"error": str(e)})
         if start is not None:
             start = max(1, start) - 1  # convert to 0-indexed
-            end_idx = end if end is not None else len(lines)
+            if end is not None:
+                end_idx = end
+            else:
+                end_idx = len(lines)
             lines = lines[start:end_idx]
 
         # Cap output
