@@ -19,6 +19,22 @@ spec:
       labels:
         app.kubernetes.io/name: minion-suite
         app.kubernetes.io/component: orchestration
+      annotations:
+        # sha256 of k8s/base/config/projects.yaml. Nothing reads this value —
+        # it exists so that editing projects.yaml changes the pod template and
+        # ArgoCD rolls the pods.
+        #
+        # Without it a projects.yaml-only commit is invisible to the cluster:
+        # the ConfigMap keeps a stable name (see config/kustomization.yaml for
+        # why), the mount uses subPath so the kubelet never refreshes the file,
+        # and build_registry reads it once at startup. ArgoCD reports Synced
+        # while the engine routes on whatever the file said when the pod last
+        # started. 8b22888 split pinball-db into its ETL and its site and sat
+        # unapplied for twelve days exactly this way.
+        #
+        # Kept in sync by scripts/sync-config-checksum.sh and enforced by
+        # tests/test_projects_yaml.py::TestConfigChecksum.
+        minion-suite/projects-checksum: "65c89ff072322132774149f0579c1c7e89d67570a58670678e36395b52507c80"
     spec:
       # The engine drains in-flight in-process agents on SIGTERM
       # (shutdown_grace_seconds, default 300s) rather than failing them
