@@ -273,10 +273,18 @@ class TestEnginePublishesInsteadOfRunning:
         assert "force_in_process=True" in source
 
     def test_the_fallback_only_applies_to_unowned_tasks(self):
+        """ "Unowned" means no agent for the CURRENT attempt, not no agent row.
+
+        A bare `latest_agent is None` was true only on the first attempt: a
+        retry re-publishes the item while the previous attempt's agent row
+        survives, so the fallback was skipped and the retry was judged against
+        its predecessor. See tests/engine/test_retry_gets_herder_fallback.py.
+        """
         from minions.engine.dev import manage_dev_tasks
 
         source = inspect.getsource(manage_dev_tasks)
         assert "latest_agent is None" in source
+        assert "unbounded=True" in source
 
 
 class TestTimestampAgeHelper:

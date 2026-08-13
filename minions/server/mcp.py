@@ -19,7 +19,7 @@ from fastmcp import FastMCP
 
 from ..config import Config
 from ..core.models import Agent, AgentRole, JobStatus, Message, Subtask, SubtaskStatus, Task, TaskStatus, _now
-from ..core.state_transitions import InvalidTransitionError, PreconditionError
+from ..core.state_transitions import ArbiterUnavailableError, InvalidTransitionError, PreconditionError
 from ..db import AbstractDatabase
 
 logger = logging.getLogger(__name__)
@@ -79,7 +79,18 @@ def set_nats_client(nats_client) -> None:
 async def _propose_transition(entity_type: str, entity_id: str, to_status: str, job_id: str | None = None, **kwargs) -> dict:
     """Route a state transition through the Arbiter via NATS request/reply.
 
-    Raises InvalidTransitionError if the Arbiter rejects the transition.
+    Raises the error the Arbiter actually reported:
+      - InvalidTransitionError when it judged the transition illegal (it says so
+        by returning from_status),
+      - PreconditionError when required fields were missing (missing_fields),
+      - ArbiterUnavailableError for anything else -- a circuit-breaker cooldown,
+        an unknown entity, an internal fault.
+
+    Every refusal used to become InvalidTransitionError with from_status
+    defaulted to "?". That reported a *permanent* fault for what was often a
+    *transient* one, and the "?" hid which. Job 7b840e7f is the worked example:
+    the breaker was open, the agent was told `? -> pr_open`, and a real PR was
+    abandoned because waiting was never presented as an option.
     """
     response = await _nats_client.request(
         "arbiter.state.transition",
@@ -92,14 +103,28 @@ async def _propose_transition(entity_type: str, entity_id: str, to_status: str, 
         },
         timeout=10.0,
     )
-    if not response.get("approved"):
-        raise InvalidTransitionError(
-            entity_type,
-            entity_id,
-            response.get("from_status", "?"),
-            to_status,
-        )
-    return response
+    if response.get("approved"):
+        return response
+
+    reason = response.get("error") or "refused without a reason"
+
+    # from_status is the Arbiter's signal that it really did evaluate the
+    # transition and found it illegal. Only then is this a transition error.
+    from_status = response.get("from_status")
+    if from_status is not None:
+        raise InvalidTransitionError(entity_type, entity_id, from_status, to_status)
+
+    missing = response.get("missing_fields")
+    if missing:
+        raise PreconditionError(entity_id, to_status, missing)
+
+    raise ArbiterUnavailableError(
+        entity_type,
+        entity_id,
+        to_status,
+        reason,
+        retry_after_seconds=response.get("retry_after_seconds"),
+    )
 
 
 async def _verify_reported_pr(pr_url: str, pr_number: int, branch_name: str) -> tuple[bool, str]:
@@ -622,6 +647,11 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
                 await db.update_job_status(job_id, JobStatus.SPEC_READY)
             await db.record_event(job_id, "spec_refined", "spec_analyst")
             return json.dumps({"job_id": job_id, "status": "spec_ready"})
+        except ArbiterUnavailableError as e:
+            # Transient: the Arbiter would not answer, but the request was
+            # never judged illegal. Say so, so the caller retries instead of
+            # treating a cooldown as a permanent refusal.
+            return json.dumps({"error": str(e), "retryable": True, "retry_after_seconds": e.retry_after_seconds})
         except InvalidTransitionError as e:
             return json.dumps({"error": str(e)})
 
@@ -673,6 +703,11 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
                 await db.update_job_status(job_id, JobStatus.TASKS_CREATED)
             await db.record_event(job_id, "tasks_created", "arbiter")
             return json.dumps({"job_id": job_id, "status": "tasks_created"})
+        except ArbiterUnavailableError as e:
+            # Transient: the Arbiter would not answer, but the request was
+            # never judged illegal. Say so, so the caller retries instead of
+            # treating a cooldown as a permanent refusal.
+            return json.dumps({"error": str(e), "retryable": True, "retry_after_seconds": e.retry_after_seconds})
         except InvalidTransitionError as e:
             return json.dumps({"error": str(e)})
 
@@ -712,7 +747,33 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
 
     @mcp.tool()
     async def update_task_status(task_id: str, status: str, error: str | None = None) -> str:
-        """Update the status of a task (called by engineering agents)."""
+        """Update the status of a task (called by engineering agents).
+
+        Valid statuses: pending, in_progress, pr_open, in_review, merged,
+        deploying, done, failed. To report a PR use `report_pr`, not this tool.
+        """
+        # Reject a status that is not a TaskStatus at all, here, before the
+        # Arbiter ever sees it.
+        #
+        # `completed` and `pr_created` are the two an agent reaches for: the
+        # first is a real SubtaskStatus, the second is nobody's status. Both
+        # used to travel to the Arbiter, be refused there, and (before the
+        # breaker fix) count as system failures. A name that cannot possibly be
+        # valid should not consume a round trip, and the reply should say what
+        # the caller may use instead.
+        valid = [s.value for s in TaskStatus]
+        if status not in valid:
+            hint = ""
+            if status in {s.value for s in SubtaskStatus}:
+                hint = f" ({status!r} is a SUBTASK status — for subtasks use update_subtask_status)"
+            elif "pr" in status.lower():
+                hint = " (to report an opened PR use report_pr, which records the url and number too)"
+            return json.dumps(
+                {
+                    "error": f"{status!r} is not a valid task status{hint}",
+                    "valid_statuses": valid,
+                }
+            )
         try:
             if _nats_client:
                 task = await db.get_task(task_id)
@@ -732,6 +793,11 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
             if not task:
                 return json.dumps({"error": f"Task {task_id} not found"})
             return json.dumps({"task_id": task_id, "status": str(task.status)})
+        except ArbiterUnavailableError as e:
+            # Transient: the Arbiter would not answer, but the request was
+            # never judged illegal. Say so, so the caller retries instead of
+            # treating a cooldown as a permanent refusal.
+            return json.dumps({"error": str(e), "retryable": True, "retry_after_seconds": e.retry_after_seconds})
         except InvalidTransitionError as e:
             return json.dumps({"error": str(e)})
         except PreconditionError as e:
@@ -815,6 +881,11 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
                 await _label_mr(config, task.job_id, task.service, pr_url, pr_number)
 
             return json.dumps({"task_id": task_id, "status": "pr_open", "pr_url": pr_url})
+        except ArbiterUnavailableError as e:
+            # Transient: the Arbiter would not answer, but the request was
+            # never judged illegal. Say so, so the caller retries instead of
+            # treating a cooldown as a permanent refusal.
+            return json.dumps({"error": str(e), "retryable": True, "retry_after_seconds": e.retry_after_seconds})
         except InvalidTransitionError as e:
             return json.dumps({"error": str(e)})
 
@@ -867,6 +938,11 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
                 await db.record_event(task.job_id, "review_complete", "code_reviewer", f"task={task_id} verdict={verdict}")
 
             return json.dumps({"task_id": task_id, "verdict": verdict, "status": str(task.status)})
+        except ArbiterUnavailableError as e:
+            # Transient: the Arbiter would not answer, but the request was
+            # never judged illegal. Say so, so the caller retries instead of
+            # treating a cooldown as a permanent refusal.
+            return json.dumps({"error": str(e), "retryable": True, "retry_after_seconds": e.retry_after_seconds})
         except InvalidTransitionError as e:
             return json.dumps({"error": str(e)})
 
@@ -905,6 +981,11 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
                 await db.record_event(task.job_id, "deploy_status", "deploy_monitor", f"task={task_id} status={status} detail={detail or ''}")
 
             return json.dumps({"task_id": task_id, "deploy_status": status})
+        except ArbiterUnavailableError as e:
+            # Transient: the Arbiter would not answer, but the request was
+            # never judged illegal. Say so, so the caller retries instead of
+            # treating a cooldown as a permanent refusal.
+            return json.dumps({"error": str(e), "retryable": True, "retry_after_seconds": e.retry_after_seconds})
         except InvalidTransitionError as e:
             return json.dumps({"error": str(e)})
 
@@ -938,6 +1019,11 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
             if not subtask:
                 return json.dumps({"error": f"Subtask {subtask_id} not found"})
             return json.dumps({"subtask_id": subtask_id, "status": "running"})
+        except ArbiterUnavailableError as e:
+            # Transient: the Arbiter would not answer, but the request was
+            # never judged illegal. Say so, so the caller retries instead of
+            # treating a cooldown as a permanent refusal.
+            return json.dumps({"error": str(e), "retryable": True, "retry_after_seconds": e.retry_after_seconds})
         except InvalidTransitionError as e:
             return json.dumps({"error": str(e)})
 
@@ -956,6 +1042,11 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
             if not subtask:
                 return json.dumps({"error": f"Subtask {subtask_id} not found"})
             return json.dumps({"subtask_id": subtask_id, "status": "completed"})
+        except ArbiterUnavailableError as e:
+            # Transient: the Arbiter would not answer, but the request was
+            # never judged illegal. Say so, so the caller retries instead of
+            # treating a cooldown as a permanent refusal.
+            return json.dumps({"error": str(e), "retryable": True, "retry_after_seconds": e.retry_after_seconds})
         except InvalidTransitionError as e:
             return json.dumps({"error": str(e)})
 
@@ -971,6 +1062,11 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
             if not subtask:
                 return json.dumps({"error": f"Subtask {subtask_id} not found"})
             return json.dumps({"subtask_id": subtask_id, "status": "failed"})
+        except ArbiterUnavailableError as e:
+            # Transient: the Arbiter would not answer, but the request was
+            # never judged illegal. Say so, so the caller retries instead of
+            # treating a cooldown as a permanent refusal.
+            return json.dumps({"error": str(e), "retryable": True, "retry_after_seconds": e.retry_after_seconds})
         except InvalidTransitionError as e:
             return json.dumps({"error": str(e)})
 
@@ -1213,6 +1309,11 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
                 await _propose_transition("job", job_id, "done", job_id=job_id)
             else:
                 await db.update_job_status(job_id, JobStatus.DONE)
+        except ArbiterUnavailableError as e:
+            # Transient: the Arbiter would not answer, but the request was
+            # never judged illegal. Say so, so the caller retries instead of
+            # treating a cooldown as a permanent refusal.
+            return json.dumps({"error": str(e), "retryable": True, "retry_after_seconds": e.retry_after_seconds})
         except InvalidTransitionError as e:
             return json.dumps({"error": str(e), "type": "invalid_transition"})
 

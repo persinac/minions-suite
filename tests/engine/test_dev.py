@@ -585,7 +585,14 @@ class TestJobCompletion:
         assert updated_job.status == JobStatus.MERGED
 
     async def test_all_failed_marks_job_failed(self, db, sample_job, make_task):
-        """When all dev tasks are FAILED, job should be marked FAILED."""
+        """When all dev tasks are TERMINALLY failed, the job is marked FAILED.
+
+        "Terminally" is the part this test used to omit. A FAILED task with
+        retries still on the clock is not terminal — auto-retry resets it to
+        PENDING and the job correctly stays DEV_IN_PROGRESS — so the attempts
+        have to be exhausted for the job to be entitled to fail. Without that,
+        this asserted that a task with two retries left should sink the job.
+        """
         from minions.engine.dev import manage_dev_tasks
 
         job = sample_job
@@ -597,6 +604,7 @@ class TestJobCompletion:
         task = await db.create_task(task)
         await db.update_task(task.id, status="in_progress")
         await db.update_task(task.id, status="failed", agent_role="", error="boom")
+        await db.update_task(task.id, attempt=task.max_attempts)
 
         engine = _mock_engine(db)
         engine._on_job_terminal = AsyncMock()
