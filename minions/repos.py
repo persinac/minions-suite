@@ -128,6 +128,16 @@ async def ensure_checkout(
         return False
 
     await configure_git()
+
+    # Mint here rather than relying on the poll loop having done it. The
+    # credential helper reads GH_TOKEN at git-invocation time, so this is the
+    # last moment it can be made current before the network call that spends
+    # it. Imported locally to keep repos.py free of a provider import at module
+    # scope. No-op under a static PAT.
+    from .providers.github_app import refresh_env_token
+
+    await refresh_env_token()
+
     path = Path(dest)
 
     if _is_git_repo(path):

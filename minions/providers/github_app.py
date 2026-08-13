@@ -299,6 +299,46 @@ async def ensure_token(config) -> str | None:
         return None
 
 
+async def refresh_env_token() -> str | None:
+    """Refresh os.environ["GH_TOKEN"] using the already-built provider.
+
+    Same work as ensure_token, minus the Config argument, so the paths that
+    actually SPEND the token -- git clone, git push, gh pr create -- can
+    guarantee it is live at the moment of use instead of trusting that some
+    other loop refreshed it recently enough.
+
+    That trust is what failed on job 03836165. ensure_token had exactly one
+    caller, the top of the engine poll loop, so GH_TOKEN's freshness was
+    coupled to the health of an unrelated loop. The token minted at 01:37
+    expired at 02:37; the refresh due at 02:32 did not happen; the clone at
+    02:47 died on "Invalid username or token" and the next mint landed 25
+    seconds later. Nothing logged a problem in between -- an expired
+    credential is silent until something tries to use it.
+
+    The engineer case is worse than the clone case and is why _push refreshes
+    too: an agent can work for 40 minutes on a token minted before it started,
+    so the push at the end is the single most likely operation to find it
+    expired, after all the work is done.
+
+    Cheap to call: the provider only hits GitHub inside the token's refresh
+    margin, so the common case is a dict lookup.
+
+    Returns None when App auth is not configured -- GH_TOKEN is then a static
+    PAT that never expires -- or when the provider has not been built yet, in
+    which case the caller proceeds with whatever the environment already holds.
+    Never raises: a git operation must fail on its own terms, with git's error
+    message, rather than on a token refresh that could not reach GitHub.
+    """
+    if _provider is None:
+        return None
+
+    try:
+        return await _provider.token()
+    except GitHubAppError as e:
+        logger.error("Could not refresh GitHub App token before a git operation: %s", e)
+        return None
+
+
 def reset_token_provider() -> None:
     """Drop the cached providers. For tests, and for config reloads."""
     global _provider, _provider_built, _reviewer_provider, _reviewer_built

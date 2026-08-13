@@ -343,8 +343,7 @@ class PostgresDatabase:
                 )
             else:
                 cur = await conn.execute(
-                    f"UPDATE {JOB_SCHEMA}.jobs SET status = %s, updated_at = %s, error = COALESCE(%s, error) "
-                    f"WHERE id = %s AND status = %s",
+                    f"UPDATE {JOB_SCHEMA}.jobs SET status = %s, updated_at = %s, error = COALESCE(%s, error) WHERE id = %s AND status = %s",
                     (status, _now(), error, job_id, expected_status),
                 )
             won = cur.rowcount > 0
@@ -731,11 +730,27 @@ class PostgresDatabase:
             )
 
     async def get_stale_heartbeats(self, threshold_seconds: int) -> list[dict]:
+        """Heartbeats that have gone quiet for agents that should still be alive.
+
+        The agents join is load-bearing. An agent stops heartbeating when it
+        FINISHES, and nothing deletes the row (delete_heartbeat exists and has
+        no callers), so filtering on `status != 'lost'` alone reports every
+        successfully completed agent as stale once the threshold passes.
+
+        That is not merely noisy: the caller marks the heartbeat lost, writes a
+        `heartbeat_lost` event against the job, and publishes a kill signal.
+        Job 03836165's spec analyst completed cleanly at 02:31:37 with a cost
+        and turn count, and was kill-signalled at 02:36:41 -- leaving an audit
+        trail that says its heartbeat was lost when it had simply finished, and
+        making a genuinely dead agent indistinguishable from a healthy one.
+        """
         async with self._pool.connection() as conn:
             cur = await conn.execute(
-                f"""SELECT * FROM {JOB_SCHEMA}.heartbeats
-                    WHERE EXTRACT(EPOCH FROM NOW() - last_seen) > %s
-                    AND status != 'lost'""",
+                f"""SELECT h.* FROM {JOB_SCHEMA}.heartbeats h
+                    LEFT JOIN {JOB_SCHEMA}.agents a ON a.id = h.agent_id
+                    WHERE EXTRACT(EPOCH FROM NOW() - h.last_seen) > %s
+                    AND h.status != 'lost'
+                    AND (a.id IS NULL OR a.status IN ('starting', 'running'))""",
                 (threshold_seconds,),
             )
             rows = await cur.fetchall()

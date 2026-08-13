@@ -372,23 +372,44 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
         # Recover from prior unclean shutdown
         await self._startup_cleanup()
 
+        # Token refresh runs on its own task, NOT inside the poll loop.
+        #
+        # It used to be the first statement of each cycle, which quietly made
+        # GH_TOKEN's freshness a function of the poll loop's health: anything
+        # that stalled _poll() also stopped the refresh, and an expired
+        # credential says nothing until something spends it. On job 03836165 the
+        # refresh due at 02:32 did not happen and the clone at 02:47 failed on
+        # "Invalid username or token", 15 minutes after the token had died.
+        #
+        # The call sites that spend the token now refresh at the point of use
+        # (repos.ensure_checkout, mcp_executor._push/_create_pr), which is the
+        # real fix. This keeps the ambient os.environ["GH_TOKEN"] warm for any
+        # `gh` invocation added later that forgets to.
+        self._spawn(self._token_refresh_loop(), name="token-refresh")
+
         while self._running:
             try:
-                # Refresh the GitHub App installation token before advancing any
-                # job. No-op when App auth is not configured, and cached otherwise
-                # — it only calls GitHub inside the token's refresh margin.
-                #
-                # This is the single point that keeps os.environ["GH_TOKEN"]
-                # current, which is how BOTH `gh` call paths get a token: the
-                # explicit-env one in providers/git.py:_run_gh, and the
-                # ambient-env one in agents/tools/mcp_executor.py that agents use
-                # to open PRs. Doing it here rather than per-call-site means a new
-                # `gh` invocation added later is covered for free.
-                await ensure_token(self.config)
                 await self._poll()
             except Exception:
                 logger.exception("Error in engine poll cycle")
             await asyncio.sleep(self.config.job_engine_poll_interval)
+
+    async def _token_refresh_loop(self) -> None:
+        """Keep os.environ["GH_TOKEN"] current, independently of the poll loop.
+
+        Every 60s. ensure_token only reaches GitHub inside the token's refresh
+        margin (300s of a 3600s life), so this is a cheap no-op ~55 times out of
+        56, and no-op entirely when App auth is not configured.
+
+        Never lets an exception end the loop: dying here would restore exactly
+        the silent-expiry failure this exists to prevent.
+        """
+        while self._running:
+            try:
+                await ensure_token(self.config)
+            except Exception:
+                logger.exception("Token refresh failed; will retry")
+            await asyncio.sleep(60)
 
     def _spawn(self, coro, name: str) -> asyncio.Task:
         """Wrap an async coroutine as a background task with auto-cleanup."""
