@@ -124,7 +124,16 @@ class TestWiring:
 
         source = inspect.getsource(mcp_module)
         start = source.index("async def report_pr")
-        body = source[start : start + 2500]
+        # To the next tool registration, not a fixed character count. This was
+        # `start + 2500` and broke the moment report_pr grew: the verification
+        # call was still there, just past the window. A window that silently
+        # stops covering the thing it asserts on is the failure mode this whole
+        # style of test is prone to -- it can just as easily read green while
+        # the call is absent.
+        end = source.find("@mcp.tool()", start)
+        if end == -1:
+            end = len(source)
+        body = source[start:end]
 
         assert "_verify_reported_pr(pr_url, pr_number, branch_name)" in body
         gate = body.index("_verify_reported_pr")

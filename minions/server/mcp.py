@@ -171,6 +171,109 @@ async def _verify_reported_pr(pr_url: str, pr_number: int, branch_name: str) -> 
     return True, "ok"
 
 
+def _repo_from_url(url: str) -> str:
+    """owner/repo from a GitHub URL, or "" when there isn't one.
+
+    Shares the lenient match used by _verify_reported_pr: the `/pull/<n>` tail
+    is exactly what is missing in the case this exists to recover.
+    """
+    import re
+
+    match = re.search(r"github\.com/([^/\s]+/[^/\s]+)", url or "")
+    if not match:
+        return ""
+    return match.group(1).removesuffix(".git")
+
+
+def _repo_for_service(config: Config | None, service: str) -> str:
+    """owner/repo for a service from the registry, or "".
+
+    The fallback for when the agent reported no usable URL either. Without it
+    the recovery only works for agents that got the URL right but the number
+    wrong, which is the easier half of the problem.
+    """
+    if not config or not service:
+        return ""
+
+    from ..project_registry import build_registry
+
+    try:
+        registry = build_registry(config.projects_file)
+    except Exception as e:
+        logger.warning("Could not load the project registry to resolve %s: %s", service, e)
+        return ""
+
+    project = registry.get(service)
+    if project and getattr(project, "project_id", ""):
+        return project.project_id
+
+    for proj in registry.values():
+        for name, svc in (getattr(proj, "services", None) or {}).items():
+            if name == service and getattr(svc, "project_id", ""):
+                return svc.project_id
+    return ""
+
+
+async def _resolve_pr_by_branch(repo: str, branch_name: str) -> int | None:
+    """Find the open PR whose head is `branch_name`, or None.
+
+    Recovers the case where an agent pushed a branch and opened a PR but failed
+    to report its number. That is not hypothetical: on job 1d7b7374 the engineer
+    ran 58 turns, pushed feat/job-1d7b7374/writerows-sanitizing-writer, and
+    called report_pr with pr=0. The rejection told it to "Open the PR, then
+    report it" and it simply stopped. The recovery finisher then opened PR #89
+    and ALSO failed to report it, so the job failed with correct, tested,
+    CI-green work sitting in an open PR nobody was watching.
+
+    This is stricter than trusting the agent, not looser. The branch is the one
+    identifier an agent cannot fake -- it had to push it -- so asking GitHub
+    "which PR has this head?" replaces a self-reported number with an observed
+    fact. The resolved number still goes through _verify_reported_pr.
+
+    Returns None on anything ambiguous: no match, more than one match, or an
+    error. A wrong guess here would hand the pipeline somebody else's PR, so
+    silence is the only safe failure.
+    """
+    import subprocess
+
+    if not repo or not branch_name:
+        return None
+
+    try:
+        result = subprocess.run(
+            [
+                "gh",
+                "api",
+                f"repos/{repo}/pulls?state=open&per_page=100",
+                "--jq",
+                f'[.[] | select(.head.ref == "{branch_name}") | .number] | @json',
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={**os.environ},
+        )
+    except Exception as e:
+        logger.warning("Could not look up a PR for branch %s in %s: %s", branch_name, repo, e)
+        return None
+
+    if result.returncode != 0:
+        logger.warning("PR lookup for branch %s in %s failed (rc=%s)", branch_name, repo, result.returncode)
+        return None
+
+    try:
+        numbers = json.loads((result.stdout or "").strip() or "[]")
+    except json.JSONDecodeError, ValueError:
+        return None
+
+    if len(numbers) != 1:
+        if len(numbers) > 1:
+            logger.warning("Branch %s in %s has %d open PRs — refusing to guess", branch_name, repo, len(numbers))
+        return None
+
+    return int(numbers[0])
+
+
 async def _label_mr(config: Config | None, job_id: str, service: str, pr_url: str, pr_number: int | None) -> None:
     """Add a minions-job-<id> label to the MR so webhooks can skip it."""
     import re
@@ -657,6 +760,29 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
             # merge somebody else's work under this job's ticket. Checking the
             # head branch as well as existence closes that, since the agent
             # cannot claim a PR it did not push the branch for.
+            # An agent that pushed a branch but reported no number is telling us
+            # where to look, not what to believe. Ask GitHub which PR has that
+            # head before rejecting -- see _resolve_pr_by_branch for why this is
+            # stricter than trusting the agent, and for the job it was written
+            # for.
+            if not pr_number and branch_name:
+                repo = _repo_from_url(pr_url)
+                if not repo:
+                    task_for_repo = await db.get_task(task_id)
+                    if task_for_repo:
+                        repo = _repo_for_service(config, task_for_repo.service)
+                resolved = await _resolve_pr_by_branch(repo, branch_name)
+                if resolved:
+                    logger.info(
+                        "report_pr: task %s reported no PR number; resolved #%d from branch %s",
+                        task_id,
+                        resolved,
+                        branch_name,
+                    )
+                    pr_number = resolved
+                    if not pr_url and repo:
+                        pr_url = f"https://github.com/{repo}/pull/{resolved}"
+
             verified, why = await _verify_reported_pr(pr_url, pr_number, branch_name)
             if not verified:
                 logger.warning("report_pr REJECTED for task %s (pr=%s branch=%s): %s", task_id, pr_number, branch_name, why)
