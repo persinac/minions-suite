@@ -426,6 +426,16 @@ class McpToolExecutor:
         branch = args.get("branch_name", "")
         if not branch:
             return json.dumps({"error": "branch_name is required"})
+
+        # The token this push authenticates with may have been minted before
+        # the agent started working. An App token lasts an hour and an engineer
+        # can easily outlive that, so refresh at the point of spend -- this is
+        # the operation that carries all the agent's work, and the worst one to
+        # lose to an expired credential.
+        from ...providers.github_app import refresh_env_token
+
+        await refresh_env_token()
+
         proc = await asyncio.create_subprocess_exec(
             "git",
             "push",
@@ -447,6 +457,13 @@ class McpToolExecutor:
         base = args.get("base", "main")
         if not title:
             return json.dumps({"error": "title is required"})
+
+        # Same reasoning as _push: this runs at the very end of a long agent
+        # run. The GitLab branch below uses a static PAT and does not need it,
+        # but the gh branch inherits GH_TOKEN from the ambient environment.
+        from ...providers.github_app import refresh_env_token
+
+        await refresh_env_token()
 
         labels = [f"minions-job-{self.job_id[:8]}"]
         provider_type = (self.project.git_provider if self.project else None) or (self.config.git_provider if self.config else "")

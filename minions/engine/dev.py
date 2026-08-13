@@ -60,7 +60,7 @@ def _seconds_since(timestamp: str | None) -> float:
         return 0.0
     try:
         parsed = datetime.fromisoformat(timestamp)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 0.0
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
@@ -1385,6 +1385,17 @@ async def manage_dev_tasks(engine: JobEngine, job: Job):
     busy_services = {t.service for t in dev_tasks if t.status in active_statuses}
     launched_services = set()
 
+    # Set when a task is put BACK to PENDING below (auto-retry or orphan
+    # recovery). `dev_tasks` is a snapshot read at the top of this function and
+    # those resets only touch the database, so the local objects still say
+    # FAILED. Without this the terminal check further down reads the stale
+    # snapshot, concludes every task failed, and fails the whole job one line
+    # after logging that it queued a retry -- which is exactly what happened to
+    # job 03836165: "Auto-retry: task 92fd7066 reset to pending (attempt 2/3)"
+    # and "Job 03836165 -> failed" landed in the same second, so the retry it
+    # had just scheduled could never run.
+    requeued = False
+
     for task in dev_tasks:
         if task.status == TaskStatus.PR_OPEN:
             # PR just opened — transition to in_review and spawn reviewer
@@ -1573,6 +1584,7 @@ async def manage_dev_tasks(engine: JobEngine, job: Job):
                         try:
                             await engine.db.update_task(task.id, status=TaskStatus.FAILED, agent_role="", error="agent died without completing")
                             await engine.db.update_task(task.id, status=TaskStatus.PENDING, agent_role="", attempt=task.attempt + 1)
+                            requeued = True
                             logger.info("Orphan recovery: task %s reset to pending (attempt %d)", task.id, task.attempt + 1)
                         except InvalidTransitionError as e:
                             logger.warning("Orphan recovery: could not reset task %s: %s", task.id, e)
@@ -1588,10 +1600,16 @@ async def manage_dev_tasks(engine: JobEngine, job: Job):
             # Failed task with retries remaining — auto-retry
             try:
                 await engine.db.update_task(task.id, status=TaskStatus.PENDING, agent_role="", attempt=task.attempt + 1, error=None)
+                requeued = True
                 logger.info("Auto-retry: task %s reset to pending (attempt %d/%d)", task.id, task.attempt + 1, task.max_attempts)
                 await engine.db.record_event(job.id, "task_auto_retry", "engine", f"task={task.id} attempt={task.attempt + 1}/{task.max_attempts}")
             except InvalidTransitionError as e:
                 logger.warning("Auto-retry: could not reset task %s to pending: %s", task.id, e)
+
+    # A task was just put back to PENDING, so the snapshot below is known to be
+    # wrong about it. Let the next poll re-read and decide on fresh state.
+    if requeued:
+        return
 
     # Check if all dev tasks have reached a terminal state
     all_terminal = all(t.status in terminal_statuses for t in dev_tasks)
