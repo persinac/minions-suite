@@ -2,14 +2,54 @@
 
 
 class InvalidTransitionError(Exception):
-    """Raised when a state transition is not allowed."""
+    """Raised when a state transition is not allowed.
 
-    def __init__(self, entity_type: str, entity_id: str, from_status: str, to_status: str):
+    Carries the legal targets when the caller knows them. A refusal that only
+    says "no" leaves an agent to guess, and agents guess badly: on job 7b840e7f
+    one tried `completed`, then `done`, then `pr_created` in fifteen seconds,
+    never learning that the answer was `pr_open`. Naming the alternatives turns
+    three blind retries into one corrected call.
+    """
+
+    def __init__(self, entity_type: str, entity_id: str, from_status: str, to_status: str, allowed: set[str] | None = None):
         self.entity_type = entity_type
         self.entity_id = entity_id
         self.from_status = from_status
         self.to_status = to_status
-        super().__init__(f"Invalid {entity_type} transition for {entity_id}: {from_status} -> {to_status}")
+        self.allowed = allowed
+        message = f"Invalid {entity_type} transition for {entity_id}: {from_status} -> {to_status}"
+        if allowed:
+            message += f" (from {from_status}, allowed: {', '.join(sorted(allowed))})"
+        elif allowed is not None:
+            message += f" ({from_status} is terminal — no transitions allowed)"
+        super().__init__(message)
+
+
+class ArbiterUnavailableError(Exception):
+    """Raised when the Arbiter refused a transition without judging it illegal.
+
+    Distinct from InvalidTransitionError on purpose. "Your transition is not
+    allowed" is permanent and the caller must change what it asks for; "the
+    Arbiter would not answer right now" is transient and the caller should wait
+    and repeat the same request.
+
+    Collapsing the two cost job 7b840e7f its PR. A circuit-breaker refusal
+    carries no from_status, so the old code substituted "?" and raised
+    InvalidTransitionError -- reporting `? -> pr_open`, a transition error, for
+    what was really a 300s cooldown. The agent read it as a permanent refusal of
+    a PR it had genuinely opened, and stopped.
+    """
+
+    def __init__(self, entity_type: str, entity_id: str, to_status: str, reason: str, retry_after_seconds: int | None = None):
+        self.entity_type = entity_type
+        self.entity_id = entity_id
+        self.to_status = to_status
+        self.reason = reason
+        self.retry_after_seconds = retry_after_seconds
+        detail = f"Arbiter refused {entity_type} {entity_id} -> {to_status}: {reason}"
+        if retry_after_seconds:
+            detail += f" (retry in {retry_after_seconds}s)"
+        super().__init__(detail)
 
 
 class PreconditionError(Exception):
@@ -118,11 +158,20 @@ def validate_task_transition(task_id: str, from_status: str, to_status: str, age
     transitions = _get_task_transitions(agent_role)
     allowed = transitions.get(from_status, set())
     if to_status not in allowed:
-        raise InvalidTransitionError("task", task_id, from_status, to_status)
+        raise InvalidTransitionError("task", task_id, from_status, to_status, allowed=allowed)
     # Check role restrictions (only applies to default transitions)
     restricted_roles = ROLE_RESTRICTED_TASK_TRANSITIONS.get((from_status, to_status))
     if restricted_roles and agent_role and agent_role not in restricted_roles:
-        raise InvalidTransitionError("task", task_id, from_status, to_status)
+        # Legal transition, wrong caller. Report the roles that may make it
+        # rather than the target states, or the agent reads "pr_open -> done is
+        # not allowed" and starts hunting for a different target when the real
+        # answer is that a reviewer performs this one.
+        raise InvalidTransitionError(
+            "task",
+            task_id,
+            from_status,
+            f"{to_status} (restricted to roles: {', '.join(sorted(restricted_roles))}; caller is {agent_role!r})",
+        )
 
 
 def validate_subtask_transition(subtask_id: str, from_status: str, to_status: str) -> None:

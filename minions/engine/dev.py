@@ -67,7 +67,7 @@ def _seconds_since(timestamp: str | None) -> float:
     return (datetime.now(UTC) - parsed).total_seconds()
 
 
-def _agent_predates_current_attempt(agent, task: Task) -> bool:
+def _agent_predates_current_attempt(agent, task: Task, unbounded: bool = False) -> bool:
     """True if `agent` is a leftover from an attempt before the task's current one.
 
     Claiming a task sets it IN_PROGRESS and *then* spawns run_engineer, which
@@ -79,9 +79,19 @@ def _agent_predates_current_attempt(agent, task: Task) -> bool:
 
     An agent that started at or after the task's last update belongs to this
     attempt and is judged normally, so a genuinely orphaned task still recovers
-    immediately. Unreadable timestamps also fall through to judging. And the
-    deferral is bounded by ORPHAN_GRACE_SECONDS, so a task whose updated_at
-    moved for some unrelated reason cannot defer recovery forever.
+    immediately. Unreadable timestamps also fall through to judging.
+
+    `unbounded` selects which question is being asked:
+
+    - False (default) — "should recovery defer to an agent that may be about to
+      appear?" That is a race with a short life, so it is capped at
+      ORPHAN_GRACE_SECONDS and a task whose updated_at moved for some unrelated
+      reason cannot defer recovery forever.
+    - True — "does this attempt have an agent at all?" Staleness does not decay:
+      an agent that started before the current attempt is not this attempt's
+      agent an hour later either. The caller asking this is deciding whether a
+      work item is unclaimed, and applying the grace window there made a retried
+      external item look claimed by its predecessor's agent forever after 60s.
     """
     agent_started = _parse_ts(getattr(agent, "started_at", None))
     task_updated = _parse_ts(getattr(task, "updated_at", None))
@@ -89,6 +99,8 @@ def _agent_predates_current_attempt(agent, task: Task) -> bool:
         return False
     if agent_started >= task_updated:
         return False
+    if unbounded:
+        return True
     return (datetime.now(UTC) - task_updated).total_seconds() < ORPHAN_GRACE_SECONDS
 
 
@@ -1520,15 +1532,26 @@ async def manage_dev_tasks(engine: JobEngine, job: Job):
             # Check if the agent is actually dead (orphaned task)
             latest_agent = await engine.db.get_agent_for_task(task.id)
 
-            # Unclaimed external work item. A task IN_PROGRESS with no agent row
-            # at all is the state external dispatch leaves behind, and it is
-            # invisible to every check below — they all require an agent to
+            # Unclaimed external work item. A task IN_PROGRESS with no agent for
+            # THIS attempt is the state external dispatch leaves behind, and it
+            # is invisible to every check below — they all require an agent to
             # reason about. Left alone it is a job that looks healthy and never
             # moves, which is the worst failure mode this system has.
             #
             # So: wait a bounded time for a herder, then run it in-process.
             # Falling back costs API tokens; not falling back costs the job.
-            if latest_agent is None and engine.config.engineer_dispatch == "external" and engine.config.herder_claim_timeout_seconds > 0:
+            #
+            # "for this attempt" is load-bearing, and the test was `is None`.
+            # A retry re-publishes the work item but the previous attempt's
+            # agent row survives, so `is None` was False and this branch was
+            # skipped — leaving recovery to judge the retry against the OLD
+            # agent. _agent_predates_current_attempt defers that, but only for
+            # ORPHAN_GRACE_SECONDS; once the grace lapsed the stale agent was
+            # judged anyway and its already-known-incomplete subtasks failed the
+            # retry instantly. Job 7b840e7f burned attempts 2 and 3 that way, at
+            # 61s and 65s, without ever launching an agent for either.
+            unclaimed = latest_agent is None or _agent_predates_current_attempt(latest_agent, task, unbounded=True)
+            if unclaimed and engine.config.engineer_dispatch == "external" and engine.config.herder_claim_timeout_seconds > 0:
                 waited = _seconds_since(task.updated_at)
                 if waited >= engine.config.herder_claim_timeout_seconds:
                     logger.warning(

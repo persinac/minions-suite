@@ -75,14 +75,28 @@ class Arbiter:
         kwargs = payload.get("kwargs", {})
         job_id = payload.get("job_id")
 
-        # Circuit breaker check
+        # Circuit breaker check.
+        #
+        # Report how long the caller must wait. Without it the refusal is
+        # indistinguishable from a permanent rejection, and an agent that could
+        # simply have retried instead gives up -- which is exactly how job
+        # 7b840e7f lost a valid PR.
         if self._is_circuit_open():
+            retry_after = max(0, int(self._circuit_open_until - time.time()))
+            logger.warning(
+                "Arbiter refused %s/%s -> %s: circuit breaker open for another %ds",
+                entity_type,
+                entity_id,
+                to_status,
+                retry_after,
+            )
             await NatsClient.reply(
                 msg,
                 {
                     "approved": False,
                     "error": "circuit_open",
-                    "detail": "Too many recent failures, circuit breaker is open",
+                    "detail": f"Arbiter circuit breaker is open; retry in {retry_after}s",
+                    "retry_after_seconds": retry_after,
                 },
             )
             return
@@ -96,8 +110,23 @@ class Arbiter:
                 response = await self._apply_subtask_transition(entity_id, to_status, kwargs)
             else:
                 response = {"approved": False, "error": f"Unknown entity_type: {entity_type}"}
+        # A rejected transition is the agent being wrong, not the system being
+        # broken, so neither of the next two handlers records a failure.
+        #
+        # They used to. On job 7b840e7f a backend engineer guessed three status
+        # names in fifteen seconds -- `completed` (a SubtaskStatus), `done`
+        # (role-gated to reviewers), `pr_created` (not a status at all) -- and
+        # those three refusals tripped the breaker for 300s. The agent then did
+        # everything right: opened a real PR and called report_pr with the
+        # correct number, URL and branch. The open breaker refused it, the task
+        # died with its PR orphaned, and the job failed.
+        #
+        # The breaker exists to stop a broken arbiter from corrupting state
+        # under load. Counting refusals inverts it: the safety check fires
+        # *because* the guardrails did their job, and the punishment lands on
+        # whoever asks next -- which is the same agent, now asking correctly.
+        # Only a genuine internal fault below counts.
         except InvalidTransitionError as e:
-            self._record_failure()
             response = {
                 "approved": False,
                 "error": str(e),
@@ -105,7 +134,6 @@ class Arbiter:
                 "to_status": e.to_status,
             }
         except PreconditionError as e:
-            self._record_failure()
             response = {
                 "approved": False,
                 "error": str(e),
@@ -160,7 +188,7 @@ class Arbiter:
         """Handle a heartbeat message from an agent."""
         try:
             payload = json.loads(msg.data.decode("utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError):
+        except json.JSONDecodeError, UnicodeDecodeError:
             return
 
         agent_id = payload.get("agent_id", "")
@@ -232,7 +260,7 @@ class Arbiter:
                 if started.tzinfo is None:
                     started = started.replace(tzinfo=UTC)
                 elapsed = now - started.timestamp()
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 continue
 
             # Look up task to get agent_role for timeout config

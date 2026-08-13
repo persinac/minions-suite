@@ -17,6 +17,7 @@ from .models import (  # noqa: F401
     _short_id,
 )
 from .state_transitions import (  # noqa: F401
+    ArbiterUnavailableError,
     InvalidTransitionError,
     PreconditionError,
     validate_job_transition,
