@@ -1,0 +1,76 @@
+# Local development infrastructure — postgres, redis, nats.
+#
+# This is the committed baseline that `task up` builds on, so a fresh clone
+# works with no manual setup. It deliberately contains NO application
+# containers: `task up` runs the app natively via `uv run python -m minions`
+# so you get live reload and a debugger. For the fully containerised stack
+# (app included) use docker-compose.yml via `task docker:up` instead.
+#
+# Layering, applied in this order by `task up`:
+#   docker-compose.dev.yml        <- this file, always
+#   docker-compose.local.yml      <- yours, if present (gitignored)
+#   docker-compose.langfuse.yml   <- only when LANGFUSE=true
+#
+# To customise anything here — a port, a volume, an image — do NOT edit this
+# file. Create docker-compose.local.yml with just the keys you want to change;
+# compose deep-merges it over this one and it stays out of git.
+#
+# Postgres image note: pgvector is required, not optional. The memory tier's
+# memory_nodes.embedding is vector(1536) and migration
+# 20260314120000_add_memory_extensions.sql runs `CREATE EXTENSION vector`,
+# which fails on a stock postgres image. Apache AGE is deliberately NOT used
+# here — it was dropped 2026-07-25 (see that migration) because no runtime
+# code path needs it and the managed target cannot offer it.
+#
+# Schema is applied by dbmate (`task db:migrate`), not by an init script.
+#
+# This postgres doubles as the test database — same image, port, and credentials
+# that tests/conftest.py expects — so `task up` alone is enough to run pytest.
+# If you also have a standalone `minion-test-pg` container from before this file
+# existed, remove it; the two collide on :5434.
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: minion
+      POSTGRES_PASSWORD: minion
+      POSTGRES_DB: minion
+    volumes:
+      - pgdata_dev:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U minion -d minion"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "5434:5432"
+    restart: unless-stopped
+
+  redis:
+    image: redis/redis-stack:latest
+    volumes:
+      - redisdata_dev:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  nats:
+    image: nats:latest
+    command: ["-js", "--store_dir=/data"]
+    volumes:
+      - natsdata_dev:/data
+    ports:
+      - "4222:4222"   # client connections
+      - "8222:8222"   # HTTP monitoring endpoint
+    restart: unless-stopped
+
+volumes:
+  pgdata_dev:
+  redisdata_dev:
+  natsdata_dev:

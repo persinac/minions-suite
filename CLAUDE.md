@@ -110,10 +110,19 @@ Each agent role has its own tool set (defined in `agents/tools/definitions.py`):
 
 ## Docker Stack
 
-Three services defined in `docker-compose.yml`:
-- `minion-suite` — the app (built from `Dockerfile`); listens on `MCP_PORT` (8321)
-- `postgres:17` — DB backend; schema initialised from `db/init.sql` on first start
-- `nats:latest` — JetStream enabled; monitoring at `:8222`
+There are two bases. Pick by where the *app* runs:
+
+**`docker-compose.dev.yml` — infra only, app runs natively.** Used by `task up` / `task down`. Postgres (`pgvector/pgvector:pg17`, `:5434`), Redis (`:6379`), NATS (`:4222`, monitor `:8222`). No app container, so you get live reload and a debugger. This is the everyday loop.
+
+**`docker-compose.yml` — everything containerised.** Used by `task docker:up`. Adds `minion-suite` (built from `Dockerfile`, `MCP_PORT` 8321) and `input-sources` on top of the same infra. Requires `.env` (copy from `.env.example`).
+
+Layered on top of either:
+- `docker-compose.local.yml` — **gitignored**, optional, yours. `task up` includes it automatically if present, so personal overrides never become tree dirt. Don't edit `docker-compose.dev.yml` to change a port — override it here.
+- `docker-compose.langfuse.yml` — `task up LANGFUSE=true`, or layered on `docker-compose.yml` manually. Note `LANGFUSE_OTEL_HOST` differs by path (`http://langfuse:3000` containerised, `http://localhost:3000` native) — see that file's header.
+
+Schema is applied by **dbmate** (`task db:migrate`, migrations in `database/pgsql/migrations/`), not by an init script.
+
+Apache AGE is *not* used — dropped 2026-07-25 in `20260314120000_add_memory_extensions.sql` (no runtime code path needs it; the managed target can't offer it). pgvector is required.
 
 Copy `.env.example` → `.env` and fill in secrets before running `task docker:up`.
 
@@ -173,6 +182,10 @@ task docker:down
 
 pgvector specifically is required: the test schema declares `public.vector(1536)`, so plain `postgres:17` fails with `type "public.vector" does not exist`.
 
+**If you already run `task up`, you have it** — `docker-compose.dev.yml`'s postgres is the same image, port, and credentials the tests expect, so no second container is needed.
+
+Otherwise, a standalone one is enough:
+
 ```bash
 docker run -d --name minion-test-pg \
   -e POSTGRES_USER=minion -e POSTGRES_PASSWORD=minion -e POSTGRES_DB=minion \
@@ -180,7 +193,7 @@ docker run -d --name minion-test-pg \
 docker exec minion-test-pg psql -U minion -d minion -c "CREATE EXTENSION IF NOT EXISTS vector;"
 ```
 
-`docker-compose.local.yml` can also provide this Postgres, but it is **gitignored** (`.gitignore:13`), so a fresh clone will not have one — and `task up` expects it too. The committed `docker-compose.yml` is not a substitute: its postgres is `apache/age:PG17_latest`, which does not ship pgvector.
+Run one or the other, not both — they collide on `:5434`.
 
 ## Secrets
 
