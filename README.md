@@ -59,12 +59,12 @@ task setup:init
 
 See [QUICKSTART.md](QUICKSTART.md) for detailed setup instructions.
 
-### Local Docker Stack (Postgres + NATS)
+### Local Docker Stack (Postgres + Redis + NATS)
 
 Run infrastructure in Docker, app on the host:
 
 ```bash
-# Start Postgres + NATS
+# Start Postgres + Redis + NATS
 task docker:local:up
 
 # Initialize DB schema, roles, and NATS stream
@@ -304,14 +304,16 @@ task minion:kill             # Kill a stuck job by ID
 # Code quality
 task fmt                     # Format + fix lint (ruff)
 task lint                    # Check formatting + lint (ruff)
-task test                    # Run pytest (412 tests, in-memory SQLite)
+task test                    # Run pytest, both suites (~1150 tests)
+                             #   needs Postgres+pgvector on :5434, not SQLite
+                             #   see CLAUDE.md "Tests" for how to start one
 
-# Docker
+# Docker — two stacks, mutually exclusive (they share ports 5434/6379/4222)
 task docker:build            # Build Docker image
-task docker:up / docker:down # Full stack (app + postgres + nats)
-task docker:local:up         # Local infra only (postgres + nats)
-task docker:local:init       # Initialize DB schema + NATS stream
-task docker:local:reset      # Destroy volumes, start fresh
+task docker:up / docker:down # Everything containerised (app + dashboard + pollers + infra)
+task docker:local:up         # Infra only (postgres + redis + nats); app runs natively
+task docker:local:init       # Initialize DB roles + NATS stream
+task docker:local:reset      # Destroy infra volumes, start fresh, re-migrate
 ```
 
 ## NATS Subjects

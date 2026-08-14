@@ -55,16 +55,19 @@ projects:
 ## 3. Start the stack
 
 ```bash
-# Builds all containers, starts Postgres + NATS + app + dashboard,
-# waits for Postgres, then runs all DB migrations via dbmate.
-task docker:local:reset
+# Builds all containers, starts Postgres + Redis + NATS + app + dashboard.
+task docker:up
+
+# Apply the schema (dbmate).
+task db:migrate
 ```
 
-This runs:
-1. `docker compose down -v` — clean slate (destroys volumes)
-2. `docker compose up -d --build` — starts all services
-3. Waits for Postgres health check
-4. `task db:migrate` — applies all schema migrations
+`docker:up` builds the image, then brings up every service in
+`docker-compose.yml` and waits for the Postgres and Redis health checks before
+starting the app containers.
+
+Schema is a separate step because it is applied by dbmate against a running
+database, not baked into the image.
 
 Once complete you should see:
 
@@ -79,7 +82,7 @@ Once complete you should see:
 
 ```bash
 # Tail the app logs
-task docker:local:logs
+task docker:logs
 ```
 
 You should see:
@@ -110,7 +113,7 @@ SECRETS_CMD="" task minion:review -- https://gitlab.com/my-group/my-repo/-/merge
 
 ```bash
 # Restart the app container (e.g., after label changes on an issue)
-docker compose -f docker-compose.local.yml restart minion-suite
+docker compose restart minion-suite
 
 # Run DB migrations after pulling new code
 task db:migrate
@@ -119,15 +122,18 @@ task db:migrate
 task db:migrate:status
 
 # Full reset (destroys data, rebuilds, re-migrates)
-task docker:local:reset
+docker compose down -v && task docker:up && task db:migrate
 
 # Stop everything
-task docker:local:down
+task docker:down
 
-# Query the local DB
-docker compose -f docker-compose.local.yml exec postgres \
+# Query the DB
+docker compose exec postgres \
   psql -U minion -d minion -c "SELECT id, status, external_id FROM minions.jobs;"
 ```
+
+> `task docker:local:*` is a *different* stack — infra only, with the app run
+> natively on the host. Mixing the two collides on ports 5434/6379/4222. Pick one.
 
 ## DB migrations
 
@@ -148,14 +154,14 @@ Migrations connect using `POSTGRES_MIGRATE_URL` from `.env` (defaults to `localh
 **Poller not picking up issues?**
 - Check the issue has the correct trigger label (default: `minions`, not `minion-in-progress`)
 - The poll interval is 120s by default — wait or restart the container
-- Check logs: `task docker:local:logs`
+- Check logs: `task docker:logs`
 
 **Migration fails with "column already exists"?**
-- Run `task docker:local:reset` for a clean slate — init.sql only creates the schema, dbmate handles all tables
+- `docker compose down -v && task docker:up && task db:migrate` for a clean slate. Nothing pre-creates tables — dbmate owns every one of them, so a wiped volume plus a migrate is always a valid starting state.
 
 **"SSL is not enabled" error on migrate?**
 - Ensure `POSTGRES_MIGRATE_URL` in `.env` ends with `?sslmode=disable`
 
 **Container fails to start?**
-- Check postgres logs: `docker compose -f docker-compose.local.yml logs postgres`
-- Ensure port 5434 isn't already in use
+- Check postgres logs: `docker compose logs postgres`
+- Ensure port 5434 isn't already in use — `task up`, `task docker:up`, and a leftover `minion-test-pg` from the test setup all want it

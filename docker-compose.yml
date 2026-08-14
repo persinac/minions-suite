@@ -21,6 +21,30 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # The Dockerfile has always EXPOSEd 8322 and `task up` has always started a
+  # dashboard, but the containerised stack had no process serving one — so
+  # QUICKSTART's "Dashboard | http://localhost:8322" row was unreachable via
+  # `task docker:up`. Same shape as input-sources: same image, different command.
+  dashboard:
+    build: .
+    image: minion-suite:dev
+    command: ["python", "-m", "minions", "--dashboard"]
+    env_file: .env
+    ports:
+      - "${DASHBOARD_PORT:-8322}:8322"
+    volumes:
+      - ./settings.toml:/app/settings.toml:ro
+      - ./projects.yaml:/app/projects.yaml:ro
+      - ./projects.local.yaml:/app/projects.local.yaml:ro
+      - ./prompts:/app/prompts:ro
+      - logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
   input-sources:
     build: .
     image: minion-suite:dev
