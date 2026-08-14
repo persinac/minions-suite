@@ -5,15 +5,19 @@ required, not just postgres — conftest_pg_schema.sql declares public.vector(15
 so plain postgres:17 fails with `type "public.vector" does not exist`.
 
 Requires postgres on localhost:5434 (user=minion, password=minion, db=minion);
-override with TEST_POSTGRES_URL. docker-compose.local.yml can provide this, but it
-is gitignored, so a fresh clone will not have one; the committed docker-compose.yml
-runs apache/age, which does not ship pgvector. A standalone container is enough:
+override with TEST_POSTGRES_URL.
+
+If you run `task up` you already have it — docker-compose.dev.yml's postgres is
+the same image, port, and credentials, so no second container is needed. Otherwise
+a standalone one is enough:
 
     docker run -d --name minion-test-pg \
       -e POSTGRES_USER=minion -e POSTGRES_PASSWORD=minion -e POSTGRES_DB=minion \
       -p 5434:5432 pgvector/pgvector:pg17
     docker exec minion-test-pg psql -U minion -d minion \
       -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+Run one or the other, not both — they collide on :5434.
 
 Without it, every DB-backed test errors at fixture setup rather than failing.
 """
