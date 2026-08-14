@@ -180,7 +180,7 @@ docker run -d --name minion-test-pg \
 docker exec minion-test-pg psql -U minion -d minion -c "CREATE EXTENSION IF NOT EXISTS vector;"
 ```
 
-(`tests/conftest.py` refers to this Postgres as coming "from docker-compose.local.yml" — no such file exists in the repo; use the command above.)
+`docker-compose.local.yml` can also provide this Postgres, but it is **gitignored** (`.gitignore:13`), so a fresh clone will not have one — and `task up` expects it too. The committed `docker-compose.yml` is not a substitute: its postgres is `apache/age:PG17_latest`, which does not ship pgvector.
 
 ## Secrets
 
