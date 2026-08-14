@@ -1388,7 +1388,7 @@ async def manage_dev_tasks(engine: JobEngine, job: Job):
     if not dev_tasks:
         return
 
-    terminal_statuses = {TaskStatus.MERGED, TaskStatus.DONE, TaskStatus.FAILED}
+    terminal_statuses = {TaskStatus.MERGED, TaskStatus.DONE, TaskStatus.NO_WORK_NEEDED, TaskStatus.FAILED}
 
     # A service is "busy" if any engineer task is actively running through its lifecycle
     # (IN_PROGRESS, PR_OPEN, IN_REVIEW). Tasks in PR_OPEN/IN_REVIEW still own the service
@@ -1642,6 +1642,33 @@ async def manage_dev_tasks(engine: JobEngine, job: Job):
     all_failed = all(t.status == TaskStatus.FAILED for t in dev_tasks)
     if all_failed:
         await engine.db.update_job_status(job.id, JobStatus.FAILED, error="All dev tasks failed")
+        await engine._on_job_terminal(job.id)
+        return
+
+    # Every engineer looked and found the work already present. That is a
+    # legitimate outcome, not a failure, and it must not advance the job to
+    # MERGED: there is no PR to merge and no change to deploy, so claiming a
+    # merge would send a deploy monitor to watch a rollout that never happens.
+    #
+    # Checked before has_merged, because a job where nothing needed doing has no
+    # merged task and would otherwise fall through to "terminal but none merged"
+    # and be recorded as a failure -- the exact misfiling this status exists to
+    # end. A MIX still merges: one task finding nothing to do does not cancel
+    # another's real PR.
+    # Every engineer looked and found the work already present. That is a
+    # legitimate outcome, not a failure, and it must not advance the job to
+    # MERGED: there is no PR to merge and no change to deploy, so claiming a
+    # merge would send a deploy monitor to watch a rollout that never happens.
+    #
+    # Checked before has_merged, because a job where nothing needed doing has no
+    # merged task and would otherwise fall through to "terminal but none merged"
+    # and be recorded as a failure -- the exact misfiling this status exists to
+    # end. A MIX still merges: one task finding nothing to do does not cancel
+    # another's real PR.
+    all_no_work = all(t.status == TaskStatus.NO_WORK_NEEDED for t in dev_tasks)
+    if all_no_work:
+        await engine.db.update_job_status(job.id, JobStatus.NO_WORK_NEEDED)
+        logger.info("Job %s: every dev task reported no work needed — nothing to merge or deploy", job.id)
         await engine._on_job_terminal(job.id)
         return
 

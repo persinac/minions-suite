@@ -37,7 +37,15 @@ class TestEnums:
         assert "no_work_needed" in JobStatus.__members__.values()
 
     def test_task_status_count(self):
-        assert len(TaskStatus) == 8
+        # 9 since no_work_needed was added: an engineer that finds the requested
+        # change already present needs a terminal state that is not a failure.
+        assert len(TaskStatus) == 9
+
+    def test_task_status_has_no_work_needed(self):
+        """Mirrors the JobStatus assertion above. Tasks lacked this for a long
+        time, which is why a correct "already done" could only be recorded as an
+        incomplete task and retried to failure."""
+        assert "no_work_needed" in TaskStatus.__members__.values()
 
     def test_subtask_status_values(self):
         assert set(SubtaskStatus) == {"pending", "running", "completed", "failed"}
