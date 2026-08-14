@@ -112,9 +112,13 @@ Each agent role has its own tool set (defined in `agents/tools/definitions.py`):
 
 There are two bases. Pick by where the *app* runs:
 
-**`docker-compose.dev.yml` — infra only, app runs natively.** Used by `task up` / `task down`. Postgres (`pgvector/pgvector:pg17`, `:5434`), Redis (`:6379`), NATS (`:4222`, monitor `:8222`). No app container, so you get live reload and a debugger. This is the everyday loop.
+**`docker-compose.dev.yml` — infra only, app runs natively.** Used by `task up` / `task down`, and by the `task docker:local:*` family. Postgres (`pgvector/pgvector:pg17`, `:5434`), Redis (`:6379`), NATS (`:4222`, monitor `:8222`). No app container, so you get live reload and a debugger. This is the everyday loop.
 
-**`docker-compose.yml` — everything containerised.** Used by `task docker:up`. Adds `minion-suite` (built from `Dockerfile`, `MCP_PORT` 8321) and `input-sources` on top of the same infra. Requires `.env` (copy from `.env.example`).
+`task up` starts this infra *and* the native app processes. `task docker:local:up` starts only the infra, for when you want to run the app yourself. `task docker:local:reset` is the one that wipes volumes — `task up` never destroys data.
+
+**`docker-compose.yml` — everything containerised.** Used by `task docker:up`. Adds `minion-suite` (`--server`, `MCP_PORT` 8321), `dashboard` (`--dashboard`, `DASHBOARD_PORT` 8322), and `input-sources` (`--pollers`) on top of the same infra — all three the same image built from `Dockerfile`, differing only in command. Requires `.env` (copy from `.env.example`).
+
+The two stacks are **mutually exclusive** — they publish the same host ports (5434/6379/4222), as does a leftover `minion-test-pg` from the test setup.
 
 Layered on top of either:
 - `docker-compose.local.yml` — **gitignored**, optional, yours. `task up` includes it automatically if present, so personal overrides never become tree dirt. Don't edit `docker-compose.dev.yml` to change a port — override it here.

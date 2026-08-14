@@ -1,5 +1,20 @@
 version: '3'
 
+vars:
+  # Infra-only base for the `local:*` family, layered exactly like `task up`:
+  # committed baseline first, your gitignored overrides on top if you have them.
+  #
+  # These tasks used to pass `-f docker-compose.local.yml` alone. That file is
+  # gitignored, so every one of them failed on a fresh clone — including
+  # `local:reset`, which QUICKSTART named as the way to start the project.
+  DEV_COMPOSE_FILES:
+    sh: |
+      FILES="-f docker-compose.dev.yml"
+      if [ -f docker-compose.local.yml ]; then
+        FILES="$FILES -f docker-compose.local.yml"
+      fi
+      echo "$FILES"
+
 tasks:
   build:
     desc: Build the minion-suite Docker image
@@ -77,29 +92,35 @@ tasks:
     cmds:
       - docker compose exec minion-suite bash
 
-  # ── Local stack (app + postgres + nats + dashboard) ─────────────────────────
+  # ── Local infra (postgres + redis + nats), app runs natively ────────────────
+  #
+  # Same containers `task up` starts, minus the native app processes. Use these
+  # when you want the infra up but intend to run the app yourself (debugger,
+  # `task minion:server`, a test run). For the fully containerised app, use the
+  # `docker:up` family above.
   local:up:
-    desc: Build and start full local stack (app + dashboard + postgres + nats)
+    desc: Start local infra (postgres + redis + nats); app runs natively
     cmds:
-      - docker compose -f docker-compose.local.yml up -d --build
+      - docker compose {{.DEV_COMPOSE_FILES}} up -d
 
   local:down:
-    desc: Stop local Postgres + NATS
+    desc: Stop local infra
     cmds:
-      - docker compose -f docker-compose.local.yml down
+      - docker compose {{.DEV_COMPOSE_FILES}} down
 
   local:logs:
-    desc: Tail local Postgres + NATS logs
+    desc: Tail local infra logs
     cmds:
-      - docker compose -f docker-compose.local.yml logs -f
+      - docker compose {{.DEV_COMPOSE_FILES}} logs -f
 
   local:reset:
-    desc: Destroy local volumes, restart fresh, and run migrations
+    desc: Destroy local infra volumes, restart fresh, and run migrations
     cmds:
-      - docker compose -f docker-compose.local.yml down -v
-      - docker compose -f docker-compose.local.yml up -d --build
+      # The one thing `task up` deliberately will not do: throw away your data.
+      - docker compose {{.DEV_COMPOSE_FILES}} down -v
+      - docker compose {{.DEV_COMPOSE_FILES}} up -d
       - echo "Waiting for Postgres to be healthy..."
-      - until docker compose -f docker-compose.local.yml exec postgres pg_isready -U minion -d minion > /dev/null 2>&1; do sleep 1; done
+      - until docker compose {{.DEV_COMPOSE_FILES}} exec -T postgres pg_isready -U minion -d minion > /dev/null 2>&1; do sleep 1; done
       - task db:migrate
 
   local:init:
