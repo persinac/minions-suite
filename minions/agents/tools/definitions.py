@@ -500,6 +500,21 @@ ENGINEER_TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "branch_name": {"type": "string", "description": "Branch name."},
         },
     ),
+    _fn(
+        "report_no_work_needed",
+        (
+            "Report that the change this task asks for is ALREADY PRESENT in the codebase. "
+            "Use it only after reading the code and confirming that — not when the task is hard, "
+            "blocked, or partly done. Closes the task with no PR. Prefer this over inventing a "
+            "docs-only change to justify the run."
+        ),
+        {
+            "reason": {
+                "type": "string",
+                "description": "Concrete evidence: the file, symbol or commit that already satisfies the task, so a human can check the claim.",
+            },
+        },
+    ),
     *_SUBTASK_TOOLS,
     _UPDATE_TASK_STATUS_TOOL,
     _HEARTBEAT_TOOL,

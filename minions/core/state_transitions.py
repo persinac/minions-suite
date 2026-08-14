@@ -68,7 +68,12 @@ JOB_TRANSITIONS: dict[str, set[str]] = {
     "spec_received": {"spec_ready", "done", "failed"},
     "spec_ready": {"tasks_created", "failed"},
     "tasks_created": {"dev_in_progress", "review_in_progress", "no_work_needed", "failed"},
-    "dev_in_progress": {"pr_open", "merged", "failed"},
+    # no_work_needed is reachable from dev_in_progress too: "there is nothing to
+    # do here" is a conclusion an engineer reaches by READING the code, which
+    # happens after dispatch, not before it. Allowing it only from
+    # tasks_created meant the discovery could never be recorded once work had
+    # started -- which is the only time it is ever actually made.
+    "dev_in_progress": {"pr_open", "merged", "no_work_needed", "failed"},
     "pr_open": {"review_in_progress", "in_progress", "failed"},
     "review_in_progress": {"tasks_created", "merged", "done", "failed"},
     "merged": {"deploying", "deployed", "failed"},
@@ -85,13 +90,18 @@ JOB_TRANSITIONS: dict[str, set[str]] = {
 # Used for roles without a role-specific override in ROLE_TASK_TRANSITIONS.
 TASK_TRANSITIONS: dict[str, set[str]] = {
     "pending": {"in_progress", "failed"},
-    "in_progress": {"pr_open", "merged", "done", "failed"},
+    "in_progress": {"pr_open", "merged", "done", "no_work_needed", "failed"},
     "pr_open": {"in_review", "in_progress", "merged", "done", "failed"},
     "in_review": {"merged", "in_progress", "pr_open", "failed"},
     "merged": {"deploying", "done", "failed"},
     "deploying": {"done", "failed"},
     # Terminal states
     "done": set(),
+    # Terminal, and deliberately NOT reachable from pr_open or in_review: once a
+    # PR exists the work plainly was needed, and letting a task retreat to
+    # "nothing to do" from there would strand an open PR the way job 7b840e7f's
+    # was stranded.
+    "no_work_needed": set(),
     # Allow retry: arbiter can reset failed tasks to pending
     "failed": {"pending"},
 }
@@ -102,9 +112,10 @@ TASK_TRANSITIONS: dict[str, set[str]] = {
 ROLE_TASK_TRANSITIONS: dict[str, dict[str, set[str]]] = {
     "database_engineer": {
         "pending": {"in_progress", "failed"},
-        "in_progress": {"merged", "done", "failed"},
+        "in_progress": {"merged", "done", "no_work_needed", "failed"},
         "merged": {"done", "failed"},
         "done": set(),
+        "no_work_needed": set(),
         "failed": {"pending"},
     },
 }

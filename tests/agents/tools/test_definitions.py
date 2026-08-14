@@ -124,7 +124,14 @@ class TestEngineerTools:
         assert "send_heartbeat" in names
 
     def test_count(self):
-        assert len(ENGINEER_TOOL_DEFINITIONS) == 16
+        # 17 since report_no_work_needed was added.
+        assert len(ENGINEER_TOOL_DEFINITIONS) == 17
+
+    def test_has_report_no_work_needed(self):
+        """Without this on the engineer's own tool list the status is
+        unreachable: the engineer is the only role that discovers the work is
+        already done, because it is the one that reads the code."""
+        assert "report_no_work_needed" in _tool_names(ENGINEER_TOOL_DEFINITIONS)
 
 
 class TestDeployTools:

@@ -804,6 +804,60 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
             return json.dumps({"error": str(e), "missing_fields": e.missing_fields})
 
     @mcp.tool()
+    async def report_no_work_needed(task_id: str, reason: str) -> str:
+        """Report that the task's requested change is ALREADY PRESENT in the codebase.
+
+        Use this when you have read the code and confirmed the work described by
+        the ticket has already been done — not when the task is hard, blocked, or
+        partly finished. Give a concrete `reason`: name the file, symbol, or
+        commit that already satisfies it, so a human can check the claim.
+
+        This closes the task without a PR and is terminal. If every engineer task
+        on the job reports it, the job finishes as `no_work_needed` rather than
+        being merged or deployed.
+
+        Prefer this over inventing a docs-only change to justify the run.
+        """
+        if not reason or not reason.strip():
+            # An unexplained "nothing to do" is indistinguishable from an agent
+            # giving up, and it closes the task terminally. Make the claim
+            # checkable or do not accept it.
+            return json.dumps(
+                {
+                    "error": "reason is required — name the file, symbol or commit that already satisfies this task",
+                }
+            )
+        try:
+            task = await db.get_task(task_id)
+            if not task:
+                return json.dumps({"error": f"Task {task_id} not found"})
+
+            # A task that already has a PR plainly needed doing. Refusing here
+            # keeps an opened PR from being orphaned by a late change of mind.
+            if task.pr_url or task.pr_number:
+                return json.dumps(
+                    {
+                        "error": f"task {task_id} already has a PR ({task.pr_url or task.pr_number}) — the work was needed; use report_pr or update_task_status",
+                    }
+                )
+
+            if _nats_client:
+                await _propose_transition("task", task_id, TaskStatus.NO_WORK_NEEDED, job_id=task.job_id, error=None)
+                task = await db.get_task(task_id)
+            else:
+                task = await db.update_task(task_id, status=TaskStatus.NO_WORK_NEEDED, agent_role="")
+
+            await db.record_event(task.job_id, "no_work_needed", "engineer", f"task={task_id} reason={reason[:400]}")
+            logger.info("Task %s reported NO WORK NEEDED: %s", task_id, reason[:300])
+            return json.dumps({"task_id": task_id, "status": str(task.status), "reason": reason})
+        except ArbiterUnavailableError as e:
+            return json.dumps({"error": str(e), "retryable": True, "retry_after_seconds": e.retry_after_seconds})
+        except InvalidTransitionError as e:
+            return json.dumps({"error": str(e)})
+        except PreconditionError as e:
+            return json.dumps({"error": str(e), "missing_fields": e.missing_fields})
+
+    @mcp.tool()
     async def report_pr(task_id: str, pr_url: str, pr_number: int, branch_name: str) -> str:
         """Report that a PR has been opened for a task."""
         try:

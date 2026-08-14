@@ -45,6 +45,17 @@ class TaskStatus(StrEnum):
     MERGED = "merged"
     DEPLOYING = "deploying"
     DONE = "done"
+    # Terminal, and NOT a failure: the engineer read the codebase and found the
+    # requested change already present. JobStatus has had NO_WORK_NEEDED since
+    # the beginning but tasks had no equivalent, so an engineer that reached the
+    # correct conclusion had no way to record it -- an engineer task without a
+    # PR is retried, so a right answer could only present as an incomplete one
+    # and burned every attempt before failing the job.
+    #
+    # Job 7b840e7f: its Trello card claimed wallet-api had no real-DB test
+    # pattern; commit 8997ef8 had added one weeks earlier. The agent verified
+    # that correctly, and the pipeline still recorded a failure.
+    NO_WORK_NEEDED = "no_work_needed"
     FAILED = "failed"
 
 
