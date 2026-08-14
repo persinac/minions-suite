@@ -167,7 +167,20 @@ task docker:down
 
 ## Tests
 
-372 unit tests via `pytest` + `pytest-asyncio`. Run with `task test` or `uv run pytest`. Tests use in-memory SQLite, no external services.
+~1150 tests via `pytest` + `pytest-asyncio`, split across two suites. Run both with `task test` — it invokes pytest twice (root `tests/`, then `agent-memory/tests`) because both directories are named `tests` and their conftests collide in a single run. A bare `uv run pytest` runs only the root suite.
+
+**Tests need a real PostgreSQL with pgvector — not SQLite.** `tests/conftest.py` connects to `postgresql://minion:minion@localhost:5434/minion` (override with `TEST_POSTGRES_URL`) and creates a `minions_test` schema per session. Without it, every DB-backed test *errors* at fixture setup rather than failing — easy to misread as "my change broke the suite".
+
+pgvector specifically is required: the test schema declares `public.vector(1536)`, so plain `postgres:17` fails with `type "public.vector" does not exist`.
+
+```bash
+docker run -d --name minion-test-pg \
+  -e POSTGRES_USER=minion -e POSTGRES_PASSWORD=minion -e POSTGRES_DB=minion \
+  -p 5434:5432 pgvector/pgvector:pg17
+docker exec minion-test-pg psql -U minion -d minion -c "CREATE EXTENSION IF NOT EXISTS vector;"
+```
+
+(`tests/conftest.py` refers to this Postgres as coming "from docker-compose.local.yml" — no such file exists in the repo; use the command above.)
 
 ## Secrets
 
