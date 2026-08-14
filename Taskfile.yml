@@ -75,13 +75,19 @@ tasks:
     desc: "Spin up EVERYTHING — infra, DB, migrations, dashboard, server"
     vars:
       LANGFUSE: '{{.LANGFUSE | default "false"}}'
+      # docker-compose.dev.yml is the committed baseline, so a fresh clone works.
+      # docker-compose.local.yml is gitignored and optional — layered on top only
+      # if you have one, so personal overrides never become tree dirt.
       COMPOSE_FILES:
         sh: |
-          if [ "{{.LANGFUSE}}" = "true" ]; then
-            echo "-f docker-compose.local.yml -f docker-compose.langfuse.yml"
-          else
-            echo "-f docker-compose.local.yml"
+          FILES="-f docker-compose.dev.yml"
+          if [ -f docker-compose.local.yml ]; then
+            FILES="$FILES -f docker-compose.local.yml"
           fi
+          if [ "{{.LANGFUSE}}" = "true" ]; then
+            FILES="$FILES -f docker-compose.langfuse.yml"
+          fi
+          echo "$FILES"
     cmds:
       # 1. Start infra containers
       - echo "==> Starting infrastructure (postgres, redis, nats{{if eq .LANGFUSE "true"}}, langfuse{{end}})..."
@@ -147,6 +153,16 @@ tasks:
 
   down:
     desc: "Stop everything — containers + background processes"
+    vars:
+      # Mirror `up`'s layering, plus langfuse unconditionally: `down` should stop
+      # whatever is running regardless of how it was started.
+      COMPOSE_FILES:
+        sh: |
+          FILES="-f docker-compose.dev.yml"
+          if [ -f docker-compose.local.yml ]; then
+            FILES="$FILES -f docker-compose.local.yml"
+          fi
+          echo "$FILES -f docker-compose.langfuse.yml"
     cmds:
-      - docker compose -f docker-compose.local.yml -f docker-compose.langfuse.yml down 2>/dev/null || true
+      - docker compose {{.COMPOSE_FILES}} down 2>/dev/null || true
       - echo "Infrastructure stopped."

@@ -1,12 +1,26 @@
 # Langfuse self-hosted stack — compose overlay.
 #
-# Usage:
-#   docker compose -f docker-compose.yml -f docker-compose.langfuse.yml up -d
+# Pure service overlay: it adds the langfuse services and patches nothing, so it
+# layers cleanly onto either base.
+#
+# Containerised app:   docker compose -f docker-compose.yml -f docker-compose.langfuse.yml up -d
+# Native app:          task up LANGFUSE=true      (base is docker-compose.dev.yml)
 #
 # Then set in your .env:
 #   LANGFUSE_PUBLIC_KEY=<create in Langfuse UI at http://localhost:3000>
 #   LANGFUSE_SECRET_KEY=<create in Langfuse UI>
-#   LANGFUSE_OTEL_HOST=http://langfuse:3000
+#   LANGFUSE_OTEL_HOST=<see below — differs by path>
+#
+# LANGFUSE_OTEL_HOST depends on where the app runs, because the hostname has to
+# resolve from the app's own network namespace:
+#   containerised app -> http://langfuse:3000     (compose network DNS)
+#   native app        -> http://localhost:3000    (published port)
+#
+# This used to be set for you by a `minion-suite: {environment: ...}` stanza at
+# the bottom of this file. That stanza forced the compose project to contain a
+# minion-suite service, which broke `task up` (native app, infra-only base) with
+# "service minion-suite has neither an image nor a build context". It also only
+# ever emitted the container value, which is wrong for the native path.
 
 services:
 
@@ -107,11 +121,6 @@ services:
       - langfuse-redis:/data
     ports:
       - "6380:6380"
-
-  # Wire the main minion-suite to point at the local Langfuse
-  minion-suite:
-    environment:
-      LANGFUSE_OTEL_HOST: http://langfuse:3000
 
 volumes:
   langfuse-pgdata:
