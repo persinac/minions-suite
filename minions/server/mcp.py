@@ -19,6 +19,7 @@ from fastmcp import FastMCP
 
 from ..config import Config
 from ..core.models import Agent, AgentRole, JobStatus, Message, Subtask, SubtaskStatus, Task, TaskStatus, _now
+from ..core.spec_contract import SpecContractError, validate_refined_spec
 from ..core.state_transitions import ArbiterUnavailableError, InvalidTransitionError, PreconditionError
 from ..db import AbstractDatabase
 
@@ -639,6 +640,14 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
     @mcp.tool()
     async def submit_refined_spec(job_id: str, spec: str) -> str:
         """Submit a refined/structured spec for a job (called by spec analyst agent)."""
+        # Checked before the transition is proposed, so a spec that fails the
+        # contract leaves the job exactly where it was and the analyst can simply
+        # resubmit. Retryable: the fix is in the agent's own next message, not in
+        # anything it has to wait for.
+        try:
+            validate_refined_spec(spec)
+        except SpecContractError as e:
+            return json.dumps({"error": e.remedy, "retryable": True})
         try:
             if _nats_client:
                 await _propose_transition("job", job_id, "spec_ready", job_id=job_id, refined_spec=spec)

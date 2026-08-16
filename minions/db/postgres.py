@@ -292,8 +292,13 @@ class PostgresDatabase:
 
     async def update_job_spec(self, job_id: str, spec: str) -> None:
         async with self._pool.connection() as conn:
+            # COALESCE preserves the human's original wording on the FIRST refine
+            # only. A second refine (a retry, or an arbiter re-run) must not
+            # overwrite it with the first refinement's output, or the thing we
+            # kept the column for -- judging assumptions against the ticket that
+            # prompted them -- is silently lost to the machine's own prose.
             await conn.execute(
-                f"UPDATE {JOB_SCHEMA}.jobs SET spec = %s, updated_at = %s WHERE id = %s",
+                f"UPDATE {JOB_SCHEMA}.jobs SET original_spec = COALESCE(original_spec, spec), spec = %s, updated_at = %s WHERE id = %s",
                 (spec, _now(), job_id),
             )
         logger.info("Updated spec for job %s (%d chars)", job_id, len(spec))
@@ -838,6 +843,7 @@ def _dict_to_job(d: dict) -> Job:
     return Job(
         id=d["id"],
         spec=d["spec"],
+        original_spec=d.get("original_spec"),
         status=JobStatus(d["status"]),
         job_type=d.get("job_type") or "development",
         mr_url=d.get("mr_url"),

@@ -82,7 +82,8 @@ CREATE TABLE jobs (
     job_type text DEFAULT 'development'::text NOT NULL,
     mr_url text,
     gitlab_issue_id text,
-    difficulty text
+    difficulty text,
+    original_spec text
 );
 CREATE TABLE memory_entities (
     id text NOT NULL,

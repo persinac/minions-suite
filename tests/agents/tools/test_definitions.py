@@ -90,8 +90,18 @@ class TestArbiterTools:
         assert "send_message" in names
         assert "send_heartbeat" in names
 
+    def test_it_can_read_the_messages_it_is_told_to_read(self):
+        """arbiter.md says "use `get_messages` to check for incoming messages".
+
+        It was absent from this list, so the call returned "Unknown tool" and the
+        coordinator could send without ever receiving. See
+        tests/agents/test_prompt_tool_coherence.py, which now checks the whole
+        class of prompt/tool disagreement rather than this one instance.
+        """
+        assert "get_messages" in _tool_names(ARBITER_TOOL_DEFINITIONS)
+
     def test_count(self):
-        assert len(ARBITER_TOOL_DEFINITIONS) == 5
+        assert len(ARBITER_TOOL_DEFINITIONS) == 6
 
 
 class TestEngineerTools:

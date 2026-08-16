@@ -63,7 +63,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     updated_at TEXT NOT NULL,
     error TEXT,
     external_id TEXT,
-    difficulty TEXT
+    difficulty TEXT,
+    original_spec TEXT
 );
 
 CREATE TABLE IF NOT EXISTS tasks (
@@ -174,7 +175,32 @@ class SQLiteDatabase:
         self._db.row_factory = aiosqlite.Row
         await self._db.executescript(SCHEMA)
         await self._db.commit()
+        await self._add_missing_columns()
         logger.info("SQLite connected: %s", self.db_path)
+
+    # Columns added to SCHEMA after a database file already existed. CREATE TABLE
+    # IF NOT EXISTS silently does nothing on an existing file, so a new column in
+    # SCHEMA never reaches it -- reads survive via the `in row.keys()` guards in
+    # the row mappers, but any write to the column fails with "no such column".
+    # jobs.difficulty has carried that exposure since it was added; jobs.spec's
+    # refinement path now writes original_spec on every development job, which
+    # makes it certain rather than latent. Additive only: no drops, no renames.
+    _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
+        ("jobs", "difficulty", "TEXT"),
+        ("jobs", "original_spec", "TEXT"),
+    )
+
+    async def _add_missing_columns(self) -> None:
+        """Add columns that postdate this database file. Idempotent."""
+        for table, column, coltype in self._ADDITIVE_COLUMNS:
+            cursor = await self._db.execute(f"PRAGMA table_info({table})")
+            rows = await cursor.fetchall()
+            existing = {r["name"] for r in rows}
+            if column in existing:
+                continue
+            await self._db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+            await self._db.commit()
+            logger.info("SQLite: added missing column %s.%s", table, column)
 
     async def close(self) -> None:
         if self._db:
@@ -364,8 +390,11 @@ class SQLiteDatabase:
         return _row_to_job(row)
 
     async def update_job_spec(self, job_id: str, spec: str) -> None:
+        # COALESCE preserves the human's original wording on the FIRST refine
+        # only -- see the matching note in postgres.py. A second refine must not
+        # overwrite it with the first refinement's output.
         await self._db.execute(
-            "UPDATE jobs SET spec = ?, updated_at = ? WHERE id = ?",
+            "UPDATE jobs SET original_spec = COALESCE(original_spec, spec), spec = ?, updated_at = ? WHERE id = ?",
             (spec, _now(), job_id),
         )
         await self._db.commit()
@@ -385,9 +414,7 @@ class SQLiteDatabase:
         activity rather than intake, so counting them would let ordinary review
         traffic starve the dev-job budget.
         """
-        cur = await self._db.execute(
-            "SELECT COUNT(*) AS n FROM jobs WHERE created_at >= ? AND job_type = 'development'", (since_iso,)
-        )
+        cur = await self._db.execute("SELECT COUNT(*) AS n FROM jobs WHERE created_at >= ? AND job_type = 'development'", (since_iso,))
         row = await cur.fetchone()
         return int(row["n"]) if row else 0
 
@@ -821,6 +848,7 @@ def _row_to_job(row) -> Job:
     return Job(
         id=row["id"],
         spec=row["spec"],
+        original_spec=row["original_spec"] if "original_spec" in row.keys() else None,  # noqa: SIM118 - sqlite3.Row `in` tests values, not keys
         status=JobStatus(row["status"]),
         job_type=row["job_type"] if row["job_type"] else "development",
         mr_url=row["mr_url"],
@@ -865,7 +893,7 @@ def _row_to_subtask(row) -> Subtask:
     if d.get("result") and isinstance(d["result"], str):
         try:
             d["result"] = json.loads(d["result"])
-        except (json.JSONDecodeError, ValueError):
+        except json.JSONDecodeError, ValueError:
             d["result"] = {"output": d["result"]}
     if d.get("result") is not None and not isinstance(d["result"], dict):
         d["result"] = {"output": d["result"]}

@@ -11,6 +11,8 @@ includes:
     taskfile: tasks/db.yaml
   memory:
     taskfile: tasks/memory.yaml
+  e2e:
+    taskfile: tasks/e2e.yaml
 
 tasks:
   default:

@@ -304,7 +304,11 @@ task minion:kill             # Kill a stuck job by ID
 # Code quality
 task fmt                     # Format + fix lint (ruff)
 task lint                    # Check formatting + lint (ruff)
-task test                    # Run pytest, both suites (~1150 tests)
+task test                    # Run pytest, both suites (~1217 tests)
+task e2e:hermetic            # Deterministic end-to-end suite (no network, no tokens)
+task e2e:tickets             # List the ambiguous tickets for a live run
+task e2e:live -- <ticket>    # Run one ambiguous ticket against real models
+task e2e:grade [-- JOB_ID]   # Grade a live run's stated assumptions
                              #   needs Postgres+pgvector on :5434, not SQLite
                              #   see CLAUDE.md "Tests" for how to start one
 

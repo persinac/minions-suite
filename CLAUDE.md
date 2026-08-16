@@ -180,7 +180,7 @@ task docker:down
 
 ## Tests
 
-~1150 tests via `pytest` + `pytest-asyncio`, split across two suites. Run both with `task test` — it invokes pytest twice (root `tests/`, then `agent-memory/tests`) because both directories are named `tests` and their conftests collide in a single run. A bare `uv run pytest` runs only the root suite.
+~1217 tests via `pytest` + `pytest-asyncio`, split across two suites (1152 root, 65 agent-memory). Run both with `task test` — it invokes pytest twice (root `tests/`, then `agent-memory/tests`) because both directories are named `tests` and their conftests collide in a single run. A bare `uv run pytest` runs only the root suite.
 
 **Tests need a real PostgreSQL with pgvector — not SQLite.** `tests/conftest.py` connects to `postgresql://minion:minion@localhost:5434/minion` (override with `TEST_POSTGRES_URL`) and creates a `minions_test` schema per session. Without it, every DB-backed test *errors* at fixture setup rather than failing — easy to misread as "my change broke the suite".
 
@@ -198,6 +198,49 @@ docker exec minion-test-pg psql -U minion -d minion -c "CREATE EXTENSION IF NOT 
 ```
 
 Run one or the other, not both — they collide on `:5434`.
+
+## End-to-end tests
+
+Two harnesses, answering different questions. Both live under `tests/e2e/`.
+
+**Hermetic (`task e2e:hermetic`)** — deterministic, free, no network. Only
+`litellm.acompletion` is faked (the one networked call, `agents/runner.py:443`);
+the engine, MCP server, Postgres, and every state transition are real. Scripts are
+keyed by agent role and reach the fake via the `metadata.trace_name` the runner
+already sends. Fake responses are built from litellm's own `ModelResponse` types so
+they cannot drift from the shape they imitate.
+
+- `test_full_lifecycle.py` — intake → decomposition → dispatch, asserting every
+  intermediate state, not just the destination.
+- `test_ambiguity.py` — the assumptions contract, its retryable refusal, and that
+  guesses survive into downstream prompts.
+- `test_transition_invariants.py` — properties *computed* from the transition maps
+  (reachability, no traps, no dangling states, enum agreement). Adding an edge needs
+  no new test here; a bad edge fails a property on its own. This is what caught
+  `JOB_TRANSITIONS["pr_open"] -> "in_progress"`, a TaskStatus in the job map that
+  validation accepted and no job could ever leave.
+
+Coverage stops at dispatch: `report_pr` shells out to `gh` to verify a self-reported
+PR, so the PR/merge legs need a second fake.
+
+**Live (`task e2e:live -- <ticket>`)** — real models against the ambiguous ticket
+corpus in `tests/e2e/tickets/`, graded by `task e2e:grade`. Costs tokens and opens
+real PRs; point it at a throwaway repo. `task e2e:tickets` lists them.
+
+## The assumptions contract
+
+`minions/core/spec_contract.py` requires every refined spec to end with an
+`## Assumptions` section — each entry naming the gap, the reading chosen, and a
+checkable reason. `submit_refined_spec` refuses a spec without one and says what to
+add, so the analyst corrects and retries rather than failing the job.
+
+It is a contract, not a guarantee: `launch_spec_analyst` deliberately advances on the
+raw ticket if no refined spec is ever accepted, so a broken analyst degrades the job
+instead of wedging it. That escape hatch records a `spec_refinement_skipped` event —
+a job that guessed silently is visible afterwards rather than merely quiet.
+
+`jobs.original_spec` preserves the raw ticket on first refine (COALESCE, so retries
+never clobber it). Without it there is nothing to judge the assumptions against.
 
 ## Secrets
 
