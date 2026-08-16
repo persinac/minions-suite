@@ -422,6 +422,12 @@ ARBITER_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     ),
     _fn("mark_tasks_created", "Signal that all tasks have been created for this spec."),
     _SEND_MESSAGE_TOOL,
+    # The arbiter coordinates between agents, and coordination that can only send
+    # is not coordination. Its prompt has always told it to "use `get_messages` to
+    # check for incoming messages" while its tool list omitted the tool, so every
+    # such call returned "Unknown tool" and the arbiter never read a reply it
+    # asked for. The MCP tool already exists and the code reviewer already uses it.
+    _fn("get_messages", "Get messages sent to this agent."),
     _HEARTBEAT_TOOL,
 ]
 

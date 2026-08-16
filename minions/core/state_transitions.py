@@ -74,7 +74,19 @@ JOB_TRANSITIONS: dict[str, set[str]] = {
     # tasks_created meant the discovery could never be recorded once work had
     # started -- which is the only time it is ever actually made.
     "dev_in_progress": {"pr_open", "merged", "no_work_needed", "failed"},
-    "pr_open": {"review_in_progress", "in_progress", "failed"},
+    # NOT "in_progress" -- that is a TaskStatus, and it appeared here almost
+    # certainly by copy from TASK_TRANSITIONS["pr_open"], where it means "back to
+    # work after changes were requested". As a *job* status it does not exist:
+    # it is absent from JobStatus and absent from the keys of this map, so
+    # validate_job_transition accepted `pr_open -> in_progress` while
+    # JOB_TRANSITIONS.get("in_progress", set()) returned empty -- a job driven
+    # there could never legally transition again, and nothing would have raised.
+    #
+    # Nothing writes it today (no JobStatus.IN_PROGRESS exists, and no caller
+    # names the string), so removing it narrows permission without changing any
+    # behaviour. The job-level route back to development already exists and is
+    # `review_in_progress -> tasks_created`.
+    "pr_open": {"review_in_progress", "failed"},
     "review_in_progress": {"tasks_created", "merged", "done", "failed"},
     "merged": {"deploying", "deployed", "failed"},
     "deploying": {"deployed", "failed"},

@@ -554,7 +554,15 @@ async def launch_spec_analyst(engine: JobEngine, job: Job):
         if not engine.config.arbiter_enabled:
             updated_job = await engine.db.get_job(job.id)
             if updated_job and updated_job.status == JobStatus.SPEC_RECEIVED:
-                logger.warning("Spec analyst completed but didn't submit refined spec for job %s, advancing with raw spec", job.id)
+                # Deliberately advance rather than fail: a broken analyst must not
+                # wedge the job. But this is a real degradation -- the job proceeds
+                # on the raw ticket, which means no stated assumptions for anyone
+                # downstream to check, and the only previous record was a log line
+                # that no job review ever reads. Recorded as an event so a job that
+                # guessed silently is visible afterwards instead of merely quiet.
+                message = "Spec analyst finished without an accepted refined spec; advancing on the raw ticket with no stated assumptions"
+                logger.warning("%s (job %s)", message, job.id)
+                await engine.db.record_event(job.id, "spec_refinement_skipped", "engine", message)
                 await engine.db.update_job_status(job.id, JobStatus.SPEC_READY)
     else:
         await engine.db.update_task(task.id, status=TaskStatus.FAILED, agent_role="", error=f"Spec analyst failed: {result_agent.error or 'unknown'}")

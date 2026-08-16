@@ -1,0 +1,47 @@
+version: '3'
+
+vars:
+  # Same secrets runner contract as tasks/minion.yaml.
+  SECRETS_CMD:
+    sh: echo "${SECRETS_CMD:-}"
+  TICKETS: tests/e2e/tickets
+
+tasks:
+  hermetic:
+    desc: Run the deterministic e2e suite (no network, no tokens)
+    cmds:
+      - uv run pytest tests/e2e -q
+
+  tickets:
+    desc: List the ambiguous tickets available for a live run
+    cmds:
+      - 'ls -1 {{.TICKETS}}/*.md | sed "s|{{.TICKETS}}/||;s|\.md$||" | grep -v README'
+
+  live:
+    desc: "Run one ambiguous ticket end-to-end against real models. Usage: task e2e:live -- missing-bound"
+    cmds:
+      - |
+        TICKET="{{.CLI_ARGS}}"
+        if [ -z "$TICKET" ]; then
+          echo "Usage: task e2e:live -- <ticket>   (see: task e2e:tickets)" >&2
+          exit 2
+        fi
+        FILE="{{.TICKETS}}/${TICKET}.md"
+        if [ ! -f "$FILE" ]; then
+          echo "No such ticket: $FILE" >&2
+          exit 2
+        fi
+        echo "Running $FILE against real models — this costs tokens and opens real PRs."
+        {{.SECRETS_CMD}} uv run python -m minions job "$FILE"
+
+  grade:
+    desc: "Grade a live run's assumptions. Usage: task e2e:grade [-- JOB_ID] (default: most recent)"
+    cmds:
+      - "{{.SECRETS_CMD}} uv run python scripts/e2e_grade.py {{.CLI_ARGS}}"
+
+  live-and-grade:
+    desc: "Run a ticket then grade it. Usage: task e2e:live-and-grade -- missing-bound"
+    cmds:
+      - task: live
+        vars: {CLI_ARGS: '{{.CLI_ARGS}}'}
+      - task: grade

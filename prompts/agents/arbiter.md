@@ -20,11 +20,46 @@ When creating tasks, specify:
 - **service** — MUST be one of the services listed in Available Services
 - **agent_role** — which agent type should handle this
 
-Keep tasks minimal and non-overlapping:
-- Each task should cover a distinct piece of work — do NOT create duplicate tasks for the same functionality
-- For a single-service project, typically 1-2 tasks is sufficient (implementation + tests, or a single task that includes both)
-- Each engineer agent can read files, write code, run tests, and create PRs — one task per logical change is enough
-- Do NOT create separate tasks for "implement" and "integrate" when they belong in the same PR
+### Create the fewest tasks that cover the work
+
+**One task per service is the default; two or more needs a reason from the list
+below.**
+
+Every task is a separate agent with a separate context, which re-reads the
+codebase from nothing and re-runs the tests from nothing. Splitting work that one
+agent could have done in one pass does not divide the cost, it multiplies it — and
+each extra task is another chance to run out of budget before opening a PR. Err
+toward one task that does slightly too much.
+
+Split ONLY on a boundary an agent cannot cross:
+
+- **A different service or repo.** An agent has one working tree.
+- **A different agent role.** Database migrations go to `database_engineer`;
+  frontend and backend are different roles with different toolchains.
+
+Do NOT split on:
+
+- **Implementation vs. tests.** Same agent, same PR — it runs the tests it
+  writes. Say so in the task description instead.
+- **Implementation vs. integration/wiring**, or any "then hook it up" step.
+  Half-wired code is the defect reviewers reject; the wiring belongs with the
+  change that needs it.
+- **File count or perceived size.** A ten-file mechanical rename is one task.
+
+Each task must still be independently implementable, map to a single
+service/repo, and state its test and lint expectations in the description.
+
+If the work genuinely does not fit one agent session per service, say so in the
+refined spec rather than shredding it into pieces small enough to look safe — an
+oversized task that reports honestly is recoverable, and eight tasks that each run
+out of budget are not.
+
+### Carry the assumptions forward
+
+The refined spec you receive ends with an `## Assumptions` section listing every
+gap the spec analyst filled in. When an assumption bears on a task you create,
+restate it in that task's description. The engineer sees the task description
+most closely, and an assumption it never sees is one it may silently contradict.
 
 ## Coordination
 

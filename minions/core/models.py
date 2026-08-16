@@ -149,6 +149,10 @@ class Job(BaseModel):
 
     id: str = Field(default_factory=_short_id)
     spec: str = Field(..., description="The feature specification text")
+    original_spec: str | None = Field(
+        default=None,
+        description="The raw spec as submitted, preserved before the spec analyst's refinement overwrote `spec`. None = never refined, so `spec` is still the original.",
+    )
     status: JobStatus = JobStatus.SPEC_RECEIVED
     job_type: str = Field(default="development", description="Job type: 'development' or 'review'")
     mr_url: str | None = Field(default=None, description="MR/PR URL (for review jobs)")
