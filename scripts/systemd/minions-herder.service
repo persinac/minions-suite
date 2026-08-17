@@ -1,0 +1,33 @@
+[Unit]
+# The trigger polls for waiting work and spawns a herder pane. Without something
+# running it, `task herder:watch` only happens when a human types it -- which is
+# how job c75b5aaa was lost: published 02:49:54, fallback fired 03:04:54, a
+# hand-run herder arrived 03:06:04 and found {"work": null}. The metered engineer
+# had it 70 seconds earlier.
+#
+# The latency budget is the whole game. The spawn has to beat
+# herder_claim_timeout_seconds (900s), and a 30s poll clears that by a wide
+# margin -- but only if something is polling.
+Description=minions herder trigger (spawns subscription-billed engineers)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/repos/personal/minions-suite
+# The trigger needs the MCP tunnel. It checks and skips a tick when the tunnel is
+# down rather than reading silence as an empty queue, so starting in either order
+# is safe -- it will begin working when the forward comes up.
+ExecStart=/usr/bin/env uv run python scripts/herder_trigger.py --watch
+Restart=always
+RestartSec=15
+# Deliberately NOT set here: MINIONS_HERDER_MODE. The unit being installed must
+# not by itself make a machine start spawning agents -- that stays an explicit
+# per-host decision, the same shape as CONDUCTOR_RUN_MODE. Put it in the override:
+#   systemctl --user edit minions-herder
+#   [Service]
+#   Environment=MINIONS_HERDER_MODE=live
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

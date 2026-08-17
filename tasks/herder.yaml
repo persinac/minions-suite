@@ -43,3 +43,32 @@ tasks:
       MINIONS_HERDER_MODE: dry
     cmds:
       - uv run python scripts/herder_trigger.py --once
+
+  install:
+    desc: "Install the systemd user units (does NOT enable live spawning)"
+    cmds:
+      # Running by hand is how the race is lost: job c75b5aaa was published at
+      # 02:49:54, the 900s fallback fired at 03:04:54, and a hand-run herder
+      # arrived at 03:06:04 to find the metered engineer already 2 subtasks in.
+      # A 30s poll beats that window by a mile — but only if something polls.
+      - mkdir -p ~/.config/systemd/user
+      - cp scripts/systemd/minions-mcp-forward.service ~/.config/systemd/user/
+      - cp scripts/systemd/minions-herder.service ~/.config/systemd/user/
+      - systemctl --user daemon-reload
+      - |
+        echo ""
+        echo "Units installed. They are NOT live yet — installing must not by"
+        echo "itself turn a machine into an agent spawner."
+        echo ""
+        echo "  systemctl --user enable --now minions-mcp-forward"
+        echo "  systemctl --user edit minions-herder     # add:"
+        echo "      [Service]"
+        echo "      Environment=MINIONS_HERDER_MODE=live"
+        echo "  systemctl --user enable --now minions-herder"
+        echo ""
+        echo "  loginctl enable-linger $USER   # so they survive logout/reboot"
+
+  logs:
+    desc: "Tail the herder trigger's journal"
+    cmds:
+      - journalctl --user -u minions-herder -f -n 50

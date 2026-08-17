@@ -10,6 +10,7 @@ tested here is the arithmetic that decides.
 """
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
@@ -130,6 +131,88 @@ class TestSpawnCommand:
         assert "SEED_PROMPT=" in " ".join(argv)
         assert "--workspace" in argv
 
+    def test_the_command_is_one_argument_not_pre_wrapped(self, trig, monkeypatch):
+        """substrate.sh joins everything after <cwd> and wraps it in its own
+        `sh -c`. Passing `sh -c <cmd>` double-wraps: the joined string became
+        `sh -c SEED_PROMPT="You are the herder. …`, the inner shell word-split on
+        the first space, and the pane died instantly while herdr reported
+        success. The spawn returned 0 and left nothing behind.
+        """
+        captured = {}
+
+        class Done:
+            returncode = 0
+            stderr = ""
+
+        monkeypatch.setattr(trig.subprocess, "run", lambda argv, **k: captured.update(argv=argv) or Done())
+        trig.spawn({"task_id": "abcdef1234", "service": "healthcheck", "title": "t"}, dry=False)
+
+        argv = captured["argv"]
+        assert "sh" not in argv, "substrate.sh adds its own sh -c; pre-wrapping shatters the quoting"
+        assert "-c" not in argv
+        # cwd is argv[3]; the command is a single argv[4].
+        command = argv[4]
+        assert command.startswith("SEED_PROMPT=")
+        assert command.endswith("open-claude.sh'") or command.endswith("open-claude.sh")
+
+    def test_it_spawns_unattended_not_manual(self, trig, monkeypatch):
+        """A herder that stops to ask is not a herder.
+
+        At the default posture the pane comes up "manual" and halts at the first
+        MCP call with "Do you want to proceed?" — nobody is there, so it waits
+        until the 900s fallback fires and the metered engineer runs anyway. The
+        component's entire purpose, defeated one layer above itself.
+        """
+        captured = {}
+
+        class Done:
+            returncode = 0
+            stderr = ""
+
+        monkeypatch.setattr(trig.subprocess, "run", lambda argv, **k: captured.update(argv=argv) or Done())
+        trig.spawn({"task_id": "abcdef1234", "service": "healthcheck", "title": "t"}, dry=False)
+
+        command = captured["argv"][4]
+        assert "CLAUDE_EXTRA_ARGS=" in command
+        assert "--dangerously-skip-permissions" in command
+
+    def test_it_does_not_use_bypass_permissions(self, trig):
+        """bypassPermissions trades a per-tool prompt for a startup prompt.
+
+        It opens a one-time "you accept all responsibility" consent dialog on
+        every fresh session — the acceptance is persisted nowhere in
+        ~/.claude.json — so an unattended herder blocks at startup instead of at
+        its first tool call. Observed on a real spawn; `auto` came up running.
+        """
+        assert "bypassPermissions" not in trig.CLAUDE_EXTRA_ARGS
+        assert "auto" not in trig.CLAUDE_EXTRA_ARGS
+
+    def test_the_permission_mode_is_overridable(self, trig):
+        """A host that wants to watch the first few runs should be able to."""
+        assert os.environ.get("MINIONS_HERDER_CLAUDE_ARGS", "--dangerously-skip-permissions") == trig.CLAUDE_EXTRA_ARGS
+
+    def test_the_seed_survives_shell_quoting(self, trig, monkeypatch):
+        """The prompt contains spaces, a slash and parentheses. Unquoted, the
+        shell splits it and the agent starts with a fragment or not at all."""
+        import shlex
+
+        captured = {}
+
+        class Done:
+            returncode = 0
+            stderr = ""
+
+        monkeypatch.setattr(trig.subprocess, "run", lambda argv, **k: captured.update(argv=argv) or Done())
+        trig.spawn({"task_id": "abcdef1234", "service": "healthcheck", "title": "t"}, dry=False)
+
+        command = captured["argv"][4]
+        # Parse it the way `sh -c` would; the assignment must survive intact.
+        parsed = shlex.split(command)
+        assignment = parsed[0]
+        assert assignment.startswith("SEED_PROMPT=")
+        assert "/herd" in assignment, "the whole prompt must survive, not just its first word"
+        assert "abcdef1234" in assignment
+
     def test_a_failed_spawn_is_reported_not_swallowed(self, trig, monkeypatch):
         """A spawn that silently 'succeeded' would be recorded in state and block
         that task until the TTL, with no herder actually running."""
@@ -141,6 +224,50 @@ class TestSpawnCommand:
         monkeypatch.setattr(trig.subprocess, "run", lambda *a, **k: Failed())
 
         assert trig.spawn({"task_id": "abcdef1234", "service": "x", "title": "t"}, dry=False) is False
+
+
+class TestDryDoesNotConsumeTheBudget:
+    """`dry` then `live` must actually spawn.
+
+    The state file means "already spawned, waiting for it to claim". Writing a
+    dry run into it made the live run that followed skip the item as work
+    somebody else had taken — so the intended workflow (look at what it would
+    do, then let it do it) silently did nothing. Caught against real waiting
+    work, not in review.
+    """
+
+    async def test_a_dry_tick_leaves_the_state_file_empty(self, trig, tmp_path, monkeypatch):
+        monkeypatch.setattr(trig, "MODE", "dry")
+        monkeypatch.setattr(trig, "STATE_FILE", tmp_path / "spawned.json")
+        monkeypatch.setattr(trig, "STATE_DIR", tmp_path)
+        monkeypatch.setattr(trig, "tunnel_healthy", lambda: True)
+
+        async def fake_peek():
+            return [{"task_id": "abcdef12", "service": "healthcheck", "title": "t", "job_id": "j"}]
+
+        monkeypatch.setattr(trig, "peek", fake_peek)
+
+        await trig.tick()
+
+        assert trig.load_state() == {}, "a dry run must not claim the spawn budget"
+
+    async def test_a_live_tick_records_the_spawn(self, trig, tmp_path, monkeypatch):
+        """The other half: a real spawn must be tracked, or the next tick
+        double-spawns while the first pane is still starting up."""
+        monkeypatch.setattr(trig, "MODE", "live")
+        monkeypatch.setattr(trig, "STATE_FILE", tmp_path / "spawned.json")
+        monkeypatch.setattr(trig, "STATE_DIR", tmp_path)
+        monkeypatch.setattr(trig, "tunnel_healthy", lambda: True)
+        monkeypatch.setattr(trig, "spawn", lambda item, dry: True)
+
+        async def fake_peek():
+            return [{"task_id": "abcdef12", "service": "healthcheck", "title": "t", "job_id": "j"}]
+
+        monkeypatch.setattr(trig, "peek", fake_peek)
+
+        await trig.tick()
+
+        assert "abcdef12" in trig.load_state()
 
 
 class TestSafetyDefaults:

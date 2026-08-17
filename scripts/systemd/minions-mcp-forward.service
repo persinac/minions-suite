@@ -1,0 +1,20 @@
+[Unit]
+# Holds the port-forward the trigger and every spawned herder need. The MCP
+# service is ClusterIP with no ingress, so without this there is no route from
+# this host to claim_engineer_work at all.
+#
+# mcp_forward.sh already restarts the forward when it drops; this restarts the
+# supervisor if the supervisor itself dies, and starts it on boot.
+Description=minions MCP port-forward (localhost:8321 -> in-cluster MCP)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/repos/personal/minions-suite
+ExecStart=/usr/bin/env bash scripts/mcp_forward.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
