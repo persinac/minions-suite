@@ -1,0 +1,45 @@
+version: '3'
+
+# The herder trigger: start the subscription-billed engineer when work is waiting.
+#
+# `engineer_dispatch = "external"` makes the engine publish a work item and run
+# nothing, so a Claude Code session can do the engineering on a subscription
+# instead of a metered API key. Nothing ever started that session, so the engine's
+# 900s fallback ran the engineer in-process EVERY time. These tasks close that.
+#
+# Two processes, both on the host that has your Claude subscription:
+#
+#   task herder:forward   holds the port-forward to the in-cluster MCP server
+#   task herder:watch     polls, spawns a herder pane when work appears
+#
+# OFF by default. Set MINIONS_HERDER_MODE=live in ~/.tmux/env.sh on the host that
+# should actually spawn agents — same shape as CONDUCTOR_RUN_MODE, and for the
+# same reason: a work laptop must not inherit an auto-spawning agent from a pull.
+
+tasks:
+  forward:
+    desc: "Hold the port-forward to the in-cluster MCP server (foreground)"
+    cmds:
+      - ./scripts/mcp_forward.sh
+
+  status:
+    desc: "What the trigger sees right now — mode, tunnel, queue. Changes nothing."
+    cmds:
+      - uv run python scripts/herder_trigger.py --status
+
+  once:
+    desc: "Run a single trigger tick and exit"
+    cmds:
+      - uv run python scripts/herder_trigger.py --once
+
+  watch:
+    desc: "Poll and spawn herders as work appears (foreground)"
+    cmds:
+      - uv run python scripts/herder_trigger.py --watch
+
+  dry:
+    desc: "One tick in dry mode — prints the spawn it would make, spawns nothing"
+    env:
+      MINIONS_HERDER_MODE: dry
+    cmds:
+      - uv run python scripts/herder_trigger.py --once
