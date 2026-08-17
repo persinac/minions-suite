@@ -1,63 +1,844 @@
-# Project registry — each entry defines a project to review.
+# Project registry for local dev, docker-compose, and the image default.
 #
-# review_profile composes a prompt from:
-#   roles:     domain expertise (backend, frontend, data_engineer, devops, security)
-#   languages: language-specific rules (python, typescript, go, sql, shell)
-#   custom:    org/team-specific rules loaded from prompts/custom/
+# Kept IDENTICAL to k8s/base/config/projects.yaml below this header. That file is
+# the deployed source of truth: kustomize builds the ConfigMap from it and k8s
+# mounts it over /app/projects.yaml. This copy is what the Dockerfile bakes into
+# the image and what docker-compose mounts -- so under k8s it is overridden, and
+# everywhere else it is what actually runs.
 #
-# model can be overridden per-project (falls back to global default in env).
+# It previously held a single GitLab project belonging to an employer. Nothing in
+# k8s noticed, because the ConfigMap replaced it -- but every local run, every
+# docker-compose run and the image default pointed personal agents at a work repo.
+# Keeping the two in sync is the fix.
+#
+# When the fleet changes, regenerate k8s/base/config/projects.yaml and copy it here.
+#
+#
+# Mounted over /app/projects.yaml by the ConfigMap, replacing the copy baked into
+# the image (which targets a GitLab project over SSH and is the local-dev config).
+#
+# GENERATED from the live GitHub App installation — every entry's language and
+# default_branch comes from the GitHub API, not from a guess. Regenerate rather
+# than hand-editing when the installation changes; five of these repos use
+# `master` rather than `main`, which is the kind of detail hand-maintenance loses.
+#
+# ── Deliberate choices ──
+#
+# model: claude-opus-5. There is no OPENAI_API_KEY in Doppler mcp-minions/prd —
+# only ANTHROPIC_API_KEY and MOONSHOT_API_KEY — so the repo-root file's gpt-4o
+# default fails on the first agent call.
+#
+# clone_url is HTTPS, not SSH. Nothing mounts an SSH key into these pods, and
+# authentication is the GitHub App installation token, which is a bearer token.
+#
+# auto_merge: true everywhere. Once the code reviewer approves, minions squash-
+# merges and deletes the branch with no human in the loop.
+#
+# The merge runs as the ENGINEER App, not the reviewer. Merging writes to the
+# base branch and --delete-branch removes a ref, so it needs `Contents: read and
+# write`, which only the engineer holds; the reviewer App is deliberately
+# read-only on Contents because its only job is to approve. `Pull requests: read
+# and write` alone is NOT sufficient to merge. GitHub permits an identity to
+# merge a PR it opened — it only forbids it *approving* one.
+#
+# The reviewer's verdict is therefore the only gate. Nothing here consults
+# branch protection; if a repo needs a human approval or green CI before merge,
+# configure that on the GitHub side, because minions will not stop itself.
+#
+# ── Known gap ──
+#
+# Repos in C, C++, Kotlin, Swift, TypeScript and Go are registered but not yet
+# workable end to end: the image ships Python plus git/gh/rg/aws only, with no
+# node, go, gradle or ESP toolchain. Agents can read and edit those repos but
+# cannot run their tests, so test_command is deliberately omitted rather than
+# set to something that would fail confusingly.
 
 defaults:
-  model: gpt-4o
-  git_provider: gitlab
+  # NO `model:` here, deliberately.
+  #
+  # A project model is passed to resolve_model at exactly ONE call site — the
+  # reviewer fan-out (engine/dev.py) — and it returns before either the reviewer
+  # default or the difficulty tier is consulted. So `model: claude-opus-5` here
+  # did not mean "this project prefers Opus"; it meant "every reviewer is Opus,
+  # always", silently overriding model_reviewer=claude-sonnet-5 AND the
+  # classifier.
+  #
+  # Job 33c89d9b is what that cost: classified EASY, engineer on the herder at
+  # $0.00, and still $4.76 of Opus reviewers out of a $4.81 total.
+  #
+  # Removing it lets the intended resolution apply: model_reviewer (Sonnet 5)
+  # for medium and hard, and the easy tier for easy tickets. Set `model:` on an
+  # INDIVIDUAL project only when that project genuinely needs its reviewers
+  # pinned, and know that it overrides everything when you do.
+  git_provider: github
 
 projects:
-  # --- Example entries (uncomment and adapt) ---
+  flashback-android:
+    project_id: flippin-balls/Flashback-Android
+    repo_path: /repos/flashback-android
+    auto_merge: true
+    review_profile:
+      roles: [frontend]
+    engineer_profile:
+      roles: [frontend]
+      timeout: 1800
+    services:
+      flashback-android:
+        project_id: flippin-balls/Flashback-Android
+        git_provider: github
+        clone_url: https://github.com/flippin-balls/Flashback-Android.git
+        repo_path: /repos/flashback-android
+        default_branch: main
+        deploy_target: none
 
-  # payments-api:
-  #   project_id: team/payments-api
-  #   gitlab_url: https://gitlab.company.com
-  #   repo_path: /repos/payments-api
-  #   review_profile:
-  #     roles: [backend, security]
-  #     languages: [python, sql]
-  #   ignore_paths: ["*.lock", "alembic/versions/"]
+  flashback-apple:
+    project_id: flippin-balls/Flashback-Apple
+    repo_path: /repos/flashback-apple
+    auto_merge: true
+    review_profile:
+      roles: [frontend]
+    engineer_profile:
+      roles: [frontend]
+      timeout: 1800
+    services:
+      flashback-apple:
+        project_id: flippin-balls/Flashback-Apple
+        git_provider: github
+        clone_url: https://github.com/flippin-balls/Flashback-Apple.git
+        repo_path: /repos/flashback-apple
+        default_branch: master
+        deploy_target: none
 
-  # checkout-ui:
-  #   project_id: team/checkout-ui
-  #   gitlab_url: https://gitlab.company.com
-  #   repo_path: /repos/checkout-ui
-  #   review_profile:
-  #     roles: [frontend]
-  #     languages: [typescript]
-  #   model: claude-sonnet-4-20250514
-
-  # data-pipeline:
-  #   project_id: team/data-pipeline
-  #   gitlab_url: https://gitlab.company.com
-  #   repo_path: /repos/data-pipeline
-  #   review_profile:
-  #     roles: [data_engineer, devops]
-  #     languages: [python, sql, shell]
-
-  export-delivery-tracker:
-    project_id: garner-health/export-delivery-tracker
-    gitlab_url: https://gitlab.com
+  appwrite-functions:
+    project_id: flippin-balls/appwrite-functions
+    repo_path: /repos/appwrite-functions
+    auto_merge: true
     review_profile:
       roles: [backend]
       languages: [python]
-    issues:
-      enabled: true
-      label: minions
+    engineer_profile:
+      roles: [backend]
+      languages: [python]
+      timeout: 1800
     services:
-      api:
-        project_id: garner-health/export-delivery-tracker
-        git_provider: gitlab
-        gitlab_url: https://gitlab.com
-        clone_url: git@gitlab.com:garner-health/export-delivery-tracker.git
-        ci_type: gitlab_ci
-        deploy_target: none
+      appwrite-functions:
+        project_id: flippin-balls/appwrite-functions
+        git_provider: github
+        clone_url: https://github.com/flippin-balls/appwrite-functions.git
+        repo_path: /repos/appwrite-functions
         language: python
         test_command: pytest
         lint_command: ruff check .
         default_branch: main
+        deploy_target: none
+
+  aws-utils:
+    project_id: flippin-balls/aws-utils
+    repo_path: /repos/aws-utils
+    auto_merge: true
+    review_profile:
+      roles: [backend]
+      languages: [python]
+    engineer_profile:
+      roles: [backend]
+      languages: [python]
+      timeout: 1800
+    services:
+      aws-utils:
+        project_id: flippin-balls/aws-utils
+        git_provider: github
+        clone_url: https://github.com/flippin-balls/aws-utils.git
+        repo_path: /repos/aws-utils
+        language: python
+        test_command: pytest
+        lint_command: ruff check .
+        default_branch: main
+        deploy_target: none
+
+  database:
+    project_id: flippin-balls/database
+    repo_path: /repos/database
+    auto_merge: true
+    review_profile:
+      roles: [backend]
+    engineer_profile:
+      roles: [backend]
+      timeout: 1800
+    services:
+      database:
+        project_id: flippin-balls/database
+        git_provider: github
+        clone_url: https://github.com/flippin-balls/database.git
+        repo_path: /repos/database
+        default_branch: main
+        deploy_target: none
+
+  device-config-management:
+    project_id: flippin-balls/device-config-management
+    repo_path: /repos/device-config-management
+    auto_merge: true
+    review_profile:
+      roles: [backend]
+      languages: [python]
+    engineer_profile:
+      roles: [backend]
+      languages: [python]
+      timeout: 1800
+    services:
+      device-config-management:
+        project_id: flippin-balls/device-config-management
+        git_provider: github
+        clone_url: https://github.com/flippin-balls/device-config-management.git
+        repo_path: /repos/device-config-management
+        language: python
+        test_command: pytest
+        lint_command: ruff check .
+        default_branch: main
+        deploy_target: none
+
+  device-requisition:
+    project_id: flippin-balls/device-requisition
+    repo_path: /repos/device-requisition
+    auto_merge: true
+    review_profile:
+      roles: [backend]
+      languages: [python]
+    engineer_profile:
+      roles: [backend]
+      languages: [python]
+      timeout: 1800
+    services:
+      device-requisition:
+        project_id: flippin-balls/device-requisition
+        git_provider: github
+        clone_url: https://github.com/flippin-balls/device-requisition.git
+        repo_path: /repos/device-requisition
+        language: python
+        test_command: pytest
+        lint_command: ruff check .
+        default_branch: main
+        deploy_target: none
+
+  directory-api:
+    project_id: flippin-balls/directory-api
+    repo_path: /repos/directory-api
+    auto_merge: true
+    review_profile:
+      roles: [backend]
+      languages: [python]
+    engineer_profile:
+      roles: [backend]
+      languages: [python]
+      timeout: 1800
+    services:
+      directory-api:
+        project_id: flippin-balls/directory-api
+        git_provider: github
+        clone_url: https://github.com/flippin-balls/directory-api.git
+        repo_path: /repos/directory-api
+        language: python
+        test_command: pytest
+        lint_command: ruff check .
+        default_branch: main
+        deploy_target: none
+
+  directory-ui:
+    project_id: flippin-balls/directory-ui
+    repo_path: /repos/directory-ui
+    auto_merge: true
+    review_profile:
+      roles: [frontend]
+      languages: [typescript]
+    engineer_profile:
+      roles: [frontend]
+      languages: [typescript]
+      timeout: 1800
+    services:
+      directory-ui:
+        project_id: flippin-balls/directory-ui
+        git_provider: github
+        clone_url: https://github.com/flippin-balls/directory-ui.git
+        repo_path: /repos/directory-ui
+        language: typescript
+        # Verified against the repo's package.json on 2026-07-29: there is no
+        # `test` script, so the previous `npm test` could only ever fail with
+        # "Missing script: test". `build` is the real gate -- it type-checks the
+        # whole project, which is the failure mode a frontend edit actually has.
+        install_command: npm ci
+        test_command: npm run build
+        lint_command: npm run lint
+        default_branch: main
+        deploy_target: none
+
+  esp-cryptoauthlib:
+    project_id: flippin-balls/esp-cryptoauthlib
+    repo_path: /repos/esp-cryptoauthlib
+    auto_merge: true
+    review_profile:
+      roles: [backend]
+      languages: [shell]
+    engineer_profile:
+      roles: [backend]
+      languages: [shell]
+      timeout: 1800
+    services:
+      esp-cryptoauthlib:
+        project_id: flippin-balls/esp-cryptoauthlib
+        git_provider: github
+        clone_url: https://github.com/flippin-balls/esp-cryptoauthlib.git
+        repo_path: /repos/esp-cryptoauthlib
+        language: shell
+        default_branch: master
+        deploy_target: none
+
+  flashback-cns:
+    project_id: flippin-balls/flashback-cns
+    repo_path: /repos/flashback-cns
+    auto_merge: true
+    review_profile:
+      roles: [backend]
+      languages: [python]
+    engineer_profile:
+      roles: [backend]
+      languages: [python]
+      timeout: 1800
+    services:
+      flashback-cns:
+        project_id: flippin-balls/flashback-cns
+        git_provider: github
+        clone_url: https://github.com/flippin-balls/flashback-cns.git
+        repo_path: /repos/flashback-cns
+        language: python
+        test_command: pytest
+        lint_command: ruff check .
+        default_branch: main
+        deploy_target: none
+
+  flashback-fleet-esp-common:
+    project_id: flippin-balls/flashback-fleet-esp-common
+    repo_path: /repos/flashback-fleet-esp-common
+    auto_merge: true
+    review_profile:
+      roles: [backend]
+      languages: [shell]
+    engineer_profile:
+      roles: [backend]
+      languages: [shell]
+      timeout: 1800
+    services:
+      flashback-fleet-esp-common:
+        project_id: flippin-balls/flashback-fleet-esp-common
+        git_provider: github
+        clone_url: https://github.com/flippin-balls/flashback-fleet-esp-common.git
+        repo_path: /repos/flashback-fleet-esp-common
+        language: shell
+        default_branch: main
+        deploy_target: none
+
+  flashback-heatmap:
+    project_id: flippin-balls/flashback-heatmap
+    repo_path: /repos/flashback-heatmap
+    auto_merge: true
+    review_profile:
+      roles: [frontend]
+      languages: [typescript]
+    engineer_profile:
+      roles: [frontend]
+      languages: [typescript]
+      timeout: 1800
+    services:
+      flashback-heatmap:
+        project_id: flippin-balls/flashback-heatmap
+        git_provider: github
+        clone_url: https://github.com/flippin-balls/flashback-heatmap.git
+        repo_path: /repos/flashback-heatmap
+        language: typescript
+        # No `test` and no `lint` script in this repo -- scripts are build, dev,
+        # preview, rebuild, typecheck. Both commands here were fabricated.
+        # lint_command is left empty rather than pointed at something that does
+        # not exist; an empty one is simply omitted from the prompt.
+        install_command: npm ci
+        test_command: npm run typecheck
+        lint_command: ""
+        default_branch: master
+        deploy_target: none
+
+  flashback-plugins:
+    project_id: flippin-balls/flashback-plugins
+    repo_path: /repos/flashback-plugins
+    auto_merge: true
+    review_profile:
+      roles: [backend]
+    engineer_profile:
+      roles: [backend]
+      timeout: 1800
+    services:
+      flashback-plugins:
+        project_id: flippin-balls/flashback-plugins
+        git_provider: github
+        clone_url: https://github.com/flippin-balls/flashback-plugins.git
+        repo_path: /repos/flashback-plugins
+        default_branch: master
+        deploy_target: none
+
+  healthcheck:
+    project_id: flippin-balls/healthcheck
+    repo_path: /repos/healthcheck
+    auto_merge: true
+    review_profile:
+      roles: [backend]
+      languages: [python]
+    engineer_profile:
+      roles: [backend]
+      languages: [python]
+      timeout: 1800
+    services:
+      healthcheck:
+        project_id: flippin-balls/healthcheck
+        git_provider: github
+        clone_url: https://github.com/flippin-balls/healthcheck.git
+        repo_path: /repos/healthcheck
+        language: python
+        test_command: pytest
+        lint_command: ruff check .
+        default_branch: master
+        deploy_target: none
+
+  hermes-bridge:
+    project_id: flippin-balls/hermes-bridge
+    repo_path: /repos/hermes-bridge
+    auto_merge: true
+    review_profile:
+      roles: [backend]
+      languages: [shell]
+    engineer_profile:
+      roles: [backend]
+      languages: [shell]
+      timeout: 1800
+    services:
+      hermes-bridge:
+        project_id: flippin-balls/hermes-bridge
+        git_provider: github
+        clone_url: https://github.com/flippin-balls/hermes-bridge.git
+        repo_path: /repos/hermes-bridge
+        language: shell
+        default_branch: main
+        deploy_target: none
+
+  infrastructure:
+    project_id: flippin-balls/infrastructure
+    repo_path: /repos/infrastructure
+    auto_merge: true
+    review_profile:
+      roles: [backend]
+      languages: [python]
+    engineer_profile:
+      roles: [backend]
+      languages: [python]
+      timeout: 1800
+    services:
+      infrastructure:
+        project_id: flippin-balls/infrastructure
+        git_provider: github
+        clone_url: https://github.com/flippin-balls/infrastructure.git
+        repo_path: /repos/infrastructure
+        language: python
+        test_command: pytest
+        lint_command: ruff check .
+        default_branch: main
+        deploy_target: none
+
+  integration-tests:
+    project_id: flippin-balls/integration-tests
+    repo_path: /repos/integration-tests
+    auto_merge: true
+    review_profile:
+      roles: [backend]
+      languages: [python]
+    engineer_profile:
+      roles: [backend]
+      languages: [python]
+      timeout: 1800
+    services:
+      integration-tests:
+        project_id: flippin-balls/integration-tests
+        git_provider: github
+        clone_url: https://github.com/flippin-balls/integration-tests.git
+        repo_path: /repos/integration-tests
+        language: python
+        test_command: pytest
+        lint_command: ruff check .
+        default_branch: main
+        deploy_target: none
+
+  kagent-agents:
+    project_id: flippin-balls/kagent-agents
+    repo_path: /repos/kagent-agents
+    auto_merge: true
+    review_profile:
+      roles: [backend]
+    engineer_profile:
+      roles: [backend]
+      timeout: 1800
+    services:
+      kagent-agents:
+        project_id: flippin-balls/kagent-agents
+        git_provider: github
+        clone_url: https://github.com/flippin-balls/kagent-agents.git
+        repo_path: /repos/kagent-agents
+        default_branch: main
+        deploy_target: none
+
+  log-analyzer:
+    project_id: flippin-balls/log-analyzer
+    repo_path: /repos/log-analyzer
+    auto_merge: true
+    review_profile:
+      roles: [backend]
+    engineer_profile:
+      roles: [backend]
+      timeout: 1800
+    services:
+      log-analyzer:
+        project_id: flippin-balls/log-analyzer
+        git_provider: github
+        clone_url: https://github.com/flippin-balls/log-analyzer.git
+        repo_path: /repos/log-analyzer
+        default_branch: main
+        deploy_target: none
+
+  lora-nodes:
+    project_id: flippin-balls/lora-nodes
+    repo_path: /repos/lora-nodes
+    auto_merge: true
+    review_profile:
+      roles: [backend]
+      languages: [shell]
+    engineer_profile:
+      roles: [backend]
+      languages: [shell]
+      timeout: 1800
+    services:
+      lora-nodes:
+        project_id: flippin-balls/lora-nodes
+        git_provider: github
+        clone_url: https://github.com/flippin-balls/lora-nodes.git
+        repo_path: /repos/lora-nodes
+        language: shell
+        default_branch: main
+        deploy_target: none
+
+  lora-pi-monitor:
+    project_id: flippin-balls/lora-pi-monitor
+    repo_path: /repos/lora-pi-monitor
+    auto_merge: true
+    review_profile:
+      roles: [backend]
+      languages: [python]
+    engineer_profile:
+      roles: [backend]
+      languages: [python]
+      timeout: 1800
+    services:
+      lora-pi-monitor:
+        project_id: flippin-balls/lora-pi-monitor
+        git_provider: github
+        clone_url: https://github.com/flippin-balls/lora-pi-monitor.git
+        repo_path: /repos/lora-pi-monitor
+        language: python
+        test_command: pytest
+        lint_command: ruff check .
+        default_branch: main
+        deploy_target: none
+
+  management-api:
+    project_id: flippin-balls/management-api
+    repo_path: /repos/management-api
+    auto_merge: true
+    review_profile:
+      roles: [backend]
+      languages: [python]
+    engineer_profile:
+      roles: [backend]
+      languages: [python]
+      timeout: 1800
+    services:
+      management-api:
+        project_id: flippin-balls/management-api
+        git_provider: github
+        clone_url: https://github.com/flippin-balls/management-api.git
+        repo_path: /repos/management-api
+        language: python
+        test_command: pytest
+        lint_command: ruff check .
+        default_branch: main
+        deploy_target: none
+
+  management-dashboard:
+    project_id: flippin-balls/management-dashboard
+    repo_path: /repos/management-dashboard
+    auto_merge: true
+    review_profile:
+      roles: [frontend]
+      languages: [typescript]
+    engineer_profile:
+      roles: [frontend]
+      languages: [typescript]
+      timeout: 1800
+    services:
+      management-dashboard:
+        project_id: flippin-balls/management-dashboard
+        git_provider: github
+        clone_url: https://github.com/flippin-balls/management-dashboard.git
+        repo_path: /repos/management-dashboard
+        language: typescript
+        # The only frontend repo where both declared scripts genuinely exist.
+        install_command: npm ci
+        test_command: npm test
+        lint_command: npm run lint
+        default_branch: main
+        deploy_target: none
+
+  mcp-minions:
+    project_id: flippin-balls/mcp-minions
+    repo_path: /repos/mcp-minions
+    auto_merge: true
+    review_profile:
+      roles: [backend]
+      languages: [python]
+    engineer_profile:
+      roles: [backend]
+      languages: [python]
+      timeout: 1800
+    services:
+      mcp-minions:
+        project_id: flippin-balls/mcp-minions
+        git_provider: github
+        clone_url: https://github.com/flippin-balls/mcp-minions.git
+        repo_path: /repos/mcp-minions
+        language: python
+        test_command: pytest
+        lint_command: ruff check .
+        default_branch: main
+        deploy_target: none
+
+  parts-db:
+    project_id: flippin-balls/parts-db
+    repo_path: /repos/parts-db
+    auto_merge: true
+    review_profile:
+      roles: [devops]
+      languages: [shell]
+    engineer_profile:
+      roles: [devops]
+      languages: [shell]
+      timeout: 1800
+    services:
+      parts-db:
+        project_id: flippin-balls/parts-db
+        git_provider: github
+        clone_url: https://github.com/flippin-balls/parts-db.git
+        repo_path: /repos/parts-db
+        language: shell
+        default_branch: main
+        deploy_target: none
+
+  pinball-db:
+    project_id: flippin-balls/pinball-db
+    repo_path: /repos/pinball-db
+    auto_merge: true
+    review_profile:
+      roles: [backend]
+      languages: [python]
+    engineer_profile:
+      roles: [backend]
+      languages: [python]
+      timeout: 1800
+    services:
+      # The IPDB scraper half. Every bit of Python config lives in jobs/ --
+      # there is no pyproject.toml, pytest.ini or conftest.py at the repo root
+      # and every test_*.py sits under jobs/tests -- so a bare `pytest` from the
+      # checkout root runs with no project config against an uninstalled
+      # src-layout package. `ruff check .` from the root would also walk web/
+      # and .venv.
+      pinball-db:
+        project_id: flippin-balls/pinball-db
+        git_provider: github
+        clone_url: https://github.com/flippin-balls/pinball-db.git
+        repo_path: /repos/pinball-db
+        language: python
+        test_command: cd jobs && pytest
+        lint_command: cd jobs && ruff check .
+        default_branch: main
+        deploy_target: none
+
+      # pinball-db is polyglot: a Python ETL in jobs/ and the Next.js 15 site
+      # behind db.flashbackfleet.com in web/, each its own project root with its
+      # own lockfile. A single service entry can only describe one of them, and
+      # it described the ETL -- so a change under web/ would have been handed
+      # `pytest`. That is exactly what the Pinball DB telemetry ticket needs.
+      #
+      # The name must be globally unique: _resolve_service matches by name
+      # across every project and returns the first hit, so a duplicate silently
+      # routes work to whichever project sorts first.
+      # Its OWN checkout of the same repo, not a second name for the same
+      # directory: repo_path must stay unique or two services can clobber each
+      # other's working tree, and repos.py resets a dirty tree with
+      # `git clean -fd`. Costs one extra clone; buys an invariant that has
+      # already caused a wedge once.
+      pinball-db-web:
+        project_id: flippin-balls/pinball-db
+        git_provider: github
+        clone_url: https://github.com/flippin-balls/pinball-db.git
+        repo_path: /repos/pinball-db-web
+        language: typescript
+        # web/ declares build, dev, lint, start -- no `test`, same as the other
+        # frontends. `build` type-checks the project, which is the real gate.
+        install_command: cd web && npm ci
+        test_command: cd web && npm run build
+        lint_command: cd web && npm run lint
+        default_branch: main
+        deploy_target: none
+
+  playfield-relay:
+    project_id: flippin-balls/playfield-relay
+    repo_path: /repos/playfield-relay
+    auto_merge: true
+    review_profile:
+      roles: [backend]
+      languages: [shell]
+    engineer_profile:
+      roles: [backend]
+      languages: [shell]
+      timeout: 1800
+    services:
+      playfield-relay:
+        project_id: flippin-balls/playfield-relay
+        git_provider: github
+        clone_url: https://github.com/flippin-balls/playfield-relay.git
+        repo_path: /repos/playfield-relay
+        language: shell
+        default_branch: main
+        deploy_target: none
+
+  requisition-device-cli:
+    project_id: flippin-balls/requisition-device-cli
+    repo_path: /repos/requisition-device-cli
+    auto_merge: true
+    review_profile:
+      roles: [backend]
+      languages: [python]
+    engineer_profile:
+      roles: [backend]
+      languages: [python]
+      timeout: 1800
+    services:
+      requisition-device-cli:
+        project_id: flippin-balls/requisition-device-cli
+        git_provider: github
+        clone_url: https://github.com/flippin-balls/requisition-device-cli.git
+        repo_path: /repos/requisition-device-cli
+        language: python
+        test_command: pytest
+        lint_command: ruff check .
+        default_branch: main
+        deploy_target: none
+
+  store-front:
+    project_id: flippin-balls/store-front
+    repo_path: /repos/store-front
+    auto_merge: true
+    review_profile:
+      roles: [frontend]
+      languages: [typescript]
+    engineer_profile:
+      roles: [frontend]
+      languages: [typescript]
+      timeout: 1800
+    services:
+      store-front:
+        project_id: flippin-balls/store-front
+        git_provider: github
+        clone_url: https://github.com/flippin-balls/store-front.git
+        repo_path: /repos/store-front
+        language: typescript
+        # No `test` script. `build` is the gate; the repo also has
+        # check:contrast and check:primitives if a design-system change ever
+        # wants a tighter one.
+        install_command: npm ci
+        test_command: npm run build
+        lint_command: npm run lint
+        default_branch: main
+        deploy_target: none
+
+  storefront-api:
+    project_id: flippin-balls/storefront-api
+    repo_path: /repos/storefront-api
+    auto_merge: true
+    review_profile:
+      roles: [backend]
+      languages: [python]
+    engineer_profile:
+      roles: [backend]
+      languages: [python]
+      timeout: 1800
+    services:
+      storefront-api:
+        project_id: flippin-balls/storefront-api
+        git_provider: github
+        clone_url: https://github.com/flippin-balls/storefront-api.git
+        repo_path: /repos/storefront-api
+        language: python
+        test_command: pytest
+        lint_command: ruff check .
+        default_branch: main
+        deploy_target: none
+
+  ui-integration-tests:
+    project_id: flippin-balls/ui-integration-tests
+    repo_path: /repos/ui-integration-tests
+    auto_merge: true
+    review_profile:
+      roles: [frontend]
+      languages: [typescript]
+    engineer_profile:
+      roles: [frontend]
+      languages: [typescript]
+      timeout: 1800
+    services:
+      ui-integration-tests:
+        project_id: flippin-balls/ui-integration-tests
+        git_provider: github
+        clone_url: https://github.com/flippin-balls/ui-integration-tests.git
+        repo_path: /repos/ui-integration-tests
+        language: typescript
+        # Has `test`, has no `lint`.
+        install_command: npm ci
+        test_command: npm test
+        lint_command: ""
+        default_branch: main
+        deploy_target: none
+
+  wallet-api:
+    project_id: flippin-balls/wallet-api
+    repo_path: /repos/wallet-api
+    auto_merge: true
+    review_profile:
+      roles: [backend]
+      languages: [python]
+    engineer_profile:
+      roles: [backend]
+      languages: [python]
+      timeout: 1800
+    services:
+      wallet-api:
+        project_id: flippin-balls/wallet-api
+        git_provider: github
+        clone_url: https://github.com/flippin-balls/wallet-api.git
+        repo_path: /repos/wallet-api
+        language: python
+        test_command: pytest
+        lint_command: ruff check .
+        default_branch: main
+        deploy_target: none
+
