@@ -223,9 +223,19 @@ they cannot drift from the shape they imitate.
 Coverage stops at dispatch: `report_pr` shells out to `gh` to verify a self-reported
 PR, so the PR/merge legs need a second fake.
 
-**Live (`task e2e:live -- <ticket>`)** — real models against the ambiguous ticket
-corpus in `tests/e2e/tickets/`, graded by `task e2e:grade`. Costs tokens and opens
-real PRs; point it at a throwaway repo. `task e2e:tickets` lists them.
+**Probe (`task e2e:probe -- <ticket>`)** — real model, real database, **no repo
+needed**. Runs the spec analyst and arbiter and stops before the engineers, which is
+where the only git access lives. This is how to watch ambiguity handling without a
+sandbox: ~$0.05–0.16 and under a minute per ticket.
+
+**Live (`task e2e:live -- <ticket>`)** — the full run, including engineers. Costs
+tokens and opens real PRs; point `projects.yaml` at a throwaway repo first.
+`task e2e:tickets` lists the corpus; `task e2e:grade` scores either kind.
+
+⚠️ Both resolve `postgres_url` from `settings.toml`, which points at the **deployed**
+database, not the local container. Override for local runs:
+`POSTGRES_URL=postgresql://minion:minion@localhost:5434/minion task e2e:probe -- …`
+(the local container needs `database/dbmate.sh pgsql up` first).
 
 ## The assumptions contract
 

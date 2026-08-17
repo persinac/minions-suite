@@ -1,5 +1,20 @@
 version: '3'
 
+# HEADS UP ON WHICH DATABASE THESE WRITE TO.
+#
+# `Config.from_env()` resolves postgres_url from settings.toml, which points at the
+# deployed DigitalOcean instance -- NOT at the local dev container. So `task e2e:probe`
+# and `task e2e:live` write job rows to the real database unless you say otherwise:
+#
+#   POSTGRES_URL=postgresql://minion:minion@localhost:5434/minion task e2e:probe -- missing-bound
+#
+# The local container needs the schema first (`DATABASE_URL=<local> database/dbmate.sh
+# pgsql up`), and note that dbmate leaves an untracked ./db/schema.sql behind.
+#
+# probe is read-mostly -- it writes a job, a task and an agent row and touches no repo.
+# live runs engineers, which check out and push to whatever projects.yaml names. Point
+# that at a throwaway repo before running it.
+
 vars:
   # Same secrets runner contract as tasks/minion.yaml.
   SECRETS_CMD:
@@ -16,6 +31,17 @@ tasks:
     desc: List the ambiguous tickets available for a live run
     cmds:
       - 'ls -1 {{.TICKETS}}/*.md | sed "s|{{.TICKETS}}/||;s|\.md$||" | grep -v README'
+
+  probe:
+    desc: "Watch real agents reason about one ambiguous ticket. No repo needed. Usage: task e2e:probe -- missing-bound"
+    cmds:
+      - |
+        TICKET="{{.CLI_ARGS}}"
+        if [ -z "$TICKET" ]; then
+          echo "Usage: task e2e:probe -- <ticket>   (see: task e2e:tickets)" >&2
+          exit 2
+        fi
+        {{.SECRETS_CMD}} uv run python scripts/e2e_probe.py $TICKET
 
   live:
     desc: "Run one ambiguous ticket end-to-end against real models. Usage: task e2e:live -- missing-bound"

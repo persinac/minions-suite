@@ -18,6 +18,7 @@ Exits non-zero if a mechanical check fails, so it can gate a CI job.
 
 import argparse
 import asyncio
+import re
 import sys
 
 from minions.config import Config
@@ -34,13 +35,68 @@ CONCERNING_EVENTS = {
     "job_rate_cap_deferred": "deferred by the rate cap",
 }
 
-# A reason is checkable when it points at something in the repo or at
-# reversibility. These are heuristics for drawing your eye, never a verdict.
-_GROUNDING_HINTS = ("matching", "matches", "existing", "convention", "already", "precedent", "reversible", "elsewhere", "consistent", "same as")
+# A reason is checkable when it points at something in the repo, at an analogous
+# feature, or at reversibility/safety. Heuristics for drawing your eye, never a
+# verdict.
+#
+# The first version of this list held only repo-convention words, and marked most
+# of a genuinely well-reasoned run as ungrounded: real analyst output leans just as
+# hard on "the most reversible reading", "the safe default", "the choice that
+# cannot lose data". Flagging those as unreasoned trains you to ignore the marker,
+# which is worse than not having one.
+_GROUNDING_HINTS = (
+    "matching",
+    "matches",
+    "existing",
+    "convention",
+    "already",
+    "precedent",
+    "elsewhere",
+    "consistent",
+    "same as",
+    "nearest",
+    "analog",
+    "reversible",
+    "safe default",
+    "safest",
+    "cannot lose",
+    "not asked for",
+    "unchanged",
+    "trivial to change",
+    "was not asked",
+)
+
+# An assumption starts with a list marker; everything after is its continuation.
+_ASSUMPTION_START = re.compile(r"^\s*(?:\d+[.)]|[-*+])\s+")
 
 
-def _looks_grounded(line: str) -> bool:
-    return any(hint in line.lower() for hint in _GROUNDING_HINTS)
+def _assumption_items(block: str) -> list[str]:
+    """Group the section into one string per assumption.
+
+    Grading line-by-line marks every continuation line of a multi-line assumption,
+    so a single well-reasoned entry renders as five unreasoned ones and the output
+    becomes unreadable exactly when the reasoning is richest.
+    """
+    items: list[str] = []
+    for raw in block.splitlines():
+        if not raw.strip():
+            continue
+        if _ASSUMPTION_START.match(raw) or not items:
+            items.append(raw.strip())
+        else:
+            items[-1] += " " + raw.strip()
+    return items
+
+
+def _looks_grounded(text: str) -> bool:
+    return any(hint in text.lower() for hint in _GROUNDING_HINTS)
+
+
+def _first_line(text: str, width: int = 110) -> str:
+    flat = " ".join(text.split())
+    if len(flat) <= width:
+        return flat
+    return flat[: width - 1] + "…"
 
 
 async def grade(job_id: str | None) -> int:
@@ -75,20 +131,34 @@ async def grade(job_id: str | None) -> int:
         print(original.strip() or "(empty)")
 
         print("\n--- Assumptions declared ---")
-        if not block:
+        items = _assumption_items(block)
+        if not items:
             print("(none)")
         else:
-            for line in [ln for ln in block.splitlines() if ln.strip()]:
-                mark = "  " if _looks_grounded(line) else "? "
-                print(f"{mark}{line.rstrip()}")
-            print("\n  '?' marks an assumption with no obvious grounding phrase — read those closely.")
+            ungrounded = 0
+            for item in items:
+                grounded = _looks_grounded(item)
+                ungrounded += 0 if grounded else 1
+                print(f"{'  ' if grounded else '? '}{_first_line(item)}")
+            print(f"\n  {len(items)} assumptions, {ungrounded} with no obvious grounding phrase ('?').")
+            print("  The marker is a heuristic for where to look, not a verdict.")
 
         # -- mechanical checks --
         if job.original_spec is None:
             failures.append("spec was never refined (original_spec is null), so nothing was reasoned about")
         if not has_assumptions(refined):
             failures.append("refined spec carries no assumptions section")
-        if job.status not in TERMINAL:
+
+        # A probe (scripts/e2e_probe.py) deliberately stops after the analyst and
+        # arbiter, so spec_ready/tasks_created IS its finish line. Reporting that as
+        # "stuck" made every probe fail a check it was never in scope for -- and a
+        # grader that cries wolf on its own tooling stops being read.
+        agents = await db.get_agents_for_job(job.id)
+        roles = {str(a.role) for a in agents}
+        probe_only = roles and roles <= {"spec_analyst", "arbiter"}
+        if probe_only:
+            print(f"\n(probe run — only {', '.join(sorted(roles))} ran, so {job.status} is the finish line, not a stall)")
+        elif job.status not in TERMINAL:
             failures.append(f"job did not reach a terminal state (stuck at {job.status})")
 
         print("\n--- Run health ---")
@@ -99,7 +169,6 @@ async def grade(job_id: str | None) -> int:
         if not (seen & set(CONCERNING_EVENTS)):
             print("  no degradation events recorded")
 
-        agents = await db.get_agents_for_job(job.id)
         cost = sum(a.cost_usd or 0.0 for a in agents)
         turns = sum(a.num_turns or 0 for a in agents)
         print(f"  {len(agents)} agents, {turns} turns, ${cost:.4f}")
