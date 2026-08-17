@@ -24,6 +24,7 @@ import argparse
 import asyncio
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -47,6 +48,23 @@ FORWARD_CHECK = Path(__file__).resolve().parent / "mcp_forward.sh"
 SPAWN_TTL_SECONDS = int(os.environ.get("MINIONS_HERDER_SPAWN_TTL", "600"))
 
 WORKSPACE = os.environ.get("MINIONS_HERDER_WORKSPACE", "minions/herd")
+
+# The whole point is a herder nobody has to attend, and every permission POSTURE
+# has its own first-run dialog that a spawned pane will sit on forever:
+#   manual            -> "Do you want to proceed?" at the first tool call
+#   bypassPermissions -> "you accept all responsibility" consent, persisted
+#                        nowhere in ~/.claude.json, so it returns every session
+#   auto              -> "Set up auto mode for your environment?" onboarding
+#
+# All three observed on real panes. `--dangerously-skip-permissions` is the only
+# one that comes up running, and it is a FLAG rather than a mode -- hence
+# CLAUDE_EXTRA_ARGS rather than CLAUDE_PERMISSION_MODE.
+#
+# It IS a real widening: the herder writes code, pushes a branch and opens a PR
+# without asking. That is what was asked for, and it is bounded elsewhere --
+# MINIONS_HERDER_MODE gates whether any of this runs at all, the concurrency cap
+# bounds how many, and the reviewers still gate the merge.
+CLAUDE_EXTRA_ARGS = os.environ.get("MINIONS_HERDER_CLAUDE_ARGS", "--dangerously-skip-permissions")
 
 SEED_PROMPT = (
     "You are the herder. Run the /herd skill now: claim the waiting minions "
@@ -154,17 +172,28 @@ def spawn(item: dict, dry: bool) -> bool:
     seed = SEED_PROMPT.format(task_id=task_id, service=item.get("service", "?"))
     # open-claude.sh reads SEED_PROMPT for "a task to begin on immediately", and
     # going through it (rather than bare `claude`) is what registers the agent in
-    # the fleet registry and on the Slack bus. substrate.sh runs the command
-    # under `sh -c`, so inline env reaches it.
-    inner = f'SEED_PROMPT={json.dumps(seed)} exec "{NEXUS_DIR}/open-claude.sh"'
+    # the fleet registry and on the Slack bus.
+    #
+    # ONE argument, not `sh -c <cmd>`. substrate.sh joins everything after <cwd>
+    # into a single string and wraps it in its OWN `sh -c`, so passing a
+    # pre-wrapped `sh -c ...` double-wraps: the joined string became
+    # `sh -c SEED_PROMPT="You are the herder. ...`, the inner shell word-split on
+    # the first space, took `SEED_PROMPT="You` as its whole command, and exited
+    # instantly. herdr reported success and the agent vanished before the next
+    # poll -- a spawn that returns 0 and leaves nothing behind.
+    #
+    # substrate.sh's own comment anticipates this shape: the command string "may
+    # carry an inline `env VAR='multi word value' prog` prefix (e.g.
+    # SEED_PROMPT)", which is precisely what this is.
+    command = (
+        f"SEED_PROMPT={shlex.quote(seed)} CLAUDE_EXTRA_ARGS={shlex.quote(CLAUDE_EXTRA_ARGS)} exec {shlex.quote(str(NEXUS_DIR / 'open-claude.sh'))}"
+    )
     argv = [
         str(SUBSTRATE),
         "spawn",
         name,
         cwd,
-        "sh",
-        "-c",
-        inner,
+        command,
         "--workspace",
         WORKSPACE,
     ]
@@ -226,9 +255,17 @@ async def tick() -> int:
         if len(state) >= MAX_HERDERS:
             log(f"at MINIONS_HERDER_MAX={MAX_HERDERS} — {len(waiting) - spawned} item(s) still waiting")
             break
-        if spawn(item, dry=(MODE != "live")):
+        is_dry = MODE != "live"
+        if not spawn(item, dry=is_dry):
+            continue
+        spawned += 1
+        # Only a REAL spawn consumes the budget. Recording a dry run here made
+        # `dry` and then `live` silently do nothing: the dry tick marked the task
+        # as already-spawned, and the live tick skipped it as work someone else
+        # had taken. That breaks the one workflow the dry mode exists to support
+        # -- look at what it would do, then let it do it.
+        if not is_dry:
             state[task_id] = now
-            spawned += 1
 
     save_state(state)
     return spawned
