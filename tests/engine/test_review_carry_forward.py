@@ -13,7 +13,6 @@ prior approval would turn every revision into an automatic request_changes —
 spending MORE, not less, and looking like the reviewers had objected.
 """
 
-import pytest
 
 from minions.reviewers import APPROVE, DISCUSS, NOT_APPLICABLE, REQUEST_CHANGES, aggregate_verdicts
 
@@ -120,7 +119,7 @@ class TestWhoGetsCarried:
 
 
 class TestTheSavingIsReal:
-    def test_job_52507587_would_have_run_seven_agents_not_twelve(self):
+    def test_job_52507587_would_have_run_eight_agents_not_twelve(self):
         """Reconstruction from the recorded verdicts.
 
         rev=0  backend-architecture approve, api approve, dba -, pythonista -
@@ -143,13 +142,19 @@ class TestTheSavingIsReal:
         assert total < 12, "must be cheaper than re-running the full panel every round"
 
 
-@pytest.mark.parametrize("max_revisions_default", [2])
-def test_max_revisions_lowered(max_revisions_default):
-    """Each round re-pays the panel, so this multiplies the dominant cost.
+def test_max_revisions_stays_at_three():
+    """Deliberately NOT lowered, and this test is the reason why.
 
-    Round three on job 52507587 returned four unanimous approvals — it bought
-    confirmation, not correction.
+    Lowering it to 2 looks like free money — each round re-pays the panel. But
+    the guard is `revision_count >= max_revisions -> fail`, so 2 permits only
+    rev=0 and rev=1. Job 52507587 objected at rev=0, objected at rev=1, and
+    APPROVED at rev=2: the third round is where it merged. At 2 that job would
+    have failed instead of landing, trading an engineer's completed work for one
+    panel's cost.
+
+    Carrying approvals forward already halves the marginal cost of a late round,
+    so the case for capping is weaker now than when it was written.
     """
     from minions.config import Config
 
-    assert Config().max_revisions == max_revisions_default
+    assert Config().max_revisions == 3, "see the note in config.py before lowering this"

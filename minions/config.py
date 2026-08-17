@@ -342,16 +342,19 @@ class Config:
     # jobs to the DB — so set ENGINE_ENABLED=false there.
     engine_enabled: bool = True
 
-    # Each revision round re-pays the reviewer fan-out, so this multiplies the
-    # dominant cost. On job 52507587 three rounds ran twelve reviewer agents over
-    # one PR for $2.36 -- 98.5% of that job -- and round three returned four
-    # unanimous approvals: it bought confirmation, not correction.
+    # Each revision round re-pays the reviewer fan-out, so this multiplies what
+    # is now the dominant cost -- on job 52507587 reviewers were $2.364 of $2.400.
+    # Tempting to lower, and it was briefly set to 2. Don't, without new evidence:
     #
-    # Lowered 3 -> 2. Two rounds still allow "reviewers object, engineer fixes,
-    # reviewers confirm", which is the loop that produces value. A third round
-    # mostly means the second fix did not land either, and paying a full panel to
-    # discover that is worse than failing the task and looking at it.
-    max_revisions: int = 2
+    # The guard is `revision_count >= max_revisions -> fail`, so 2 permits rounds
+    # rev=0 and rev=1 only. Job 52507587 objected at rev=0, objected at rev=1, and
+    # APPROVED at rev=2 -- the third round is where it merged. At 2 that job would
+    # have failed instead of landing, losing an engineer's work to save one panel.
+    #
+    # Carrying approvals forward (see run_task_review) already cut the marginal
+    # cost of a late round roughly in half, which weakens the case further: the
+    # thing a lower cap would prevent is now much cheaper than when it was 3.
+    max_revisions: int = 3
     dry_run: bool = False
 
     # GitLab issues poller (optional)
