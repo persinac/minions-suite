@@ -184,6 +184,121 @@ class TestClaiming:
         assert payload["work"] is None
 
 
+class TestPeeking:
+    """Deciding whether to start a herder must not take the work.
+
+    A trigger polls to answer "is anything waiting". If it polled with
+    `claim_engineer_work`, asking would take ownership: the item gets an agent
+    row, no worker is coming for it, and `run_engineer`'s fallback leaves it
+    alone until `herder_claim_timeout_seconds` expires. Every poll would strand
+    a task for fifteen minutes, and the queue would look permanently busy while
+    nothing moved.
+    """
+
+    async def test_an_empty_queue_reports_zero(self, mcp_client):
+        payload = await _call(mcp_client, "peek_engineer_work", {})
+
+        assert payload["count"] == 0
+        assert payload["waiting"] == []
+
+    async def test_a_published_task_is_visible(self, mcp_client, db):
+        job_id, task_id = await _job_with_engineer_task(db)
+
+        payload = await _call(mcp_client, "peek_engineer_work", {})
+
+        assert payload["count"] == 1
+        assert payload["waiting"][0]["task_id"] == task_id
+        assert payload["waiting"][0]["job_id"] == job_id
+
+    async def test_peeking_creates_no_agent_row(self, mcp_client, db):
+        """The property the whole tool exists for."""
+        job_id, task_id = await _job_with_engineer_task(db)
+
+        await _call(mcp_client, "peek_engineer_work", {})
+        await _call(mcp_client, "peek_engineer_work", {})
+
+        agents = await db.get_agents_for_job(job_id)
+        assert [a for a in agents if a.task_id == task_id] == [], "peek took ownership"
+
+    async def test_peeking_leaves_the_item_claimable(self, mcp_client, db):
+        """Peek then claim must still succeed — otherwise polling eats the queue."""
+        _, task_id = await _job_with_engineer_task(db)
+
+        await _call(mcp_client, "peek_engineer_work", {})
+        claimed = await _call(mcp_client, "claim_engineer_work", {"worker": "herder"})
+
+        assert claimed["work"] is not None
+        assert claimed["work"]["task_id"] == task_id
+
+    async def test_peek_and_claim_agree(self, mcp_client, db):
+        """They share find_claimable_work so they cannot drift.
+
+        If peek reported work that claim then refused, a trigger would spawn a
+        herder into an empty queue and the pane would exit having done nothing —
+        repeatedly, since the item stays visible to peek.
+        """
+        await _job_with_engineer_task(db)
+
+        assert (await _call(mcp_client, "peek_engineer_work", {}))["count"] == 1
+        assert (await _call(mcp_client, "claim_engineer_work", {"worker": "herder"}))["work"] is not None
+        assert (await _call(mcp_client, "peek_engineer_work", {}))["count"] == 0
+
+    async def test_it_carries_what_a_spawn_needs(self, mcp_client, db):
+        """Enough to name the pane and choose a working directory, no more."""
+        await _job_with_engineer_task(db)
+
+        item = (await _call(mcp_client, "peek_engineer_work", {}))["waiting"][0]
+
+        for field in ("task_id", "job_id", "role", "service", "clone_url", "is_revision"):
+            assert item.get(field) is not None, f"peek item missing {field}"
+
+    async def test_reviewer_tasks_are_not_offered(self, mcp_client, db):
+        job = await db.create_job("spec")
+        for status in (JobStatus.SPEC_READY, JobStatus.TASKS_CREATED, JobStatus.DEV_IN_PROGRESS):
+            await db.update_job_status(job.id, status)
+        task = await db.create_task(
+            Task(job_id=job.id, title="Review", description="", service="management-api", agent_role=AgentRole.CODE_REVIEWER)
+        )
+        await db.update_task(task.id, status=TaskStatus.IN_PROGRESS)
+
+        assert (await _call(mcp_client, "peek_engineer_work", {}))["count"] == 0
+
+
+class TestRegistryIsolation:
+    """Guard the fixture that keeps these tests honest.
+
+    The registry fixture patches `minions.project_registry.build_registry`. That
+    only works because `find_claimable_work` imports it INSIDE the function — a
+    module-level `from … import build_registry` binds the name at import time
+    and the patch never reaches it. These tests would then resolve against
+    whatever projects.yaml is on the box and pass on local configuration rather
+    than on behaviour, which is what the fixture exists to prevent.
+
+    The service name below is deliberately absent from the real projects.yaml,
+    so this fails the moment the import moves back to module scope.
+    """
+
+    async def test_the_patched_registry_is_the_one_used(self, mcp_client, db, monkeypatch):
+        from minions.project_registry import ProjectConfig, ServiceTarget
+
+        svc = ServiceTarget(
+            name="zzz-not-in-any-real-config",
+            project_id="x/zzz",
+            git_provider="github",
+            clone_url="https://example.invalid/zzz.git",
+        )
+        monkeypatch.setattr(
+            "minions.project_registry.build_registry",
+            lambda *_a, **_k: {"p": ProjectConfig(name="p", project_id="x", git_provider="github", services={svc.name: svc})},
+        )
+        await _job_with_engineer_task(db, service=svc.name)
+
+        payload = await _call(mcp_client, "peek_engineer_work", {})
+
+        assert payload["count"] == 1, "the patched registry did not reach find_claimable_work"
+        assert payload["waiting"][0]["clone_url"] == "https://example.invalid/zzz.git"
+
+
 class TestCompleting:
     async def test_completing_closes_the_claim(self, mcp_client, db):
         """The first real herder run left its agent "running" forever, which

@@ -13,6 +13,7 @@ import json
 import logging
 import os
 from pathlib import Path
+from typing import Any, NamedTuple
 
 import httpx
 from fastmcp import FastMCP
@@ -28,6 +29,73 @@ logger = logging.getLogger(__name__)
 # Module-level NATS client reference, set by CLI when arbiter_enabled.
 # When set, state-mutating tools route through the Arbiter.
 _nats_client = None
+
+ENGINEER_ROLES = {AgentRole.BACKEND_ENGINEER, AgentRole.FRONTEND_ENGINEER, AgentRole.DATABASE_ENGINEER}
+
+
+class ClaimableItem(NamedTuple):
+    """One task published for external claim and not yet owned by any agent."""
+
+    job: Any
+    task: Any
+    service: Any
+    project_name: str
+
+
+async def find_claimable_work(db: AbstractDatabase, config: Config | None) -> list[ClaimableItem]:
+    """Every engineer task currently waiting for an external worker.
+
+    One definition, used by both `claim_engineer_work` (which takes the first
+    and creates its agent row) and `peek_engineer_work` (which takes nothing).
+    They must agree: a trigger that decides work is waiting from one rule and
+    then claims by another spawns herders for items that cannot be claimed, and
+    the queue looks permanently busy while nothing moves.
+
+    "Waiting" is the conjunction of three things, and the third is the subtle
+    one -- an agent row is what ownership means here, so a task with none is
+    unowned no matter how it got that way. `run_engineer` publishes by leaving
+    the task IN_PROGRESS with no agent precisely so this reads as claimable.
+    """
+    # Imported here, not at module scope, so tests can substitute a known
+    # registry via `monkeypatch.setattr("minions.project_registry.build_registry", …)`.
+    # A module-level `from … import build_registry` binds the name at import
+    # time and the patch would never reach it -- the herder tests would then
+    # resolve against whatever projects.yaml is on the box and pass or fail on
+    # local configuration rather than on behaviour, which is the exact thing
+    # their fixture docstring says it exists to prevent.
+    from ..project_registry import build_registry
+
+    items: list[ClaimableItem] = []
+    registry = build_registry(config.projects_file if config else "projects.yaml")
+
+    for job in await db.get_active_jobs():
+        agents = await db.get_agents_for_job(job.id)
+        for task in await db.get_tasks(job.id):
+            if task.agent_role not in ENGINEER_ROLES or task.status != TaskStatus.IN_PROGRESS:
+                continue
+
+            # An agent row means somebody already owns this task -- either a
+            # previous claim or an in-process run. Only an unowned task is
+            # claimable. NOTE: check-then-create, so two herders racing could
+            # both win. Fine for a single worker; a second one needs a unique
+            # index on (task_id, status) rather than a tighter check here,
+            # because the race is in the database, not this function.
+            if any(a.status in ("starting", "running") for a in agents if a.task_id == task.id):
+                continue
+
+            service = None
+            project_name = ""
+            for proj in registry.values():
+                if proj.services and task.service in proj.services:
+                    service, project_name = proj.services[task.service], proj.name
+                    break
+            if not service:
+                logger.warning("claimable scan: no service %s in registry for task %s", task.service, task.id)
+                continue
+
+            items.append(ClaimableItem(job=job, task=task, service=service, project_name=project_name))
+
+    return items
 
 
 VALID_ROLES = [r.value for r in AgentRole]
@@ -395,76 +463,83 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
         from types import SimpleNamespace
 
         from ..engine.dev import get_review_feedback
-        from ..project_registry import build_registry
 
-        engineer_roles = {AgentRole.BACKEND_ENGINEER, AgentRole.FRONTEND_ENGINEER, AgentRole.DATABASE_ENGINEER}
+        items = await find_claimable_work(db, config)
+        if not items:
+            return json.dumps({"work": None})
 
-        active = await db.get_active_jobs()
-        for job in active:
-            for task in await db.get_tasks(job.id):
-                if task.agent_role not in engineer_roles or task.status != TaskStatus.IN_PROGRESS:
-                    continue
+        job, task, service, project_name = items[0]
 
-                # An agent row means somebody already owns this task — either a
-                # previous claim or an in-process run. Only an unowned task is
-                # claimable. NOTE: check-then-create, so two herders racing
-                # could both win. Fine for a single worker; a second one needs a
-                # unique index on (task_id, status) rather than a tighter check
-                # here, because the race is in the database, not this function.
-                if any(a.status in ("starting", "running") for a in await db.get_agents_for_job(job.id) if a.task_id == task.id):
-                    continue
+        is_revision = (task.revision_count or 0) > 0 and bool(task.pr_url)
+        feedback = ""
+        if is_revision:
+            feedback = await get_review_feedback(SimpleNamespace(db=db), job.id, task)
 
-                registry = build_registry(config.projects_file if config else "projects.yaml")
-                service = None
-                project_name = ""
-                for proj in registry.values():
-                    if proj.services and task.service in proj.services:
-                        service, project_name = proj.services[task.service], proj.name
-                        break
-                if not service:
-                    logger.warning("claim_engineer_work: no service %s in registry for task %s", task.service, task.id)
-                    continue
+        agent = await db.create_agent(Agent(job_id=job.id, role=task.agent_role, task_id=task.id, model=f"herder:{worker}", status="running"))
+        await db.record_event(job.id, "work_item_claimed", worker, f"task={task.id} agent={agent.id} revision={task.revision_count}")
+        logger.info("Work item %s claimed by %s (agent=%s)", task.id, worker, agent.id)
 
-                is_revision = (task.revision_count or 0) > 0 and bool(task.pr_url)
-                feedback = ""
-                if is_revision:
-                    feedback = await get_review_feedback(SimpleNamespace(db=db), job.id, task)
+        return json.dumps(
+            {
+                "work": {
+                    "agent_id": agent.id,
+                    "task_id": task.id,
+                    "job_id": job.id,
+                    "role": str(task.agent_role),
+                    "title": task.title,
+                    "description": task.description,
+                    "spec": job.spec,
+                    "project": project_name,
+                    "service": task.service,
+                    # The ENGINE's checkout path, inside its own container. Only
+                    # usable by a worker sharing that filesystem. A herder
+                    # anywhere else must ignore it and work from clone_url —
+                    # which is why the key is named for whose path it is.
+                    "engine_repo_path": service.repo_path,
+                    "clone_url": service.clone_url,
+                    "default_branch": service.default_branch,
+                    "branch_name": task.branch_name,
+                    "pr_url": task.pr_url,
+                    "pr_number": task.pr_number,
+                    "is_revision": is_revision,
+                    "revision_count": task.revision_count,
+                    "review_feedback": feedback,
+                }
+            }
+        )
 
-                agent = await db.create_agent(Agent(job_id=job.id, role=task.agent_role, task_id=task.id, model=f"herder:{worker}", status="running"))
-                await db.record_event(job.id, "work_item_claimed", worker, f"task={task.id} agent={agent.id} revision={task.revision_count}")
-                logger.info("Work item %s claimed by %s (agent=%s)", task.id, worker, agent.id)
+    @mcp.tool()
+    async def peek_engineer_work() -> str:
+        """Report what is waiting for an external worker, claiming nothing.
 
-                return json.dumps(
+        For a trigger deciding whether to start a herder. `claim_engineer_work`
+        takes ownership as a side effect of asking, so a poller that used it to
+        check the queue would claim items no worker is coming for — and the
+        engine leaves a claimed task alone until `herder_claim_timeout_seconds`
+        expires, so each poll would strand a task for fifteen minutes.
+
+        Returns `{"count": N, "waiting": [...]}`. Enough to decide and to name
+        the spawn; the herder still calls claim to get the full work item.
+        """
+        items = await find_claimable_work(db, config)
+        return json.dumps(
+            {
+                "count": len(items),
+                "waiting": [
                     {
-                        "work": {
-                            "agent_id": agent.id,
-                            "task_id": task.id,
-                            "job_id": job.id,
-                            "role": str(task.agent_role),
-                            "title": task.title,
-                            "description": task.description,
-                            "spec": job.spec,
-                            "project": project_name,
-                            "service": task.service,
-                            # The ENGINE's checkout path, inside its own
-                            # container. Only usable by a worker sharing that
-                            # filesystem. A herder anywhere else must ignore it
-                            # and work from clone_url — which is why the key is
-                            # named for whose path it is.
-                            "engine_repo_path": service.repo_path,
-                            "clone_url": service.clone_url,
-                            "default_branch": service.default_branch,
-                            "branch_name": task.branch_name,
-                            "pr_url": task.pr_url,
-                            "pr_number": task.pr_number,
-                            "is_revision": is_revision,
-                            "revision_count": task.revision_count,
-                            "review_feedback": feedback,
-                        }
+                        "task_id": task.id,
+                        "job_id": job.id,
+                        "role": str(task.agent_role),
+                        "title": task.title,
+                        "project": project_name,
+                        "service": task.service,
+                        "clone_url": service.clone_url,
+                        "is_revision": (task.revision_count or 0) > 0 and bool(task.pr_url),
                     }
-                )
-
-        return json.dumps({"work": None})
+                    for job, task, service, project_name in items
+                ],
+            }
+        )
 
     @mcp.tool()
     async def complete_engineer_work(agent_id: str, summary: str = "", cost_usd: float = 0.0) -> str:
