@@ -1634,6 +1634,54 @@ async def manage_dev_tasks(engine: JobEngine, job: Job):
             # Check if the agent is actually dead (orphaned task)
             latest_agent = await engine.db.get_agent_for_task(task.id)
 
+            # A herder that claimed and then vanished holds the task forever.
+            #
+            # Every recovery path below requires either no agent (the unclaimed
+            # fallback) or a FINISHED one (the orphan checks). A claim from a
+            # process that no longer exists is neither: the row still says
+            # "running", so peek_engineer_work excludes the task, no other herder
+            # takes it, and herder_claim_timeout_seconds does not apply because
+            # the work is not unclaimed. release_engineer_work's docstring says
+            # that timeout covers this. It does not — it covers a herder that
+            # never claims, not one that claims and dies.
+            #
+            # Seen for real: a killed herdr workspace left agent 3eb959df
+            # "running" on job c2b97f39 with its pane gone, and the job parked
+            # indefinitely until the claim was released by hand. Crashes, closed
+            # laptops and killed panes make this the LIKELIER herder failure.
+            #
+            # Detection keys off agent age rather than heartbeats, because
+            # herders do not send them (3 heartbeat rows exist system-wide
+            # against ~60 agents). The timeout is deliberately generous: real
+            # herder runs have taken 5-20 minutes, and reaping a live one pushes
+            # its work onto the metered path, which is the cost this whole
+            # component exists to avoid. Better late than wrong.
+            #
+            # Marking it failed is the ENTIRE fix. Everything downstream already
+            # works — the engine fails the task, retries it, republishes the work
+            # item, and the trigger spawns a fresh herder. That sequence was
+            # observed end to end once the stale claim was cleared.
+            if (
+                latest_agent
+                and latest_agent.status == "running"
+                and str(latest_agent.model or "").startswith("herder:")
+                and engine.config.herder_work_timeout_seconds > 0
+            ):
+                running_for = _seconds_since(latest_agent.started_at)
+                if running_for >= engine.config.herder_work_timeout_seconds:
+                    message = (
+                        f"Herder claim on task {task.id} has been running {int(running_for)}s with no completion "
+                        f"(limit {engine.config.herder_work_timeout_seconds}s) — treating the worker as gone and releasing the claim"
+                    )
+                    from datetime import datetime
+
+                    logger.warning(message)
+                    await engine.db.update_agent(latest_agent.id, status="failed", finished_at=datetime.now(UTC).isoformat(), error=message[:200])
+                    await engine.db.record_event(
+                        job.id, "herder_claim_abandoned", "engine", f"task={task.id} agent={latest_agent.id} ran={int(running_for)}s"
+                    )
+                    latest_agent = await engine.db.get_agent_for_task(task.id)
+
             # Unclaimed external work item. A task IN_PROGRESS with no agent for
             # THIS attempt is the state external dispatch leaves behind, and it
             # is invisible to every check below — they all require an agent to

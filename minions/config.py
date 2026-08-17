@@ -305,6 +305,21 @@ class Config:
     # queue that looks healthy and never moves. 0 disables the fallback.
     herder_claim_timeout_seconds: int = 900
 
+    # How long a CLAIMED herder item may run before the worker is presumed gone.
+    #
+    # Distinct from herder_claim_timeout_seconds, which covers a herder that
+    # never claims. This covers one that claims and then dies — a killed pane, a
+    # closed laptop, a crash — which leaves an agent row reading "running" that
+    # no recovery path acts on: the unclaimed fallback needs no agent, the orphan
+    # checks need a finished one, and peek_engineer_work hides the task from
+    # every other herder. The job parks forever.
+    #
+    # Deliberately generous. Real herder runs have taken 5-20 minutes, and
+    # reaping a LIVE one hands its work to the metered in-process engineer, which
+    # is the cost the herder exists to avoid. Late detection wastes wall-clock;
+    # early detection wastes money. 0 disables.
+    herder_work_timeout_seconds: int = 2700
+
     # How many times one orchestration role (spec analyst, arbiter) may be
     # launched for a single job before the job is failed.
     #
@@ -468,6 +483,7 @@ class Config:
             agent_dispatch_mode=_env_or("AGENT_DISPATCH_MODE", _get("engine", "agent_dispatch_mode"), "in_process"),
             engineer_dispatch=_env_or("ENGINEER_DISPATCH", _get("engine", "engineer_dispatch"), "in_process"),
             herder_claim_timeout_seconds=_env_or_int("HERDER_CLAIM_TIMEOUT_SECONDS", _get("engine", "herder_claim_timeout_seconds"), 900),
+            herder_work_timeout_seconds=_env_or_int("HERDER_WORK_TIMEOUT_SECONDS", _get("engine", "herder_work_timeout_seconds"), 2700),
             orchestration_max_attempts=_env_or_int("ORCHESTRATION_MAX_ATTEMPTS", _get("engine", "orchestration_max_attempts"), 3),
             # -- Database --
             postgres_url=_build_postgres_url(),  # secret — always from env
