@@ -62,32 +62,36 @@ class TestPruning:
 
 
 class TestWorkingDirectory:
-    def test_a_local_checkout_is_preferred(self, trig, tmp_path, monkeypatch):
-        repo = tmp_path / "healthcheck"
-        (repo / ".git").mkdir(parents=True)
-        monkeypatch.setenv("REPO_DIR", str(tmp_path))
+    """The pane must start where /herd exists, which is not the target repo.
 
-        assert trig.working_dir({"service": "healthcheck"}) == str(repo)
+    /herd is a PROJECT skill under this repo's .claude/skills/ and is not
+    symlinked into ~/.claude/skills/. The first version of working_dir() started
+    the pane in the target service's checkout, where /herd does not exist — the
+    seed prompt would have told the agent to run a skill it could not see, on the
+    very first live spawn.
+    """
 
-    def test_the_personal_subdir_is_searched_too(self, trig, tmp_path, monkeypatch):
-        repo = tmp_path / "personal" / "minions-suite"
-        (repo / ".git").mkdir(parents=True)
-        monkeypatch.setenv("REPO_DIR", str(tmp_path))
+    def test_it_starts_in_the_repo_that_owns_the_skill(self, trig):
+        cwd = Path(trig.working_dir({"service": "healthcheck"}))
 
-        assert trig.working_dir({"service": "minions-suite"}) == str(repo)
+        assert (cwd / ".claude" / "skills" / "herd" / "SKILL.md").is_file(), f"/herd is not reachable from {cwd}"
 
-    def test_an_unknown_service_falls_back_to_the_repo_root(self, trig, tmp_path, monkeypatch):
-        """Not an error: the herd skill clones from clone_url itself, so the cwd
-        only has to be somewhere sensible to start."""
-        monkeypatch.setenv("REPO_DIR", str(tmp_path))
+    def test_the_service_does_not_change_it(self, trig):
+        """The skill fetches its own code from clone_url, so the target service
+        has no bearing on where the pane starts."""
+        a = trig.working_dir({"service": "healthcheck"})
+        b = trig.working_dir({"service": "management-api"})
 
-        assert trig.working_dir({"service": "never-heard-of-it"}) == str(tmp_path)
+        assert a == b
 
-    def test_a_directory_without_git_is_not_treated_as_a_checkout(self, trig, tmp_path, monkeypatch):
-        (tmp_path / "healthcheck").mkdir()
-        monkeypatch.setenv("REPO_DIR", str(tmp_path))
-
-        assert trig.working_dir({"service": "healthcheck"}) == str(tmp_path)
+    def test_the_skill_is_not_available_globally(self):
+        """Guards the assumption the fix rests on. If herd ever IS symlinked into
+        ~/.claude/skills/, starting in the target repo becomes viable again and
+        this test should be the thing that says so.
+        """
+        assert not (Path.home() / ".claude" / "skills" / "herd").exists(), (
+            "herd is now global — working_dir() could start in the target repo, and this test should be revisited"
+        )
 
 
 class TestSpawnCommand:

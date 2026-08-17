@@ -128,17 +128,23 @@ async def peek() -> list[dict]:
 
 
 def working_dir(item: dict) -> str:
-    """Where to start the pane.
+    """Where to start the pane: the minions-suite checkout, not the target repo.
 
-    The herd skill clones from clone_url itself and is explicit that
-    engine_repo_path belongs to the engine's container, so this only needs to be
-    somewhere sensible to start -- the local checkout when there is one.
+    `/herd` is a PROJECT skill -- it lives in this repo's .claude/skills/ and is
+    not symlinked into ~/.claude/skills/. A pane started in the target service's
+    tree would have no /herd at all, and the seed prompt telling it to run /herd
+    would find nothing. That was this function's first version, and it would have
+    failed on the first live spawn.
+
+    Starting here costs nothing, because the skill does not want the target tree
+    anyway: it clones from clone_url and is explicit that a local clone must be
+    used through a git worktree rather than by switching branches in a tree that
+    may be someone's working copy.
+
+    Derived from this file's own location so it is right for any checkout,
+    including a worktree of it.
     """
-    repo_root = Path(os.environ.get("REPO_DIR", str(Path.home() / "repos")))
-    for candidate in (repo_root / item["service"], repo_root / "personal" / item["service"]):
-        if (candidate / ".git").exists():
-            return str(candidate)
-    return str(repo_root)
+    return str(Path(__file__).resolve().parents[1])
 
 
 def spawn(item: dict, dry: bool) -> bool:
