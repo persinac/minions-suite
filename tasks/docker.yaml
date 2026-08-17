@@ -57,9 +57,40 @@ tasks:
       - docker push {{.REGISTRY}}/{{.ECR_REPO}}:latest
       - echo "pushed {{.REGISTRY}}/{{.ECR_REPO}}:{{.VERSION}}"
 
-  release:
-    desc: "Bump patch VERSION, build+push, and rewrite the prod overlay tag"
+  schema:check:
+    desc: "Fail if the deployed database is behind this checkout's migrations"
     cmds:
+      - uv run python scripts/check_deployed_schema.py
+
+  schema:list:
+    desc: "Show local vs deployed migration versions"
+    cmds:
+      - uv run python scripts/check_deployed_schema.py --list
+
+  release:
+    desc: "Check schema, bump VERSION, build+push, and rewrite the prod overlay tag"
+    cmds:
+      # Schema FIRST, before anything is built or pushed. 0.8.31 shipped code
+      # writing jobs.original_spec while the deployed database had no such
+      # column -- the migration had only been applied to the local test
+      # container -- and every new development job then died at the spec_ready
+      # transition, silently, for forty minutes.
+      #
+      # Nothing caught it because nothing looked. This task builds, pushes and
+      # bumps the overlay without ever touching the database, and the deploy
+      # verification that did run confirmed the new CODE was live in the pod --
+      # true, and a different question from whether the SCHEMA it depends on
+      # was.
+      #
+      # SKIP_SCHEMA_GATE=1 for a release that genuinely does not depend on the
+      # pending migrations. Deliberately explicit: the failure mode being
+      # prevented is nobody asking, so the override has to be someone asking.
+      - |
+        if [ "${SKIP_SCHEMA_GATE:-0}" = "1" ]; then
+          echo "SKIP_SCHEMA_GATE=1 — not checking the deployed schema."
+        else
+          uv run python scripts/check_deployed_schema.py
+        fi
       # Mirrors the flashback-cns CI flow: bump-version.sh -> build+push ->
       # ci-update-manifests.sh -> commit. The commit is left to you (or CI) so
       # this stays safe to run locally.
