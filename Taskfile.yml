@@ -13,6 +13,8 @@ includes:
     taskfile: tasks/memory.yaml
   e2e:
     taskfile: tasks/e2e.yaml
+  herder:
+    taskfile: tasks/herder.yaml
 
 tasks:
   default:
