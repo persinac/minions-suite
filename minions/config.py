@@ -341,7 +341,17 @@ class Config:
     # one engine should run per deployment. Pollers don't need it — they only write
     # jobs to the DB — so set ENGINE_ENABLED=false there.
     engine_enabled: bool = True
-    max_revisions: int = 3
+
+    # Each revision round re-pays the reviewer fan-out, so this multiplies the
+    # dominant cost. On job 52507587 three rounds ran twelve reviewer agents over
+    # one PR for $2.36 -- 98.5% of that job -- and round three returned four
+    # unanimous approvals: it bought confirmation, not correction.
+    #
+    # Lowered 3 -> 2. Two rounds still allow "reviewers object, engineer fixes,
+    # reviewers confirm", which is the loop that produces value. A third round
+    # mostly means the second fix did not land either, and paying a full panel to
+    # discover that is worse than failing the task and looking at it.
+    max_revisions: int = 2
     dry_run: bool = False
 
     # GitLab issues poller (optional)

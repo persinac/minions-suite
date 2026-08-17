@@ -1235,7 +1235,7 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
     """
     import asyncio
 
-    from ..reviewers import aggregate_verdicts, infer_specialists, skipped_specialists
+    from ..reviewers import APPROVE, aggregate_verdicts, infer_specialists, skipped_specialists
     from .review import create_engineer_provider, create_reviewer_provider
 
     # A fan-out either happened for this PR or it did not. Checking per-specialty
@@ -1345,13 +1345,58 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
             await _retry_or_fail_review(engine, task, message)
             return
 
+    # Carry forward approvals from the previous round.
+    #
+    # Every round used to re-run the whole panel regardless of who objected. On
+    # job 52507587 `backend-architecture` approved three times and `api` was
+    # re-run twice after approving -- twelve reviewer agents on one PR, $2.36,
+    # 98.5% of the job. A specialist that approved has already read this PR and
+    # said yes; asking again is paying for the same answer.
+    #
+    # What it does NOT skip is a specialist whose domain the revision touched:
+    # `specialists` is recomputed from the NEW diff above, so a revision that
+    # adds SQL wakes the dba whether or not it approved before. The risk this
+    # accepts is narrower -- a fix inside an already-approved domain that breaks
+    # something that domain cares about -- and `max_revisions` bounds it.
+    carried: dict[str, str | None] = {}
+    if (task.revision_count or 0) > 0:
+        previous_round = (task.revision_count or 0) - 1
+        for prior in existing:
+            if (
+                prior.agent_role == AgentRole.CODE_REVIEWER
+                and (prior.pr_url or "") == (task.pr_url or "")
+                and (prior.revision_count or 0) == previous_round
+                and (prior.verdict or "").strip().lower() == APPROVE
+                and prior.specialty
+            ):
+                carried[prior.specialty] = APPROVE
+
+    to_run = [s for s in specialists if s not in carried]
+    if not to_run:
+        # Unreachable in practice -- a revision only happens after someone
+        # objected, so someone is always due a re-run. If it ever does happen,
+        # approving on nothing but stale verdicts would merge a diff no reviewer
+        # has read, so run the full panel instead.
+        logger.warning("Every specialist for task %s approved previously — re-running the full panel rather than trusting stale verdicts", task.id)
+        carried, to_run = {}, specialists
+
+    if carried:
+        logger.info("Carrying forward %s approval(s) for task %s; re-running %s", ", ".join(sorted(carried)), task.id, ", ".join(to_run))
+        await engine.db.record_event(
+            job.id, "review_approvals_carried", "engine", f"task={task.id} carried={','.join(sorted(carried))} rerun={','.join(to_run)}"
+        )
+
     results = await asyncio.gather(
-        *[_run_one_specialist(engine, job, task, specialty, project, service, mr_id, mr_info, provider, review_context) for specialty in specialists],
+        *[_run_one_specialist(engine, job, task, specialty, project, service, mr_id, mr_info, provider, review_context) for specialty in to_run],
         return_exceptions=True,
     )
 
-    verdicts: dict[str, str | None] = {}
-    for specialty, outcome in zip(specialists, results, strict=False):
+    # Seeded with the carried approvals so aggregation sees the whole panel. A
+    # skipped specialist absent from this dict would read as a MISSING verdict,
+    # and aggregate_verdicts fails closed — so the saving would have turned every
+    # revision into an automatic request_changes.
+    verdicts: dict[str, str | None] = dict(carried)
+    for specialty, outcome in zip(to_run, results, strict=False):
         if isinstance(outcome, BaseException):
             logger.error("Reviewer %s raised for task %s: %s", specialty, task.id, outcome)
             verdicts[specialty] = None
