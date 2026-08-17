@@ -18,7 +18,12 @@ WorkingDirectory=%h/repos/personal/minions-suite
 # The trigger needs the MCP tunnel. It checks and skips a tick when the tunnel is
 # down rather than reading silence as an empty queue, so starting in either order
 # is safe -- it will begin working when the forward comes up.
-ExecStart=/usr/bin/env uv run python scripts/herder_trigger.py --watch
+# systemd user units do NOT inherit the login shell PATH. uv, kubectl and herdr
+# all live in ~/.local/bin, so without this the unit dies instantly with
+# "/usr/bin/env: 'uv': No such file or directory" -- and a herder that cannot
+# start is indistinguishable from one that had no work.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/uv run python scripts/herder_trigger.py --watch
 Restart=always
 RestartSec=15
 # Deliberately NOT set here: MINIONS_HERDER_MODE. The unit being installed must

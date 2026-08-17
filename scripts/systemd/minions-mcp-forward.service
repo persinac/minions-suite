@@ -12,7 +12,12 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=%h/repos/personal/minions-suite
-ExecStart=/usr/bin/env bash scripts/mcp_forward.sh
+# systemd user units do NOT inherit the login shell PATH. uv, kubectl and herdr
+# all live in ~/.local/bin, so without this the unit dies instantly with
+# "/usr/bin/env: 'uv': No such file or directory" -- and a herder that cannot
+# start is indistinguishable from one that had no work.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/bash scripts/mcp_forward.sh
 Restart=always
 RestartSec=10
 
