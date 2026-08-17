@@ -102,6 +102,73 @@ class TestBreakpoints:
         assert _count_breakpoints(out) == 1
 
 
+class TestTheRollingBreakpointCannotSilentlyVanish:
+    """A turn ending in ONE tool call is the commonest shape in the loop, and it
+    used to lose the rolling breakpoint entirely.
+
+    An assistant message that only makes tool calls carries no content --
+    `model_dump(exclude_none=True)` drops the key -- so `_mark` has nothing to
+    attach a block to and returns the message unchanged. The old code tried
+    exactly one index (len-2), which is precisely where that message sits in
+    `[..., assistant(tool_calls), tool]`. Nothing checked whether marking
+    succeeded, so on those turns only the system prompt stayed cached and the
+    entire accumulated history was re-charged at full price.
+
+    Measured before the fix: 33.8% of prompt tokens served from cache over 933
+    turns, 21.2M tokens paid uncached.
+    """
+
+    @staticmethod
+    def _tool_call_turn(idx: int) -> list[dict]:
+        return [
+            {"role": "assistant", "tool_calls": [{"id": str(idx), "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": str(idx), "content": f"contents {idx}"},
+        ]
+
+    def test_a_single_tool_call_turn_still_gets_a_rolling_breakpoint(self):
+        messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "go"}, *self._tool_call_turn(1)]
+
+        out = apply_cache_control(messages, "claude-opus-5")
+
+        assert _count_breakpoints(out) >= 2, "only the system prompt was cached — the rolling breakpoint vanished"
+
+    def test_it_survives_many_single_tool_call_turns(self):
+        """The real shape of a long engineer run."""
+        messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "go"}]
+        for i in range(20):
+            messages += self._tool_call_turn(i)
+
+        out = apply_cache_control(messages, "claude-opus-5")
+
+        assert _count_breakpoints(out) >= 2
+        assert _count_breakpoints(out) <= MAX_BREAKPOINTS
+
+    def test_a_contentless_message_is_never_the_chosen_breakpoint(self):
+        """Marking it is a no-op, so choosing it is the same as choosing none."""
+        messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "go"}, *self._tool_call_turn(1)]
+
+        out = apply_cache_control(messages, "claude-opus-5")
+
+        for message in out:
+            if "content" not in message:
+                continue
+            blocks = message["content"]
+            if isinstance(blocks, list) and any(b.get("cache_control") for b in blocks if isinstance(b, dict)):
+                assert message.get("role") != "assistant" or message.get("content"), "marked a message with no content to carry the marker"
+
+    def test_a_conversation_ending_on_an_assistant_message_still_caches(self):
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "go"},
+            *self._tool_call_turn(1),
+            {"role": "assistant", "tool_calls": [{"id": "9", "type": "function", "function": {"name": "x", "arguments": "{}"}}]},
+        ]
+
+        out = apply_cache_control(messages, "claude-opus-5")
+
+        assert _count_breakpoints(out) >= 2
+
+
 class TestNoMutation:
     def test_the_caller_s_list_is_untouched(self):
         """The loop keeps appending to its own list. A stale cache_control left
@@ -180,5 +247,5 @@ class TestWiring:
 
         source = inspect.getsource(run_agent)
 
-        assert 'agent.cache_read_tokens = result' in source
-        assert 'agent.cache_creation_tokens = result' in source
+        assert "agent.cache_read_tokens = result" in source
+        assert "agent.cache_creation_tokens = result" in source
