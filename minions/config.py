@@ -305,6 +305,24 @@ class Config:
     # queue that looks healthy and never moves. 0 disables the fallback.
     herder_claim_timeout_seconds: int = 900
 
+    # How many times one orchestration role (spec analyst, arbiter) may be
+    # launched for a single job before the job is failed.
+    #
+    # These launchers are driven by the job's STATUS, not by an attempt counter:
+    # the poll loop sees spec_received and launches an analyst, every time,
+    # forever. `_has_running_agent` blocks a concurrent second one and nothing
+    # blocks a sequential seventh. So any condition that stops a job advancing —
+    # not just a bad agent — becomes an unbounded spend loop.
+    #
+    # Job 4922beee is the worked example: the deployed database was missing a
+    # column `update_job_spec` writes, so every analyst finished, failed to
+    # advance the job, and was relaunched. Seven agents and $0.95 before it was
+    # stopped by hand; the only real ceiling was job_cost_limit_usd at $25.
+    #
+    # A cap converts that into a job that fails once, loudly, with the cost it
+    # spent in the error. 0 disables the cap.
+    orchestration_max_attempts: int = 3
+
     # K8s dispatch settings
     k8s_dispatch: bool = False
     k8s_namespace: str = "minion-suite"
@@ -437,6 +455,7 @@ class Config:
             agent_dispatch_mode=_env_or("AGENT_DISPATCH_MODE", _get("engine", "agent_dispatch_mode"), "in_process"),
             engineer_dispatch=_env_or("ENGINEER_DISPATCH", _get("engine", "engineer_dispatch"), "in_process"),
             herder_claim_timeout_seconds=_env_or_int("HERDER_CLAIM_TIMEOUT_SECONDS", _get("engine", "herder_claim_timeout_seconds"), 900),
+            orchestration_max_attempts=_env_or_int("ORCHESTRATION_MAX_ATTEMPTS", _get("engine", "orchestration_max_attempts"), 3),
             # -- Database --
             postgres_url=_build_postgres_url(),  # secret — always from env
             postgres_pool_min=_env_or_int("PG_POOL_MIN", _get("database", "pool_min"), 2),

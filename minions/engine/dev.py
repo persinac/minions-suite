@@ -495,9 +495,52 @@ async def _within_rate_caps(engine: JobEngine, job: Job) -> bool:
     return True
 
 
+async def _relaunch_budget_spent(engine: JobEngine, job: Job, role: AgentRole, label: str) -> bool:
+    """Fail the job if this role has already been launched too many times.
+
+    The orchestration launchers are driven by the job's STATUS rather than by an
+    attempt counter -- the poll loop sees `spec_received` and launches an
+    analyst, every poll, forever. `_has_running_agent` refuses a *concurrent*
+    second one and nothing refuses a *sequential* seventh, so any condition that
+    stops a job advancing becomes an unbounded spend loop rather than a failure.
+
+    Not hypothetical. Job 4922beee: the deployed database was missing a column
+    `update_job_spec` writes, so every analyst ran to completion, failed to
+    advance the job, and was relaunched. Seven agents and $0.95 before a human
+    stopped it, with job_cost_limit_usd at $25 as the only real ceiling.
+
+    Failing here is deliberately louder than looping. A job that stops with
+    "launched 3 times and never advanced" names the problem; a job that quietly
+    relaunches all night names nothing and bills for the privilege.
+    """
+    cap = engine.config.orchestration_max_attempts
+    if cap <= 0:
+        return False
+
+    agents = await engine.db.get_agents_for_job(job.id)
+    prior = [a for a in agents if str(a.role) == str(role)]
+    if len(prior) < cap:
+        return False
+
+    spent = sum(a.cost_usd or 0.0 for a in agents)
+    message = (
+        f"{label} launched {len(prior)} times without advancing job {job.id} past {job.status} "
+        f"(cap {cap}, ${spent:.2f} spent). Failing rather than relaunching -- something is stopping "
+        f"the transition, and retrying the agent cannot fix it."
+    )
+    logger.error(message)
+    await engine.db.record_event(job.id, "relaunch_cap_reached", "engine", message)
+    await engine.db.update_job_status(job.id, JobStatus.FAILED, error=message)
+    await engine._on_job_terminal(job.id)
+    return True
+
+
 async def launch_spec_analyst(engine: JobEngine, job: Job):
     """Launch the spec analyst agent to refine the raw spec."""
     if await engine._has_running_agent(job.id, AgentRole.SPEC_ANALYST):
+        return
+
+    if await _relaunch_budget_spent(engine, job, AgentRole.SPEC_ANALYST, "Spec analyst"):
         return
 
     # Admission control. This is the first agent on a job, so gating here gates
@@ -573,6 +616,12 @@ async def launch_spec_analyst(engine: JobEngine, job: Job):
 async def launch_arbiter(engine: JobEngine, job: Job):
     """Launch the arbiter agent to break down the spec into tasks."""
     if await engine._has_running_agent(job.id, AgentRole.ARBITER):
+        return
+
+    # Same exposure as the analyst: a job that cannot leave spec_ready relaunches
+    # the arbiter on every poll. With arbiter_enabled the "advance anyway"
+    # fallback below never runs, so nothing else bounds it.
+    if await _relaunch_budget_spent(engine, job, AgentRole.ARBITER, "Arbiter"):
         return
 
     # Re-fetch job to get the refined spec
