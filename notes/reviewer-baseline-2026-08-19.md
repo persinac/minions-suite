@@ -45,16 +45,35 @@ reviewer baseline @ 2026-08-19T06:17:05+00:00  schema=minions
 are 59% of spend — more than engineers. That is what makes them the obvious
 target, but see the ordering argument below before acting on it.
 
-**Model routing is a bigger lever than relocation, and it is nearly free.**
-Reviewers run on *both* Opus 5 and Sonnet 5, at roughly a 50/50 split of runs
-but a 72/28 split of cost: $0.666 vs $0.267 per run, 2.5x. Opus also takes 145s
-against Sonnet's 88s. Routing reviewers to Sonnet is a config change with no new
-infrastructure and would cut reviewer spend on the order of 60%.
+**Model routing was already fixed — do NOT read section A as a live lever.**
+The all-time split (Opus 49 runs / $32.64, Sonnet 47 / $12.53) is a *historical*
+population, and reading it as current state is the trap this paragraph exists to
+stop. Broken out by date, every reviewer run since **2026-07-28** has been
+Sonnet; the Opus runs are all 2026-07-25..27:
 
-What is NOT established: whether Opus reviews *better*. Nothing here splits
-verdict quality by model, so the saving is only free if quality holds. That
-measurement is the prerequisite, not a follow-up — and it is cheap, because
-both models are already in the sample.
+```
+2026-08-17  claude-sonnet-5  30  $10.19
+2026-08-14  claude-sonnet-5   3  $ 0.76
+2026-08-13  claude-sonnet-5   3  $ 0.21
+2026-08-12  claude-sonnet-5   2  $ 0.19
+2026-07-28  claude-sonnet-5   6  $ 0.76
+2026-07-27  claude-opus-5    30  $16.31   <- last Opus day
+2026-07-26  claude-opus-5    17  $11.46
+2026-07-25  claude-opus-5     2  $ 4.87
+```
+
+Config agrees: `model_reviewer` defaults to `claude-sonnet-5` (`config.py:226`),
+the live value is `claude-sonnet-5`, `MODEL_REVIEWER` is unset, and there is
+exactly ONE reviewer launch site (`dev.py:1177`) which correctly passes
+`is_reviewer=True`. So the reviewer floor is real and already cheap.
+
+**Consequence: the cheap config lever is spent.** Current reviewer economics are
+~$0.267/run all-time on Sonnet, ~$0.34/run on the most recent day. Any further
+reviewer saving needs a genuinely different substrate or vendor — which *raises*
+the relative value of the herdr fan-out rather than pre-empting it.
+
+Any future section-A comparison must be **date-bounded**. The all-time table
+mixes two regimes and will keep suggesting a saving that was already taken.
 
 **23.3% of tasks need at least one revision, and 12 tasks sat at exactly 3** —
 the `max_revisions` cap. Those are jobs that burned the full budget and did not
@@ -76,14 +95,55 @@ the approve/request_changes split is computed over ~79% of the population. Any
 before/after comparison must hold this rate constant or it will read a change in
 *reporting* as a change in *strictness*.
 
+## Reviewer agreement — is the fan-out earning its cost?
+
+Over PRs that received 2+ non-empty verdicts (n=17):
+
+```
+unanimous          11   64.7%
+split               6   35.3%
+unanimous APPROVE   9   52.9%   <- the fan-out bought nothing on these
+fanout width: {2: 2, 3: 9, 5: 1, 6: 1, 8: 2, 11: 2}
+```
+
+A 35% split rate is the fan-out doing real work. But **53% unanimous-approve is
+redundancy** — three reviewers agreeing to approve costs 3x and yields 1x.
+
+The width distribution matters more than the base fan-out: the nominal width is
+3, yet two PRs accumulated **eleven** reviewer verdicts. That is revision rounds
+stacking reviewers, not the configured fan-out — so the reviewer cost tail is
+driven by the revision loop, the same mechanism behind the 12 tasks that sat at
+`max_revisions=3`.
+
+**The value of N reviewers is their independence, not their number.** Three
+same-family reviewers with different prompts are more correlated than three
+different vendors with the same prompt. That makes vendor diversity a
+*coverage* argument, not only a cost one — and it is falsifiable: if adding a
+cross-vendor reviewer does not raise the split rate, the vendors are correlated
+and the second bill bought nothing.
+
 ## Ordering
 
-1. **Measure verdict quality by model.** Already possible from existing data.
-2. **Route reviewers to the cheaper model if quality holds.** Config only, ~60%
-   of reviewer spend, no infrastructure.
-3. **Then** consider a herdr fan-out — bigger win if it moves spend to
-   subscription capacity, but it is real engineering and its value is partly
-   pre-empted by (2).
+1. ~~Route reviewers to the cheaper model.~~ **Already done** (Sonnet since
+   2026-07-28). See the correction above.
+2. **Decide the fan-out width before the substrate.** 53% unanimous-approve
+   suggests width is the cheaper question, and it is a config change.
+3. **Then** the herdr fan-out / multi-vendor work. With (1) spent, this is now
+   the main remaining reviewer lever rather than a partly-redundant one. Judge a
+   vendor swap on the split rate and the empty-verdict rate, not on sticker price.
 4. **Throughput last.** Raising the pull rate before the 33% success rate
    improves buys more failures, and failures already cost more than successes
    ($2.73 vs $1.46 mean on `easy` jobs).
+
+## If the reviewer moves off Anthropic, watch these three
+
+- **Cost attribution.** `cost_usd` comes from LiteLLM's cost map. A vendor it
+  prices wrongly — or at zero — goes *invisible* in this baseline rather than
+  wrong-but-visible. $0.00 rows already exist in the data (`database_engineer`),
+  so there is no "zero means broken" alarm to rely on.
+- **Prompt caching.** The ~32-36% cache read rate in section A is Anthropic-side.
+  A vendor without equivalent caching can cost more per review at a lower sticker
+  price. Compare effective cost per run, never list price.
+- **Verdict format compliance.** The 20.8% empty-verdict rate is the canary. A
+  vendor that cannot reliably emit the expected verdict shape does not weaken the
+  gate — it *silently removes* it, and the job still reports success.
