@@ -14,6 +14,23 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# An engineer task that will never deploy, for any reason. NO_WORK_NEEDED belongs
+# here for the same reason DONE does: it is terminal and it is NOT a failure (see
+# TaskStatus.NO_WORK_NEEDED in core/models.py) -- the engineer read the code and
+# found the change already present, so there is nothing to ship and nothing to wait for.
+#
+# Omitting it wedged job c2b97f39 for two days. Its engineer tasks were
+# {done, no_work_needed}, so `all_done` was False, and the `if not merged_tasks`
+# branch below fell through to a bare `return` -- a silent no-op re-run on every
+# engine tick, with the job parked in MERGED forever. That is expensive out of all
+# proportion to the bug: get_active_jobs() counts anything not DONE/FAILED/
+# NO_WORK_NEEDED as active, so with max_concurrent_jobs=1 the wedged job held the
+# only slot and the Trello poller returned at its first gate. Intake stopped
+# entirely, and because the poller never reached its label check it never logged
+# the "intake is idle" warning either -- a full stop that produced no new log line
+# anywhere. Do not narrow this set without re-reading that chain.
+TERMINAL_DEV_TASK_STATUSES = (TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.NO_WORK_NEEDED)
+
 
 async def launch_deploy_monitor(engine: JobEngine, job: Job):
     """Launch the deploy monitor agent."""
@@ -34,7 +51,7 @@ async def launch_deploy_monitor(engine: JobEngine, job: Job):
     if not merged_tasks:
         engineer_roles = {AgentRole.BACKEND_ENGINEER, AgentRole.FRONTEND_ENGINEER, AgentRole.DATABASE_ENGINEER}
         dev_tasks = [t for t in tasks if t.agent_role in engineer_roles]
-        all_done = dev_tasks and all(t.status in (TaskStatus.DONE, TaskStatus.FAILED) for t in dev_tasks)
+        all_done = dev_tasks and all(t.status in TERMINAL_DEV_TASK_STATUSES for t in dev_tasks)
         if all_done:
             logger.info("Job %s: all tasks already done, skipping deploy monitor", job.id)
             await engine.db.update_job_status(job.id, JobStatus.DEPLOYED)

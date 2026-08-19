@@ -126,6 +126,66 @@ class TestJobResolution:
         assert (await db.get_job(job_id)).status == JobStatus.FAILED
 
 
+class TestDeployHandoff:
+    """A NO_WORK_NEEDED task must not strand the job in MERGED.
+
+    Job c2b97f39 sat in MERGED for two days on engineer tasks of
+    {done, no_work_needed}. launch_deploy_monitor's terminal set was
+    (DONE, FAILED), so `all_done` was False and the `if not merged_tasks`
+    branch fell through to a bare `return` — re-run silently on every tick.
+
+    The cost was not confined to one job. get_active_jobs() counts anything
+    not DONE/FAILED/NO_WORK_NEEDED as active, so with max_concurrent_jobs=1
+    the wedged job held the only slot and the Trello poller returned at its
+    first gate — intake stopped for every job, and since the poller never
+    reached its label check it never logged the "intake is idle" warning
+    either. A total stop that emitted no new log line anywhere.
+    """
+
+    async def _merged_job(self, db, statuses: list[tuple[TaskStatus, str]]) -> str:
+        job_id, task_ids = await _job_with_tasks(db, len(statuses))
+        for task_id, (status, role) in zip(task_ids, statuses, strict=True):
+            await db.update_task(task_id, status=status, agent_role=role)
+        await db.update_job_status(job_id, JobStatus.MERGED)
+        return job_id
+
+    async def test_a_no_work_needed_task_does_not_wedge_the_job(self, db, monkeypatch):
+        """The exact shape of c2b97f39."""
+        from minions.engine.deploy import launch_deploy_monitor
+
+        job_id = await self._merged_job(db, [(TaskStatus.NO_WORK_NEEDED, ""), (TaskStatus.DONE, "code_reviewer")])
+
+        engine = _engine(db, monkeypatch)
+        await launch_deploy_monitor(engine, await db.get_job(job_id))
+
+        job = await db.get_job(job_id)
+        assert job.status == JobStatus.DEPLOYED, f"job wedged in {job.status}; it must leave MERGED"
+
+    async def test_every_task_finding_nothing_also_leaves_merged(self, db, monkeypatch):
+        from minions.engine.deploy import launch_deploy_monitor
+
+        job_id = await self._merged_job(db, [(TaskStatus.NO_WORK_NEEDED, ""), (TaskStatus.NO_WORK_NEEDED, "")])
+
+        engine = _engine(db, monkeypatch)
+        await launch_deploy_monitor(engine, await db.get_job(job_id))
+
+        assert (await db.get_job(job_id)).status == JobStatus.DEPLOYED
+
+    async def test_it_does_not_advance_on_a_genuinely_unfinished_task(self, db, monkeypatch):
+        """Control: the fix widens the terminal set, it must not empty it. An
+        engineer still working is not a reason to declare the job deployed."""
+        from minions.engine.deploy import launch_deploy_monitor
+
+        job_id = await self._merged_job(db, [(TaskStatus.NO_WORK_NEEDED, "")])
+        extra = await db.create_task(Task(job_id=job_id, title="wip", description="d", service="svc9", agent_role=AgentRole.BACKEND_ENGINEER))
+        await db.update_task(extra.id, status=TaskStatus.IN_PROGRESS)
+
+        engine = _engine(db, monkeypatch)
+        await launch_deploy_monitor(engine, await db.get_job(job_id))
+
+        assert (await db.get_job(job_id)).status == JobStatus.MERGED
+
+
 def _engine(db, monkeypatch):
     from unittest.mock import AsyncMock, MagicMock
 
@@ -136,4 +196,5 @@ def _engine(db, monkeypatch):
     engine.config = Config.from_env()
     engine._spawn = MagicMock()
     engine._on_job_terminal = AsyncMock()
+    engine._has_running_agent = AsyncMock(return_value=False)
     return engine
