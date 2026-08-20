@@ -32,8 +32,25 @@ class JobGraphState(TypedDict):
     current_phase: str  # routing hint for conditional edges
     error: str | None
 
+    # The status the last node was ENTERED with. `route_after_phase` compares it
+    # against the refreshed status to tell "this node advanced the job" from
+    # "this node ran and nothing changed". Without it the router cannot see a
+    # waiting state and re-enters the same node until the recursion limit trips.
+    prev_status: str | None
+
     # Engine reference (not serializable — excluded from checkpointing)
     engine: Any  # JobEngine instance
+
+
+# A real advance visits a handful of nodes — spec_analysis through completion is
+# nine. Anything approaching this ceiling is a routing bug, not a long job.
+#
+# langgraph 1.x defaults recursion_limit to 10000 (_internal/_config.py), and
+# nothing here used to override it. That turned the missing yield below into
+# ~10k iterations of get_job + phase function + refresh — order 30k DB round
+# trips — blocking the poll loop before it finally raised. A tight ceiling makes
+# the same class of bug fail fast and loudly instead.
+GRAPH_RECURSION_LIMIT = 25
 
 
 # ---------------------------------------------------------------------------
@@ -41,8 +58,16 @@ class JobGraphState(TypedDict):
 # ---------------------------------------------------------------------------
 
 
-async def _refresh_state(engine, job_id: str) -> dict:
-    """Read current job + tasks from DB and return state update."""
+async def _refresh_state(engine, state: JobGraphState) -> dict:
+    """Read current job + tasks from DB and return state update.
+
+    Takes the whole state rather than just the id so it can record `prev_status`
+    — the status the node was entered with. That is what lets `route_after_phase`
+    distinguish progress from a no-op; see JobGraphState.prev_status.
+    """
+    job_id = state["job_id"]
+    entry_status = state.get("job_status")
+
     job = await engine.db.get_job(job_id)
     if not job:
         return {"error": f"Job {job_id} not found", "current_phase": "fail"}
@@ -69,6 +94,7 @@ async def _refresh_state(engine, job_id: str) -> dict:
 
     return {
         "job_status": str(job.status) if hasattr(job.status, "value") else job.status,
+        "prev_status": entry_status,
         "tasks": task_dicts,
         "active_agents": running,
         "error": None,
@@ -93,7 +119,7 @@ async def spec_analysis_node(state: JobGraphState) -> dict:
         logger.error("spec_analysis_node failed: %s", e, exc_info=True)
         return {"error": str(e)[:500], "current_phase": "fail"}
 
-    refreshed = await _refresh_state(engine, state["job_id"])
+    refreshed = await _refresh_state(engine, state)
     refreshed["current_phase"] = "route_after_spec"
     return refreshed
 
@@ -111,7 +137,7 @@ async def task_decomposition_node(state: JobGraphState) -> dict:
         logger.error("task_decomposition_node failed: %s", e, exc_info=True)
         return {"error": str(e)[:500], "current_phase": "fail"}
 
-    refreshed = await _refresh_state(engine, state["job_id"])
+    refreshed = await _refresh_state(engine, state)
     refreshed["current_phase"] = "route_after_arbiter"
     return refreshed
 
@@ -129,7 +155,7 @@ async def engineer_dispatch_node(state: JobGraphState) -> dict:
         logger.error("engineer_dispatch_node failed: %s", e, exc_info=True)
         return {"error": str(e)[:500], "current_phase": "fail"}
 
-    refreshed = await _refresh_state(engine, state["job_id"])
+    refreshed = await _refresh_state(engine, state)
     refreshed["current_phase"] = "route_after_engineer"
     return refreshed
 
@@ -147,7 +173,7 @@ async def manage_dev_node(state: JobGraphState) -> dict:
         logger.error("manage_dev_node failed: %s", e, exc_info=True)
         return {"error": str(e)[:500], "current_phase": "fail"}
 
-    refreshed = await _refresh_state(engine, state["job_id"])
+    refreshed = await _refresh_state(engine, state)
     refreshed["current_phase"] = "route_after_manage_dev"
     return refreshed
 
@@ -165,7 +191,7 @@ async def review_dispatch_node(state: JobGraphState) -> dict:
         logger.error("review_dispatch_node failed: %s", e, exc_info=True)
         return {"error": str(e)[:500], "current_phase": "fail"}
 
-    refreshed = await _refresh_state(engine, state["job_id"])
+    refreshed = await _refresh_state(engine, state)
     refreshed["current_phase"] = "route_after_review_dispatch"
     return refreshed
 
@@ -183,7 +209,7 @@ async def check_review_node(state: JobGraphState) -> dict:
         logger.error("check_review_node failed: %s", e, exc_info=True)
         return {"error": str(e)[:500], "current_phase": "fail"}
 
-    refreshed = await _refresh_state(engine, state["job_id"])
+    refreshed = await _refresh_state(engine, state)
     refreshed["current_phase"] = "route_after_check_review"
     return refreshed
 
@@ -201,7 +227,7 @@ async def deploy_node(state: JobGraphState) -> dict:
         logger.error("deploy_node failed: %s", e, exc_info=True)
         return {"error": str(e)[:500], "current_phase": "fail"}
 
-    refreshed = await _refresh_state(engine, state["job_id"])
+    refreshed = await _refresh_state(engine, state)
     refreshed["current_phase"] = "route_after_deploy"
     return refreshed
 
@@ -219,7 +245,7 @@ async def check_deploy_node(state: JobGraphState) -> dict:
         logger.error("check_deploy_node failed: %s", e, exc_info=True)
         return {"error": str(e)[:500], "current_phase": "fail"}
 
-    refreshed = await _refresh_state(engine, state["job_id"])
+    refreshed = await _refresh_state(engine, state)
     refreshed["current_phase"] = "route_after_check_deploy"
     return refreshed
 
@@ -302,6 +328,9 @@ def route_after_phase(state: JobGraphState) -> str:
 
     This allows the graph to naturally follow the job through its lifecycle
     by re-reading the DB state after each node.
+
+    It yields when a node did not move the job, which is what keeps
+    `advance_job_via_graph` to the "one step" its name promises.
     """
     if state.get("error"):
         return "fail"
@@ -309,6 +338,27 @@ def route_after_phase(state: JobGraphState) -> str:
     status = state["job_status"]
 
     if status in ("done", "failed", "no_work_needed"):
+        return END
+
+    # A node that ran without changing the job status has nothing further to do
+    # RIGHT NOW. dev_in_progress, review_in_progress and deploying are waiting
+    # states: engineers, reviewers or a deploy are still in flight, and
+    # "unchanged" is the correct outcome rather than a failure. Re-routing on an
+    # unchanged status sends the job straight back into the node it just left,
+    # which spun until langgraph's recursion limit and was only survivable
+    # because _advance() catches the error and falls back to the legacy
+    # dispatcher -- so the graph looked healthy while doing none of the work.
+    #
+    # Yield instead: the poll loop will re-enter the graph on its next tick,
+    # by which time the awaited work may actually have progressed.
+    prev = state.get("prev_status")
+    if prev is not None and prev == status:
+        logger.debug(
+            "Job %s unchanged at %s after %s — yielding to poll loop",
+            state.get("job_id"),
+            status,
+            state.get("current_phase"),
+        )
         return END
 
     # Re-route based on current status (DB was updated by the node)
@@ -416,10 +466,14 @@ async def advance_job_via_graph(engine, job, checkpointer=None) -> None:
         "active_agents": [],
         "current_phase": "start",
         "error": None,
+        "prev_status": None,
         "engine": engine,
     }
 
-    config = {"configurable": {"thread_id": job.id}}
+    config = {
+        "configurable": {"thread_id": job.id},
+        "recursion_limit": GRAPH_RECURSION_LIMIT,
+    }
 
     await graph.ainvoke(initial_state, config)
 
@@ -432,7 +486,10 @@ async def resume_from_checkpoint(engine, job_id: str, checkpointer) -> bool:
     if not checkpointer:
         return False
 
-    config = {"configurable": {"thread_id": job_id}}
+    config = {
+        "configurable": {"thread_id": job_id},
+        "recursion_limit": GRAPH_RECURSION_LIMIT,
+    }
 
     job = await engine.db.get_job(job_id)
     if not job:
