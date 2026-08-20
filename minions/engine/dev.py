@@ -1235,7 +1235,7 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
     """
     import asyncio
 
-    from ..reviewers import APPROVE, aggregate_verdicts, infer_specialists, skipped_specialists
+    from ..reviewers import APPROVE, aggregate_verdicts, cap_specialists, capped_specialists, infer_specialists, skipped_specialists
     from .review import create_engineer_provider, create_reviewer_provider
 
     # A fan-out either happened for this PR or it did not. Checking per-specialty
@@ -1320,15 +1320,30 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
             logger.warning("Failed to create provider/fetch MR info for task review %s: %s", task.id, e)
             mr_info = {"project_id": project.project_id if project else "", "changed_files": []}
 
-    specialists = infer_specialists(changed_files, diff)
-    skipped = skipped_specialists(specialists)
+    wanted = infer_specialists(changed_files, diff)
+    skipped = skipped_specialists(wanted)
+
+    # Narrowing the gate is the one change here that cannot be judged by its own
+    # output: a reviewer that was never run cannot report what it would have
+    # found. So the dropped names are logged and recorded, not just the kept
+    # ones -- `capped=` is the only trace that the panel was smaller than the
+    # diff called for.
+    specialists = cap_specialists(wanted, engine.config.review_fanout_max)
+    capped = capped_specialists(wanted, specialists)
+
     logger.info(
-        "Review fan-out for task %s: %s%s",
+        "Review fan-out for task %s: %s%s%s",
         task.id,
         ", ".join(specialists),
         f" (skipped: {', '.join(skipped)})" if skipped else "",
+        f" (capped at {engine.config.review_fanout_max}, dropped: {', '.join(capped)})" if capped else "",
     )
-    await engine.db.record_event(job.id, "review_fanout", "engine", f"task={task.id} ran={','.join(specialists)} skipped={','.join(skipped)}")
+    await engine.db.record_event(
+        job.id,
+        "review_fanout",
+        "engine",
+        f"task={task.id} ran={','.join(specialists)} skipped={','.join(skipped)} capped={','.join(capped)}",
+    )
 
     # Per-job spend ceiling. Reviewers call run_agent directly rather than going
     # through _run_in_process, so the job ceiling never applied to them. With one

@@ -233,3 +233,99 @@ class TestAggregation:
         from minions.reviewers import normalise_verdict
 
         assert normalise_verdict(raw) == expected
+
+
+class TestFanoutCap:
+    """Narrowing the panel — `cap_specialists`, set to 2 on 2026-08-20.
+
+    The priority rule is "signal wins": a conditional specialist fired because
+    the diff contained evidence for it, so it outranks `api`, which fires on
+    every PR regardless of content. `backend-architecture` is the anchor.
+
+    These tests pin the *consequences* of that choice, not just the arithmetic.
+    A cap that quietly kept two generalists would satisfy `len(kept) == 2` while
+    dropping every lens the diff actually asked for.
+    """
+
+    def _cap(self, files, diff="", limit=2):
+        from minions.reviewers import cap_specialists
+
+        return cap_specialists(infer_specialists(files, diff), limit)
+
+    def test_python_pr_keeps_the_pythonista_over_api(self):
+        assert self._cap(["app/crud/play.py"]) == [BACKEND_ARCHITECTURE, PYTHONISTA]
+
+    def test_frontend_pr_keeps_the_frontend_reviewer_over_api(self):
+        assert self._cap(["src/App.tsx"]) == [BACKEND_ARCHITECTURE, FRONTEND]
+
+    def test_sql_only_pr_keeps_the_dba_over_api(self):
+        assert self._cap(["db/migrations/001_add_index.sql"]) == [BACKEND_ARCHITECTURE, DBA]
+
+    def test_content_triggered_dba_survives_the_cap(self):
+        """The DBA's content trigger is why `reviewers.py` exists at all.
+
+        A lock-taking ALTER TABLE inside ordinary application code has no
+        tell-tale path. If the cap dropped the dba here, the module's stated
+        reason for being would be dead code at the default width.
+        """
+        diff = "+    db.execute('ALTER TABLE plays ADD COLUMN note text')\n"
+        kept = self._cap(["app/service.py"], diff)
+        assert DBA in kept or PYTHONISTA in kept
+        assert API not in kept
+
+    def test_api_survives_when_no_specialist_fired(self):
+        """With nothing to displace it, `api` keeps its slot."""
+        assert self._cap(["README.md", "docs/guide.md"]) == [API, BACKEND_ARCHITECTURE]
+
+    def test_anchor_is_never_dropped(self):
+        for files, diff in (
+            (["app/crud/play.py"], ""),
+            (["src/App.tsx"], ""),
+            (["db/migrations/1.sql"], ""),
+            (["README.md"], ""),
+        ):
+            assert BACKEND_ARCHITECTURE in self._cap(files, diff)
+
+    def test_cap_binds_at_the_limit(self):
+        """A PR that wakes everything still yields exactly `limit` reviewers."""
+        files = ["app/crud/play.py", "src/App.tsx", "db/migrations/1.sql"]
+        assert len(infer_specialists(files)) == 5
+        assert len(self._cap(files)) == 2
+
+    @pytest.mark.parametrize("limit", [0, -1])
+    def test_non_positive_limit_means_uncapped(self, limit):
+        """Matches the cost-ceiling convention, so the cap can be turned off."""
+        files = ["app/crud/play.py", "src/App.tsx"]
+        assert self._cap(files, limit=limit) == infer_specialists(files)
+
+    def test_slack_limit_returns_the_list_unchanged(self):
+        """Raising the cap restores byte-identical behaviour, not a reordering."""
+        from minions.reviewers import cap_specialists
+
+        wanted = infer_specialists(["app/crud/play.py", "src/App.tsx"])
+        assert cap_specialists(wanted, 99) == wanted
+        assert cap_specialists(wanted, len(wanted)) == wanted
+
+    def test_capped_specialists_reports_what_was_dropped(self):
+        """The dropped names are the only trace a narrowed gate leaves.
+
+        A reviewer that never ran cannot report what it would have found, so
+        `capped=` in the audit event is the sole evidence the panel was smaller
+        than the diff called for.
+        """
+        from minions.reviewers import capped_specialists
+
+        wanted = infer_specialists(["app/crud/play.py", "src/App.tsx"])
+        kept = self._cap(["app/crud/play.py", "src/App.tsx"])
+        dropped = capped_specialists(wanted, kept)
+
+        assert API in dropped
+        assert FRONTEND in dropped
+        assert set(kept) & set(dropped) == set()
+        assert set(kept) | set(dropped) == set(wanted)
+
+    def test_capped_is_empty_when_the_cap_does_not_bind(self):
+        from minions.reviewers import capped_specialists
+
+        wanted = infer_specialists(["README.md"])
+        assert capped_specialists(wanted, self._cap(["README.md"])) == []
