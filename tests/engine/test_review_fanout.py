@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from minions.core.models import Agent, AgentRole, Task, TaskStatus
 
 
-def _engine(db, auto_merge=False):
+def _engine(db, auto_merge=False, fanout_max=0):
     engine = MagicMock()
     engine.db = db
     engine.config = MagicMock()
@@ -19,6 +19,10 @@ def _engine(db, auto_merge=False):
     engine.config.job_cost_limit_usd = 1000.0
     engine.config.agent_cost_limit_usd = 100.0
     engine.config.require_ci_pass = False
+    # Uncapped by default so the tests below keep measuring the *wiring* --
+    # inference to tasks to verdicts -- independently of how wide the panel is
+    # allowed to be. TestFanoutCap covers the cap itself, at the real default.
+    engine.config.review_fanout_max = fanout_max
     engine.config.model_reviewer = "test-reviewer"
     engine.config.model_easy = "e"
     engine.config.model_medium = "m"
@@ -84,8 +88,10 @@ class TestFanOut:
         engine = _engine(db)
         run, calls = _verdicts({})
 
-        with patch("minions.engine.dev.run_agent", new=run), \
-             patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/service.py"])):
+        with (
+            patch("minions.engine.dev.run_agent", new=run),
+            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/service.py"])),
+        ):
             from minions.engine.dev import run_task_review
 
             await run_task_review(engine, sample_job, task)
@@ -104,8 +110,10 @@ class TestFanOut:
         run, calls = _verdicts({})
         diff = "+    rows = session.query(Play).filter_by(user_id=uid).all()\n"
 
-        with patch("minions.engine.dev.run_agent", new=run), \
-             patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/service.py"], diff)):
+        with (
+            patch("minions.engine.dev.run_agent", new=run),
+            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/service.py"], diff)),
+        ):
             from minions.engine.dev import run_task_review
 
             await run_task_review(engine, sample_job, task)
@@ -118,8 +126,10 @@ class TestFanOut:
         engine = _engine(db)
         run, calls = _verdicts({})
 
-        with patch("minions.engine.dev.run_agent", new=run), \
-             patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/service.py"])):
+        with (
+            patch("minions.engine.dev.run_agent", new=run),
+            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/service.py"])),
+        ):
             from minions.engine.dev import run_task_review
 
             await run_task_review(engine, sample_job, task)
@@ -135,8 +145,10 @@ class TestVerdictDrivesOutcome:
         engine = _engine(db)
         run, _ = _verdicts({})
 
-        with patch("minions.engine.dev.run_agent", new=run), \
-             patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/service.py"])):
+        with (
+            patch("minions.engine.dev.run_agent", new=run),
+            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/service.py"])),
+        ):
             from minions.engine.dev import run_task_review
 
             await run_task_review(engine, sample_job, task)
@@ -149,8 +161,10 @@ class TestVerdictDrivesOutcome:
         engine = _engine(db)
         run, _ = _verdicts({"pythonista": "request_changes"})
 
-        with patch("minions.engine.dev.run_agent", new=run), \
-             patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/service.py"])):
+        with (
+            patch("minions.engine.dev.run_agent", new=run),
+            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/service.py"])),
+        ):
             from minions.engine.dev import run_task_review
 
             await run_task_review(engine, sample_job, task)
@@ -165,8 +179,10 @@ class TestVerdictDrivesOutcome:
         engine = _engine(db)
         run, _ = _verdicts({"api": None})
 
-        with patch("minions.engine.dev.run_agent", new=run), \
-             patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/service.py"])):
+        with (
+            patch("minions.engine.dev.run_agent", new=run),
+            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/service.py"])),
+        ):
             from minions.engine.dev import run_task_review
 
             await run_task_review(engine, sample_job, task)
@@ -189,8 +205,10 @@ class TestVerdictDrivesOutcome:
             result._review_verdict = "approve"
             return result
 
-        with patch("minions.engine.dev.run_agent", new=_run), \
-             patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/service.py"])):
+        with (
+            patch("minions.engine.dev.run_agent", new=_run),
+            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/service.py"])),
+        ):
             from minions.engine.dev import run_task_review
 
             await run_task_review(engine, sample_job, task)
@@ -208,17 +226,103 @@ class TestSpendCeiling:
         engine = _engine(db)
         engine.config.job_cost_limit_usd = 5.0
 
-        agent = await db.create_agent(
-            Agent(job_id=sample_job.id, role=AgentRole.BACKEND_ENGINEER, task_id=task.id, model="m")
-        )
+        agent = await db.create_agent(Agent(job_id=sample_job.id, role=AgentRole.BACKEND_ENGINEER, task_id=task.id, model="m"))
         await db.update_agent(agent.id, cost_usd=9.0)
 
         run, calls = _verdicts({})
-        with patch("minions.engine.dev.run_agent", new=run), \
-             patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/service.py"])):
+        with (
+            patch("minions.engine.dev.run_agent", new=run),
+            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/service.py"])),
+        ):
             from minions.engine.dev import run_task_review
 
             await run_task_review(engine, sample_job, task)
 
         assert calls == [], "no reviewer may run once the job is over budget"
         assert (await db.get_task(task.id)).status != TaskStatus.MERGED
+
+
+class TestFanoutCap:
+    """The cap, wired end to end at its real production default of 2.
+
+    `TestFanOut` above runs uncapped on purpose so it measures the wiring. This
+    class measures the narrowing itself: that fewer agents actually run, that
+    the survivors are the ones the diff asked for, and that the drop leaves a
+    trace. The last one carries the most weight — a reviewer that never ran
+    cannot report what it would have found, so `capped=` in the audit event is
+    the only evidence the panel was smaller than the diff called for.
+    """
+
+    async def test_cap_reduces_the_agents_that_actually_run(self, db, sample_job):
+        task = await _engineer_task(db, sample_job)
+        engine = _engine(db, fanout_max=2)
+        run, calls = _verdicts({})
+
+        with (
+            patch("minions.engine.dev.run_agent", new=run),
+            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/service.py"])),
+        ):
+            from minions.engine.dev import run_task_review
+
+            await run_task_review(engine, sample_job, task)
+
+        # Uncapped this PR wakes three (api, backend-architecture, pythonista).
+        assert len(calls) == 2, f"cap did not bind: {calls}"
+        assert set(calls) == {"backend-architecture", "pythonista"}
+        assert "api" not in calls, "the unconditional generalist should yield to the fired specialist"
+
+    async def test_content_triggered_dba_survives_the_cap_end_to_end(self, db, sample_job):
+        """The DBA content trigger must not become dead code at the default width."""
+        task = await _engineer_task(db, sample_job)
+        engine = _engine(db, fanout_max=2)
+        run, calls = _verdicts({})
+        diff = "+    rows = session.query(Play).filter_by(user_id=uid).all()\n"
+
+        with (
+            patch("minions.engine.dev.run_agent", new=run),
+            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["db/migrations/1.sql"], diff)),
+        ):
+            from minions.engine.dev import run_task_review
+
+            await run_task_review(engine, sample_job, task)
+
+        assert "dba" in set(calls), "a SQL migration must still wake the DBA at cap=2"
+
+    async def test_the_drop_is_recorded_in_the_audit_event(self, db, sample_job):
+        """`capped=` is the only trace a narrowed gate leaves behind."""
+        task = await _engineer_task(db, sample_job)
+        engine = _engine(db, fanout_max=2)
+        run, _calls = _verdicts({})
+
+        with (
+            patch("minions.engine.dev.run_agent", new=run),
+            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/service.py"])),
+        ):
+            from minions.engine.dev import run_task_review
+
+            await run_task_review(engine, sample_job, task)
+
+        events = [e for e in await db.get_events(sample_job.id) if e["event_type"] == "review_fanout"]
+        assert events, "fan-out must record an audit event"
+        detail = events[0]["detail"]
+
+        assert "ran=backend-architecture,pythonista" in detail
+        assert "capped=api" in detail, f"the dropped reviewer must be named: {detail}"
+
+    async def test_uncapped_run_records_an_empty_capped_field(self, db, sample_job):
+        """No cap, no drop — the field stays present but empty, so it is greppable."""
+        task = await _engineer_task(db, sample_job)
+        engine = _engine(db, fanout_max=0)
+        run, _calls = _verdicts({})
+
+        with (
+            patch("minions.engine.dev.run_agent", new=run),
+            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/service.py"])),
+        ):
+            from minions.engine.dev import run_task_review
+
+            await run_task_review(engine, sample_job, task)
+
+        events = [e for e in await db.get_events(sample_job.id) if e["event_type"] == "review_fanout"]
+        assert "capped=" in events[0]["detail"]
+        assert "capped=api" not in events[0]["detail"]

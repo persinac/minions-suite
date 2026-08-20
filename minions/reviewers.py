@@ -103,6 +103,65 @@ def skipped_specialists(selected: list[str]) -> list[str]:
     return [s for s in conditional if s not in selected]
 
 
+# --- Fan-out cap ------------------------------------------------------------
+#
+# Measured 2026-08-20 over 20 PRs with 2+ verdicts: at the configured width
+# (<=3), 10 of 12 PRs were unanimous and only 16.7% split -- the marginal
+# reviewer rarely changed the outcome, for $6.82 of redundant spend.
+#
+# NOT measured, and the reason this is a knob rather than a new default buried
+# in infer_specialists: a narrower gate is invisible until something bad merges.
+# The saving shows up immediately; the miss does not show up at all.
+#
+# Priority is "signal wins": a specialist fired because the diff contained
+# evidence for it, which makes it more informative than a generalist that runs
+# unconditionally. So `api` -- which fires on every PR regardless of content --
+# is the one that yields. `backend-architecture` is the anchor because it is the
+# only broad correctness lens left once `api` can drop.
+
+FANOUT_ANCHOR = BACKEND_ARCHITECTURE
+
+# Order in which a fired conditional claims the remaining slot(s).
+_CONDITIONAL_PRIORITY = (PYTHONISTA, DBA, FRONTEND)
+
+
+def cap_specialists(selected: list[str], limit: int) -> list[str]:
+    """Narrow `selected` to at most `limit` reviewers, keeping the informative ones.
+
+    `limit <= 0` means uncapped, matching the convention used by the cost
+    ceilings. When the cap does not bind, `selected` is returned unchanged --
+    including its order -- so raising the limit restores byte-identical
+    behaviour rather than a reordered near-miss.
+    """
+    if limit <= 0 or len(selected) <= limit:
+        return selected
+
+    priority = [FANOUT_ANCHOR]
+    priority += [s for s in _CONDITIONAL_PRIORITY if s in selected]
+    priority.append(API)
+
+    keep: list[str] = []
+    for specialty in priority:
+        if len(keep) >= limit:
+            break
+        if specialty in selected and specialty not in keep:
+            keep.append(specialty)
+
+    # Return in the original stable order: priority decides membership, not
+    # ordering, and a stable order keeps the audit line diffable across runs.
+    return [s for s in selected if s in keep]
+
+
+def capped_specialists(selected: list[str], kept: list[str]) -> list[str]:
+    """Reviewers that fired but were dropped by the cap — for the audit line.
+
+    Distinct from `skipped_specialists`, which reports the ones that never fired
+    at all. Conflating the two would hide the gate narrowing behind what looks
+    like an ordinary quiet diff.
+    """
+    return [s for s in selected if s not in kept]
+
+
 # --- Verdict aggregation ----------------------------------------------------
 #
 # Per the swarm orchestrator: any REQUEST_CHANGES wins, then any DISCUSS, else
