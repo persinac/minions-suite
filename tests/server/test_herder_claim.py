@@ -492,3 +492,37 @@ class TestHerderStatus:
         await db.create_agent(Agent(job_id=job_id, role=AgentRole.BACKEND_ENGINEER, task_id=task_id, model="claude-sonnet-5", status="running"))
 
         assert (await _call(mcp_client, "herder_status", {}))["live"] == []
+
+
+class TestReportReviewCompleteVerdictSpelling:
+    """The tool must accept the spellings its own schema advertises.
+
+    `report_review_complete` declares enum ["approved", "changes_requested"] and
+    the handler checked `verdict == "approve"`. An agent that followed the schema
+    got "Invalid verdict" back and its review was lost with nothing recorded --
+    one more way a reviewer ends up contributing no verdict at all.
+    """
+
+    async def test_the_documented_spelling_is_accepted(self, mcp_client, db):
+        _job_id, task_id = await _job_with_engineer_task(db)
+
+        out = await _call(mcp_client, "report_review_complete", {"task_id": task_id, "verdict": "approved"})
+
+        # Scoped to the VERDICT check. A downstream transition error is a
+        # different rule and not what this pins.
+        assert "Invalid verdict" not in str(out), f"the schema's own enum was rejected: {out}"
+
+    async def test_the_handler_spelling_still_works(self, mcp_client, db):
+        """Both are in circulation; normalise_verdict knows every one."""
+        _job_id, task_id = await _job_with_engineer_task(db)
+
+        out = await _call(mcp_client, "report_review_complete", {"task_id": task_id, "verdict": "approve"})
+
+        assert "Invalid verdict" not in str(out)
+
+    async def test_genuine_nonsense_is_still_rejected(self, mcp_client, db):
+        _job_id, task_id = await _job_with_engineer_task(db)
+
+        out = await _call(mcp_client, "report_review_complete", {"task_id": task_id, "verdict": "lgtm-ish"})
+
+        assert "Invalid verdict" in str(out), "loosening the spelling must not accept anything at all"
