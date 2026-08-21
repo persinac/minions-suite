@@ -157,6 +157,26 @@ spec:
               value: "production"
             - name: MCP_HOST
               value: "0.0.0.0"
+            # Raised from the built-in 60 on 2026-08-21.
+            #
+            # Exhausting the turn budget is SILENT: the loop is
+            # `while num_turns < max_turns`, and falling out of it leaves the
+            # agent row status=done with error=NULL — byte-identical to a clean
+            # finish. The task then fails with a generic "All dev tasks failed"
+            # that names nothing.
+            #
+            # Job 3b8b8ba9 lost both engineers that way, each at exactly 60
+            # turns. The wind-down did land the code on a branch; it just ran out
+            # before report_pr, so the work was stranded and re-done from scratch.
+            # Across all history 10 of 68 backend_engineer runs hit the ceiling
+            # and only 6 of 11 ceiling-hitters ever produced a PR.
+            #
+            # 100 clears the observed distribution (mean 27, max 69) with room.
+            # This is NOT the spend guard — agent_cost_limit_usd (8.0) is, and it
+            # is unchanged, so a looping agent is still bounded by money rather
+            # than by turns.
+            - name: AGENT_MAX_TURNS
+              value: "100"
           # There is no health endpoint anywhere in the codebase. `--server` serves
           # only the MCP SSE surface, and probing GET /sse would open a long-lived
           # event stream per probe that the kubelet then abandons. TCP instead.
