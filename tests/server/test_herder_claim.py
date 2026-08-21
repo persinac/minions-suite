@@ -256,9 +256,7 @@ class TestPeeking:
         job = await db.create_job("spec")
         for status in (JobStatus.SPEC_READY, JobStatus.TASKS_CREATED, JobStatus.DEV_IN_PROGRESS):
             await db.update_job_status(job.id, status)
-        task = await db.create_task(
-            Task(job_id=job.id, title="Review", description="", service="management-api", agent_role=AgentRole.CODE_REVIEWER)
-        )
+        task = await db.create_task(Task(job_id=job.id, title="Review", description="", service="management-api", agent_role=AgentRole.CODE_REVIEWER))
         await db.update_task(task.id, status=TaskStatus.IN_PROGRESS)
 
         assert (await _call(mcp_client, "peek_engineer_work", {}))["count"] == 0
@@ -442,3 +440,55 @@ class TestConfig:
 
     def test_the_claim_timeout_has_a_real_default(self):
         assert Config.from_env().herder_claim_timeout_seconds > 0
+
+
+class TestHerderStatus:
+    """Which claims are still live — the reaper's "is this pane still working?".
+
+    A herder pane does not close itself: a Claude session sits at the prompt
+    once its work is done, so `scripts/herder_trigger.py` must close it. That
+    decision cannot be made from task status, because a revision round re-claims
+    the SAME task_id — a finished round-1 pane and a working round-2 pane look
+    identical from the task. It is a property of the agent row, and this is the
+    only tool that exposes it.
+    """
+
+    async def test_no_claims_reports_an_empty_list_not_an_error(self, mcp_client):
+        assert await _call(mcp_client, "herder_status", {}) == {"live": []}
+
+    async def test_a_claimed_task_is_live(self, mcp_client, db):
+        _job_id, task_id = await _job_with_engineer_task(db)
+        claimed = (await _call(mcp_client, "claim_engineer_work", {"worker": "alex-nexus"}))["work"]
+
+        live = (await _call(mcp_client, "herder_status", {}))["live"]
+
+        assert len(live) == 1
+        assert live[0]["task_id"] == task_id
+        assert live[0]["agent_id"] == claimed["agent_id"]
+        assert live[0]["worker"] == "alex-nexus", "the worker name is what identifies whose pane this is"
+
+    async def test_completing_the_claim_removes_it(self, mcp_client, db):
+        await _job_with_engineer_task(db)
+        claimed = (await _call(mcp_client, "claim_engineer_work", {"worker": "h1"}))["work"]
+
+        await _call(mcp_client, "complete_engineer_work", {"agent_id": claimed["agent_id"], "summary": "done"})
+
+        assert (await _call(mcp_client, "herder_status", {}))["live"] == [], (
+            "a finished herder must stop reading as live, or its pane is never reaped"
+        )
+
+    async def test_releasing_the_claim_removes_it(self, mcp_client, db):
+        await _job_with_engineer_task(db)
+        claimed = (await _call(mcp_client, "claim_engineer_work", {"worker": "h1"}))["work"]
+
+        await _call(mcp_client, "release_engineer_work", {"agent_id": claimed["agent_id"], "reason": "rate limited"})
+
+        assert (await _call(mcp_client, "herder_status", {}))["live"] == []
+
+    async def test_an_in_process_agent_is_not_reported(self, mcp_client, db):
+        """Only herder-run agents. Reaping a pane for an in-process agent would
+        close something this trigger never spawned."""
+        job_id, task_id = await _job_with_engineer_task(db)
+        await db.create_agent(Agent(job_id=job_id, role=AgentRole.BACKEND_ENGINEER, task_id=task_id, model="claude-sonnet-5", status="running"))
+
+        assert (await _call(mcp_client, "herder_status", {}))["live"] == []

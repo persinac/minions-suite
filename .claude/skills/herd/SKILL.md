@@ -108,6 +108,22 @@ Call `release_engineer_work(agent_id, reason)`. Rate-limited, blocked, out of
 depth — all fine, and all better than going quiet. Releasing frees the task
 immediately; silence makes the engine wait out the full timeout first.
 
+## Your pane is closed for you
+
+Once your claim is no longer live — after `complete_engineer_work` or
+`release_engineer_work` — the trigger closes this pane, usually within one 30s
+poll. Success and failure alike: the workspace is meant to end up empty.
+
+So **nothing you leave only on screen survives**. Put anything worth keeping
+where it can be read later: the `summary` argument of `complete_engineer_work`,
+the `reason` of `release_engineer_work`, or the PR body. Your transcript is still
+readable afterwards through `get_agent_log`, but the live pane is not.
+
+This is also why going quiet is worse than releasing. A pane that claimed and
+then stopped is indistinguishable from one still working, so it is held until the
+TTL backstop (2700s, the same point at which the engine presumes you gone) rather
+than reaped promptly.
+
 ## Boundaries
 
 - **Do not merge.** The minions merge gate owns that: it checks required status
