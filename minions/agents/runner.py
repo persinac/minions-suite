@@ -22,6 +22,69 @@ from .tools.definitions import REVIEW_TOOL_DEFINITIONS, ToolExecutor, get_tools_
 
 logger = logging.getLogger(__name__)
 
+# How many times an agent that stopped without delivering its required output is
+# asked again before the run is allowed to end without it.
+#
+# Two, not more. The point is to catch a model that simply forgot the call, not
+# to argue with one that has decided not to make it -- and every extra round is
+# a full turn of a metered agent. Measured behaviour on the 17.7% that stopped
+# short was prose in place of the call, which one reminder addresses.
+MAX_FINAL_NUDGES = 2
+
+_FINAL_CALL_NUDGE = (
+    "You have not submitted a verdict. Your review is not recorded until you "
+    "call `submit_review` with an explicit verdict — `approve` or "
+    "`request_changes` — and a summary.\n\n"
+    "Prose in your reply is NOT a verdict: nothing reads it. A missing verdict "
+    "fails closed, so staying silent is read as an objection and sends the "
+    "author into a revision round with no findings to address.\n\n"
+    "Call `submit_review` now with the conclusion you already reached. If you "
+    "found nothing worth blocking, that is `approve`."
+)
+
+
+def _hard_stop_instruction(agent_role: str | None) -> str:
+    """What "wrap up now" means for THIS role.
+
+    The single engineer-shaped message used to go to reviewers too, telling one
+    to "commit and push what you have RIGHT NOW, then create the merge request"
+    -- work a reviewer must not do and has no tools for. It never mentioned
+    submit_review, so the one call that ends a review well was the one the
+    hard-stop did not ask for.
+    """
+    role = str(agent_role or "").strip().lower()
+    if role.endswith("code_reviewer"):
+        return (
+            "You may ONLY call: submit_review, post_inline_comment, report_review_complete. "
+            "Submit your verdict RIGHT NOW with what you have already read — an incomplete "
+            "review with a verdict is worth more than a thorough one with none, because a "
+            "missing verdict fails closed and sends the author into a revision round with "
+            "nothing to fix."
+        )
+    return (
+        "You may ONLY call: create_branch, commit, push, create_pr, report_pr, "
+        "complete_subtask, fail_subtask, update_task_status, send_heartbeat. "
+        "Commit and push what you have RIGHT NOW, then create the merge request."
+    )
+
+
+def _owes_final_call(agent_role: str | None, verdict: str | None) -> bool:
+    """Whether this agent stopped without delivering the output it exists for.
+
+    Only reviewers today. An engineer's equivalent is report_pr, and the same
+    silent-stop shape strands its branch -- but that failure has a different
+    cause (the turn ceiling) and a different fix, so it is deliberately not
+    lumped in here.
+
+    The role arrives as a str from several call sites and has been seen both
+    bare ("code_reviewer") and enum-stringified, so match on the suffix rather
+    than on equality.
+    """
+    if verdict:
+        return False
+    role = str(agent_role or "").strip().lower()
+    return role.endswith("code_reviewer")
+
 
 def _log_read_stats(agent, tool_executor) -> None:
     """Report how much of this agent's input was content it already had.
@@ -337,6 +400,7 @@ async def _agent_loop_generic(
     num_turns = 0
     verdict = None
     summary = ""
+    final_nudges = 0
     start_time = time.time()
     wind_down_phase = 0  # 0=normal, 1=wind-down (80%), 2=hard-stop (90%)
     wind_down_turn = int(max_turns * 0.8)
@@ -344,6 +408,10 @@ async def _agent_loop_generic(
 
     # Tools the agent is always allowed to call during hard-stop phase.
     # Everything else gets blocked so the agent is forced to ship.
+    #
+    # NB: the hard-stop MESSAGE below names only the engineer half of this set.
+    # A reviewer that reaches hard-stop is told to "commit and push", which it
+    # cannot do and must not try -- see _hard_stop_message.
     _WRAP_UP_TOOLS = frozenset(
         {
             "create_branch",
@@ -394,10 +462,7 @@ async def _agent_loop_generic(
                 remaining_time = int(timeout - elapsed)
                 hard_msg = (
                     f"🛑 HARD STOP: You have only {remaining_turns} turns and ~{remaining_time}s left. "
-                    "Non-essential tool calls will be BLOCKED from now on. "
-                    "You may ONLY call: create_branch, commit, push, create_pr, report_pr, "
-                    "complete_subtask, fail_subtask, update_task_status, send_heartbeat. "
-                    "Commit and push what you have RIGHT NOW, then create the merge request."
+                    "Non-essential tool calls will be BLOCKED from now on. " + _hard_stop_instruction(agent_role)
                 )
                 messages.append({"role": "user", "content": hard_msg})
                 log.write(f"[SYSTEM] Hard-stop injected at turn {num_turns}\n")
@@ -496,6 +561,44 @@ async def _agent_loop_generic(
             messages.append(message.model_dump(exclude_none=True))
 
             if choice.finish_reason == "stop" or not message.tool_calls:
+                # "Stopped talking" is not the same as "delivered". A reviewer
+                # that writes its review as prose and never calls submit_review
+                # used to end right here, and the run was recorded as a success
+                # with verdict=NULL -- 22 of 124 reviewer runs, 17.7%.
+                #
+                # That is not a cosmetic gap. aggregate_verdicts fails closed on
+                # a missing verdict, so the silence is read as an objection and
+                # the task is sent back for a revision round nobody asked for:
+                # on job e180f866 all three rounds came from empty verdicts, with
+                # zero comments and zero reviews on the PR. A spurious round
+                # costs more than the fan-out cap saves.
+                #
+                # The prompt already says "You MUST call submit_review"
+                # (prompts/agents/code_reviewer.md:17), so more prompt text is
+                # not the fix -- asking again, once, is.
+                if _owes_final_call(agent_role, verdict) and final_nudges < MAX_FINAL_NUDGES:
+                    final_nudges += 1
+                    messages.append({"role": "user", "content": _FINAL_CALL_NUDGE})
+                    log.write(f"[SYSTEM] No verdict submitted; nudged ({final_nudges}/{MAX_FINAL_NUDGES})\n")
+                    logger.warning(
+                        "Reviewer agent %s stopped without a verdict — nudging (%d/%d)",
+                        agent_id or "?",
+                        final_nudges,
+                        MAX_FINAL_NUDGES,
+                    )
+                    continue
+
+                if _owes_final_call(agent_role, verdict):
+                    # Bounded, so it can still end without one. Say so loudly:
+                    # a silent NULL verdict is what made this invisible for the
+                    # 124 runs before it.
+                    logger.error(
+                        "Reviewer agent %s finished with NO verdict after %d nudge(s) — the gate will fail closed",
+                        agent_id or "?",
+                        final_nudges,
+                    )
+                    log.write("[SYSTEM] Finished with no verdict after nudging\n")
+
                 log.write("Agent finished (no more tool calls).\n")
                 break
 
@@ -554,6 +657,17 @@ async def _agent_loop_generic(
 
                 # Capture verdict from submit_review (CODE_REVIEWER)
                 if fn_name == "submit_review":
+                    verdict = fn_args.get("verdict")
+                # ...and from report_review_complete, which is the OTHER tool a
+                # reviewer can end on. Only the fan-out path is restricted to
+                # REVIEW_TOOL_DEFINITIONS; a reviewer whose provider failed to
+                # build falls through to CODE_REVIEWER_TOOL_DEFINITIONS and has
+                # both. Its verdict was dropped on the floor here, which both
+                # lost a real answer and would now make the nudge below badger an
+                # agent that had already reported. Spelling differs between the
+                # two tools ("approved" vs "approve"); aggregate_verdicts runs
+                # everything through normalise_verdict, so either is fine.
+                elif fn_name == "report_review_complete" and not verdict:
                     verdict = fn_args.get("verdict")
                     summary = fn_args.get("body", "")
 

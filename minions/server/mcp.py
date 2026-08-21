@@ -1066,10 +1066,19 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
     async def report_review_complete(task_id: str, verdict: str, feedback: str | None = None) -> str:
         """Report that a PR review is complete (approved or changes_requested)."""
         try:
-            if verdict == "approve":
+            # Accept the spellings this tool's OWN schema advertises. It declares
+            # enum ["approved", "changes_requested"] while this check wanted
+            # "approve" -- so an agent that followed the schema got
+            # "Invalid verdict" and its review was lost with nothing recorded.
+            # normalise_verdict already knows every spelling in circulation and
+            # is what aggregate_verdicts uses, so both agree by construction.
+            from ..reviewers import APPROVE, REQUEST_CHANGES, normalise_verdict
+
+            canonical = normalise_verdict(verdict)
+            if canonical == APPROVE:
                 new_status = "merged"
                 review_status = "approved"
-            elif verdict == "changes_requested":
+            elif canonical == REQUEST_CHANGES:
                 new_status = "in_progress"
                 review_status = "changes_requested"
             else:
