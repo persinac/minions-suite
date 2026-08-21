@@ -29,37 +29,18 @@ def trig():
     return module
 
 
-class TestPruning:
-    """State says "already spawned for this task". Getting it wrong costs money
-    in one direction and duplicates work in the other."""
-
-    def test_a_task_still_waiting_stays_tracked(self, trig):
-        """The gap between spawning and the session's claim is the whole reason
-        this state exists: peek still lists the task during it."""
-        state = {"t1": 1000.0}
-
-        assert trig.prune(state, {"t1"}, now=1010.0) == {"t1": 1000.0}
-
-    def test_a_claimed_task_is_dropped(self, trig):
-        """Leaving the queue means somebody claimed it — ours or otherwise."""
-        state = {"t1": 1000.0}
-
-        assert trig.prune(state, set(), now=1010.0) == {}
-
-    def test_a_stale_entry_expires(self, trig):
-        """A pane that died before claiming must not block that task forever."""
-        state = {"t1": 1000.0}
-        later = 1000.0 + trig.SPAWN_TTL_SECONDS + 1
-
-        assert trig.prune(state, {"t1"}, now=later) == {}
-
-    def test_entries_are_independent(self, trig):
-        state = {"fresh": 1000.0, "stale": 0.0}
-
-        pruned = trig.prune(state, {"fresh", "stale"}, now=1010.0)
-
-        assert "fresh" in pruned
-        assert "stale" not in pruned, "TTL must be per entry, not per file"
+# State rules moved to tests/test_herder_reaper.py (2026-08-21).
+#
+# `prune()` became `reap_plan()` when the trigger took on closing panes as well
+# as opening them, and one of its rules was deliberately INVERTED rather than
+# ported: prune dropped an entry as soon as the task left the waiting queue,
+# i.e. exactly when the herder started working. That is why nothing could be
+# reaped — by the time a herder finished, the trigger had already forgotten its
+# pane existed. State now survives the claim and is keyed by pane id, because a
+# revision round re-claims the same task_id and herdr uniquifies spawn names.
+#
+# Every surviving intent is covered there: the spawn-window grace, the per-entry
+# TTL, and entry independence.
 
 
 class TestWorkingDirectory:
@@ -101,7 +82,7 @@ class TestSpawnCommand:
         called = []
         monkeypatch.setattr(trig.subprocess, "run", lambda *a, **k: called.append(a) or None)
 
-        assert trig.spawn({"task_id": "abcdef1234", "service": "healthcheck", "title": "t"}, dry=True) is True
+        assert trig.spawn({"task_id": "abcdef1234", "service": "healthcheck", "title": "t"}, dry=True) is None
         assert called == []
 
     def test_the_seed_prompt_names_the_task(self, trig):
@@ -121,6 +102,7 @@ class TestSpawnCommand:
         class Done:
             returncode = 0
             stderr = ""
+            stdout = '{"id":"cli:agent:start","result":{"agent":{"name":"minions-herd-abcdef12","pane_id":"w1:pA"}}}'
 
         monkeypatch.setattr(trig.subprocess, "run", lambda argv, **k: captured.update(argv=argv) or Done())
         trig.spawn({"task_id": "abcdef1234", "service": "healthcheck", "title": "t"}, dry=False)
@@ -143,6 +125,7 @@ class TestSpawnCommand:
         class Done:
             returncode = 0
             stderr = ""
+            stdout = '{"id":"cli:agent:start","result":{"agent":{"name":"minions-herd-abcdef12","pane_id":"w1:pA"}}}'
 
         monkeypatch.setattr(trig.subprocess, "run", lambda argv, **k: captured.update(argv=argv) or Done())
         trig.spawn({"task_id": "abcdef1234", "service": "healthcheck", "title": "t"}, dry=False)
@@ -168,6 +151,7 @@ class TestSpawnCommand:
         class Done:
             returncode = 0
             stderr = ""
+            stdout = '{"id":"cli:agent:start","result":{"agent":{"name":"minions-herd-abcdef12","pane_id":"w1:pA"}}}'
 
         monkeypatch.setattr(trig.subprocess, "run", lambda argv, **k: captured.update(argv=argv) or Done())
         trig.spawn({"task_id": "abcdef1234", "service": "healthcheck", "title": "t"}, dry=False)
@@ -201,6 +185,7 @@ class TestSpawnCommand:
         class Done:
             returncode = 0
             stderr = ""
+            stdout = '{"id":"cli:agent:start","result":{"agent":{"name":"minions-herd-abcdef12","pane_id":"w1:pA"}}}'
 
         monkeypatch.setattr(trig.subprocess, "run", lambda argv, **k: captured.update(argv=argv) or Done())
         trig.spawn({"task_id": "abcdef1234", "service": "healthcheck", "title": "t"}, dry=False)
@@ -220,10 +205,11 @@ class TestSpawnCommand:
         class Failed:
             returncode = 1
             stderr = "herdr: agent_name_taken"
+            stdout = ""
 
         monkeypatch.setattr(trig.subprocess, "run", lambda *a, **k: Failed())
 
-        assert trig.spawn({"task_id": "abcdef1234", "service": "x", "title": "t"}, dry=False) is False
+        assert trig.spawn({"task_id": "abcdef1234", "service": "x", "title": "t"}, dry=False) is None
 
 
 class TestDryDoesNotConsumeTheBudget:
@@ -247,6 +233,11 @@ class TestDryDoesNotConsumeTheBudget:
 
         monkeypatch.setattr(trig, "peek", fake_peek)
 
+        async def fake_live():
+            return []
+
+        monkeypatch.setattr(trig, "live_claims", fake_live)
+
         await trig.tick()
 
         assert trig.load_state() == {}, "a dry run must not claim the spawn budget"
@@ -258,16 +249,23 @@ class TestDryDoesNotConsumeTheBudget:
         monkeypatch.setattr(trig, "STATE_FILE", tmp_path / "spawned.json")
         monkeypatch.setattr(trig, "STATE_DIR", tmp_path)
         monkeypatch.setattr(trig, "tunnel_healthy", lambda: True)
-        monkeypatch.setattr(trig, "spawn", lambda item, dry: True)
+        monkeypatch.setattr(trig, "spawn", lambda item, dry: "w1:pA")
 
         async def fake_peek():
             return [{"task_id": "abcdef12", "service": "healthcheck", "title": "t", "job_id": "j"}]
 
         monkeypatch.setattr(trig, "peek", fake_peek)
 
+        async def fake_live():
+            return []
+
+        monkeypatch.setattr(trig, "live_claims", fake_live)
+
         await trig.tick()
 
-        assert "abcdef12" in trig.load_state()
+        state = trig.load_state()
+        assert "w1:pA" in state, "state is keyed by pane id — the name cannot be recomputed, herdr uniquifies it"
+        assert state["w1:pA"]["task_id"] == "abcdef12"
 
 
 class TestSafetyDefaults:

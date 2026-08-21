@@ -590,6 +590,41 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
         return json.dumps({"released": True, "agent_id": agent_id})
 
     @mcp.tool()
+    async def herder_status() -> str:
+        """Which herder claims are still live. Read-only.
+
+        For the trigger's reaper. A herder pane must be closed once its work is
+        done, and "done" is a property of the AGENT ROW, not of the task: after a
+        revision round the same task_id is claimed again by a second herder, so
+        task status alone cannot tell a finished round-1 pane from a working
+        round-2 one. `get_job_status` returns tasks and no agents, so nothing
+        else exposes this.
+
+        Live means the same ownership predicate `find_claimable_work` uses --
+        status in starting/running -- narrowed to herder-run agents by the
+        `herder:` model prefix that `claim_engineer_work` writes. An agent that
+        completed, released, or was reaped is simply absent, which is what the
+        reaper keys on.
+        """
+        live = []
+        for job in await db.get_active_jobs():
+            for agent in await db.get_agents_for_job(job.id):
+                model = str(agent.model or "")
+                if not model.startswith("herder:") or agent.status not in ("starting", "running"):
+                    continue
+                live.append(
+                    {
+                        "agent_id": agent.id,
+                        "job_id": agent.job_id,
+                        "task_id": agent.task_id,
+                        "worker": model.removeprefix("herder:"),
+                        "status": agent.status,
+                        "started_at": agent.started_at,
+                    }
+                )
+        return json.dumps({"live": live})
+
+    @mcp.tool()
     async def get_review_status(job_id: str) -> str:
         """Get the current status of a review job and its tasks."""
         job = await db.get_job(job_id)
