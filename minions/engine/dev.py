@@ -1553,10 +1553,49 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
             target_branch = (service.default_branch if service else "") or "main"
             ci_ok, ci_reason = await _ci_gate_passes(engine, project, merge_provider, mr_id, target_branch)
 
+            # Reviews got faster than CI. Job 1ddb3283's panel approved three
+            # minutes after the PR opened, the gate saw mergeable_state=blocked
+            # (which cannot say whether checks are running or failed), and the
+            # task was marked MERGED below anyway — the approved PR stranded
+            # OPEN on a job that read as done, and nothing ever came back for
+            # it. So a state-level block gets a bounded wait: CI here usually
+            # settles in seconds to minutes, and the check names in ci_reason
+            # only appear for state-level blocks, never config-level ones
+            # (missing required checks, provider errors), which re-polling
+            # cannot change.
+            import asyncio
+
+            waited = 0.0
+            while not ci_ok and "mergeable_state=" in ci_reason and waited < engine.config.ci_merge_wait_seconds:
+                await asyncio.sleep(30)
+                waited += 30
+                ci_ok, ci_reason = await _ci_gate_passes(engine, project, merge_provider, mr_id, target_branch)
+
             if not ci_ok:
                 logger.warning("Auto-merge BLOCKED for task %s: %s", task.id, ci_reason)
                 await engine.db.record_event(job.id, "auto_merge_blocked_ci", "engine", f"task={task.id} {ci_reason}")
                 merge_result = {"merged": False, "error": f"CI gate: {ci_reason}"}
+
+                # Still blocked past the wait: hand the merge to GitHub rather
+                # than stranding it. Native auto-merge completes server-side
+                # when required checks go green; on persistent red the PR shows
+                # a pending auto-merge instead of nothing. If even the handoff
+                # fails, the task still advances below — but auto_merge_stranded
+                # is the loud, greppable trace that an OPEN PR outlived its job.
+                if hasattr(merge_provider, "enable_auto_merge"):
+                    deferral = await merge_provider.enable_auto_merge(project.project_id, mr_id)
+                else:
+                    deferral = {"enabled": False, "error": "provider has no enable_auto_merge"}
+                if deferral.get("enabled"):
+                    await engine.db.record_event(
+                        job.id, "auto_merge_deferred", "engine", f"task={task.id} GitHub auto-merge enabled; merges on green"
+                    )
+                    logger.info("Auto-merge deferred to GitHub for task %s (PR %s)", task.id, mr_id)
+                else:
+                    await engine.db.record_event(
+                        job.id, "auto_merge_stranded", "engine", f"task={task.id} pr={task.pr_url or mr_id} {str(deferral.get('error', ''))[:150]}"
+                    )
+                    logger.error("Auto-merge STRANDED for task %s: approved PR %s left open with no merge owner", task.id, task.pr_url or mr_id)
             else:
                 logger.info("CI gate passed for task %s: %s", task.id, ci_reason)
                 merge_result = await merge_provider.merge_mr(project.project_id, mr_id)
