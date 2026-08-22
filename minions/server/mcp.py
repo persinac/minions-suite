@@ -138,7 +138,13 @@ def _resolve_role(raw: str) -> AgentRole:
         return AgentRole.DEPLOY_MONITOR
     if "orchestrat" in normalized or "arbiter" in normalized:
         return AgentRole.ARBITER
-    if normalized in ("engineer", "developer", "dev"):
+    # Any remaining *engineer*/*developer* spelling defaults to backend. The
+    # specific checks above have already claimed database/frontend, so what
+    # reaches here is the arbiter riffing on the service's language or its own
+    # job title: 'software_engineer' (job 770264bf) and 'python_engineer'
+    # (job 1ddb3283) each cost an arbiter turn on back-to-back runs before
+    # this line existed.
+    if "engineer" in normalized or "developer" in normalized or normalized == "dev":
         return AgentRole.BACKEND_ENGINEER
 
     raise ValueError(f"'{raw}' is not a valid role. Valid roles: {VALID_ROLES_STR}")
