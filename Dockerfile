@@ -29,6 +29,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         unzip \
     && rm -rf /var/lib/apt/lists/*
 
+# Broker TLS: every 4222 client must trust the Flashback root BEFORE the
+# server-cert flip, or NATS connects start failing at the cutover. Source of
+# truth: infrastructure/scripts/acme/flashback-root-only.pem
+# (sha256 359cd039b151bc14…); verified in CI-less form by
+# infrastructure/scripts/service-trust-image-check.sh.
+COPY certs/flashback-root.crt /usr/local/share/ca-certificates/flashback-root.crt
+RUN update-ca-certificates
+
 # GitHub CLI
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
         | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
