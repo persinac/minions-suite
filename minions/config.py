@@ -199,6 +199,16 @@ class Config:
     # merges, which is deliberate pressure to gate the least-verified repos.
     require_ci_pass: bool = True
 
+    # How long run_task_review waits for a CI-blocked PR before handing the
+    # merge to GitHub's native auto-merge. Reviews got faster than CI: job
+    # 1ddb3283's panel approved 3 minutes after the PR opened, the gate saw
+    # mergeable_state=blocked, and the task was marked MERGED anyway — the
+    # approved PR stranded OPEN on a terminal job. mergeable_state cannot
+    # distinguish "checks running" from "checks failed" without a Checks:read
+    # grant the App deliberately lacks, so the wait is bounded and the
+    # server-side auto-merge is the backstop for anything slower.
+    ci_merge_wait_seconds: int = 300
+
     # Job admission rate caps. The cost ceilings bound what one job can spend;
     # these bound how many jobs can spend at all, which is the difference
     # between one bad job and a bad afternoon. Deliberately set high — they are
@@ -489,6 +499,7 @@ class Config:
             agent_max_turns=_env_or_int("AGENT_MAX_TURNS", _get("engine", "agent_max_turns"), 60),
             shutdown_grace_seconds=_env_or_float("SHUTDOWN_GRACE_SECONDS", _get("engine", "shutdown_grace_seconds"), 300.0),
             require_ci_pass=_env_or_bool("REQUIRE_CI_PASS", _get("engine", "require_ci_pass"), True),
+            ci_merge_wait_seconds=_env_or_int("CI_MERGE_WAIT_SECONDS", _get("engine", "ci_merge_wait_seconds"), 300),
             max_jobs_per_hour=_env_or_int("MAX_JOBS_PER_HOUR", _get("engine", "max_jobs_per_hour"), 20),
             max_jobs_per_month=_env_or_int("MAX_JOBS_PER_MONTH", _get("engine", "max_jobs_per_month"), 500),
             classifier_enabled=_env_or_bool("CLASSIFIER_ENABLED", _get("engine", "classifier_enabled"), True),

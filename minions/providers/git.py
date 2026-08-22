@@ -457,7 +457,7 @@ class GitHubProvider:
 
         try:
             rules = json.loads(raw)
-        except (json.JSONDecodeError, ValueError):
+        except json.JSONDecodeError, ValueError:
             logger.warning("Unparseable branch-rules payload for %s@%s", project_id, branch)
             return []
 
@@ -496,7 +496,7 @@ class GitHubProvider:
                 continue
             try:
                 payload = json.loads(chunk)
-            except (json.JSONDecodeError, ValueError):
+            except json.JSONDecodeError, ValueError:
                 continue
             for run in payload.get("check_runs", []):
                 name = run.get("name")
@@ -576,6 +576,22 @@ class GitHubProvider:
         except RuntimeError as e:
             logger.warning("GitHub merge failed: %s", e)
             return {"merged": False, "error": str(e)[:200]}
+
+    async def enable_auto_merge(self, project_id: str, mr_id: str) -> dict:
+        """Hand the merge to GitHub: it completes server-side when required
+        checks go green, and stays visibly pending on the PR while they are not.
+
+        The engine's own gate cannot wait indefinitely, and mergeable_state
+        cannot say WHY a PR is blocked — so past the bounded wait this is the
+        honest handoff: green merges without us, red is visible on the PR
+        instead of stranded behind a job that already read as done.
+        """
+        try:
+            self._run_gh(["pr", "merge", mr_id, "--repo", project_id, "--squash", "--delete-branch", "--auto"])
+            return {"enabled": True}
+        except RuntimeError as e:
+            logger.warning("GitHub enable_auto_merge failed: %s", e)
+            return {"enabled": False, "error": str(e)[:200]}
 
     async def add_mr_labels(self, project_id: str, mr_id: str, labels: list[str]) -> dict:
         try:
