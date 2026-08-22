@@ -367,6 +367,24 @@ projects:
         default_branch: master
         deploy_target: none
 
+  flashback-process:
+    project_id: flippin-balls/flashback-process
+    repo_path: /repos/flashback-process
+    auto_merge: true
+    review_profile:
+      roles: [backend]
+    engineer_profile:
+      roles: [backend]
+      timeout: 1800
+    services:
+      flashback-process:
+        project_id: flippin-balls/flashback-process
+        git_provider: github
+        clone_url: https://github.com/flippin-balls/flashback-process.git
+        repo_path: /repos/flashback-process
+        default_branch: main
+        deploy_target: none
+
   healthcheck:
     project_id: flippin-balls/healthcheck
     repo_path: /repos/healthcheck
