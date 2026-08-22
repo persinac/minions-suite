@@ -20,6 +20,7 @@ from fastmcp import FastMCP
 
 from ..config import Config
 from ..core.models import Agent, AgentRole, JobStatus, Message, Subtask, SubtaskStatus, Task, TaskStatus, _now
+from ..core.service_grounding import check_grounding, mismatch_remedy
 from ..core.spec_contract import SpecContractError, validate_refined_spec
 from ..core.state_transitions import ArbiterUnavailableError, InvalidTransitionError, PreconditionError
 from ..db import AbstractDatabase
@@ -29,6 +30,13 @@ logger = logging.getLogger(__name__)
 # Module-level NATS client reference, set by CLI when arbiter_enabled.
 # When set, state-mutating tools route through the Arbiter.
 _nats_client = None
+
+# (job_id, service) pairs create_task has already refused once for a grounding
+# mismatch. The in-process set is the PRIMARY refuse-once record: record_event
+# swallows every failure in both DB backends, so an event-only lookup could
+# refuse the identical retry forever if the event write silently failed. Worst
+# case after a restart is one extra refusal — never a wedge.
+_service_mismatch_warned: set[tuple[str, str]] = set()
 
 ENGINEER_ROLES = {AgentRole.BACKEND_ENGINEER, AgentRole.FRONTEND_ENGINEER, AgentRole.DATABASE_ENGINEER}
 
@@ -795,6 +803,71 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
             return json.dumps(
                 {"error": f"'{service}' is a reserved internal service name. Use a real service name from Available Services (e.g. 'api')."}
             )
+
+        # Same local-import contract as find_claimable_work: a module-level
+        # import would bind before the herder tests' monkeypatch.
+        from ..project_registry import build_registry
+
+        registry = build_registry(config.projects_file if config else "projects.yaml")
+        known_services = set()
+        for project in registry.values():
+            known_services.update(project.services or {})
+
+        # Both guards below need a registry to check against. Zero-config
+        # setups (missing projects.yaml) keep today's behaviour and
+        # _resolve_service's sole-service fallback.
+        if known_services:
+            # Membership. The docstring above has always CLAIMED the name must
+            # come from the services configuration; until job 9a1aeba4 nothing
+            # enforced it, and any non-reserved string was accepted.
+            if service not in known_services:
+                logger.warning("create_task: rejected unknown service '%s' for title='%s'", service, title)
+                return json.dumps(
+                    {
+                        "error": f"'{service}' is not a registered service. Valid names: {', '.join(sorted(known_services))}.",
+                        "retryable": True,
+                    }
+                )
+
+            # Grounding. A valid name can still contradict the spec — job
+            # 9a1aeba4's arbiter routed a flashback-cns task (the spec names it
+            # repeatedly) to flashback-process, a docs repo. check_grounding
+            # flags only "the spec mentions other services and never this one",
+            # and the refusal happens ONCE per (job, service): a deliberate
+            # arbiter re-issuing the same call is accepted, so a false flag
+            # costs one turn and a wedge is impossible.
+            job = await db.get_job(job_id)
+            spec_text = ""
+            if job:
+                spec_text = f"{job.spec or ''}\n{job.original_spec or ''}"
+            mentioned = check_grounding(service, spec_text, registry)
+            if mentioned:
+                warned_key = (job_id, service)
+                already_warned = warned_key in _service_mismatch_warned
+                if not already_warned:
+                    # Fallback for a restarted server: the recorded event. Parse
+                    # k=v tokens, not substrings — service=api must not match
+                    # service=api-gateway.
+                    for event in await db.get_events(job_id):
+                        if event.get("event_type") != "service_mismatch":
+                            continue
+                        detail_tokens = dict(kv.split("=", 1) for kv in str(event.get("detail", "")).split() if "=" in kv)
+                        if detail_tokens.get("service") == service:
+                            already_warned = True
+                            break
+
+                if already_warned:
+                    await db.record_event(
+                        job_id, "service_mismatch", "engine", f"service={service} accepted_on_retry=true mentioned={','.join(mentioned)}"
+                    )
+                    logger.warning("create_task: accepting service '%s' for job %s after a grounding warning", service, job_id)
+                else:
+                    _service_mismatch_warned.add(warned_key)
+                    await db.record_event(job_id, "service_mismatch", "engine", f"service={service} mentioned={','.join(mentioned)}")
+                    logger.warning(
+                        "create_task: refusing ungrounded service '%s' for job %s (spec mentions: %s)", service, job_id, ", ".join(mentioned)
+                    )
+                    return json.dumps({"error": mismatch_remedy(service, mentioned, registry), "retryable": True})
 
         resolved_role = _resolve_role(agent_role)
         # Hard guard: database service must always use database_engineer

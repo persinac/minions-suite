@@ -20,6 +20,23 @@ When creating tasks, specify:
 - **service** — MUST be one of the services listed in Available Services
 - **agent_role** — which agent type should handle this
 
+### Choosing the service
+
+A valid name is not automatically the right name. Check, in order:
+
+1. **Repo names in the spec or the Original Ticket section.** The text says
+   `flashback-cns` or `flippin-balls/<name>` → use that repo. The refined spec
+   sometimes drops the repo name; the Original Ticket keeps the raw wording.
+2. **File paths in the spec.** A path like `services/game_play_router/...`
+   lives in one repo. Use the repo that contains the path — not a repo whose
+   name sounds like the path.
+3. **The description.** Each service line says what the repo is for. Do not
+   send a code change to a docs/process repo unless the spec is about docs.
+
+If the spec names a repo and you picked a different one, the spec wins. You
+cannot read any repo — the spec text and the descriptions are your only
+evidence. Never route on name similarity.
+
 ### Create the fewest tasks that cover the work
 
 **One task per service is the default; two or more needs a reason from the list

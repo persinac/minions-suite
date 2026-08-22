@@ -74,6 +74,7 @@ defaults:
 
 projects:
   flashback-android:
+    description: "Android mobile app for the Flashback Fleet pinball webstore (store.flashbackfleet.com)."
     project_id: flippin-balls/Flashback-Android
     repo_path: /repos/flashback-android
     auto_merge: true
@@ -92,6 +93,7 @@ projects:
         deploy_target: none
 
   flashback-apple:
+    description: "Native iOS port of the Flashback Fleet pinball webstore app."
     project_id: flippin-balls/Flashback-Apple
     repo_path: /repos/flashback-apple
     auto_merge: true
@@ -110,6 +112,7 @@ projects:
         deploy_target: none
 
   appwrite-functions:
+    description: "functions that will be deployed to appwrite"
     project_id: flippin-balls/appwrite-functions
     repo_path: /repos/appwrite-functions
     auto_merge: true
@@ -133,6 +136,7 @@ projects:
         deploy_target: none
 
   aws-utils:
+    description: "Shared AWS utility scripts and libraries for Flashback Fleet infrastructure operations."
     project_id: flippin-balls/aws-utils
     repo_path: /repos/aws-utils
     auto_merge: true
@@ -156,6 +160,7 @@ projects:
         deploy_target: none
 
   database:
+    description: "database migrations... honestly kinda feel like we should just use a monorepo..."
     project_id: flippin-balls/database
     repo_path: /repos/database
     auto_merge: true
@@ -174,6 +179,7 @@ projects:
         deploy_target: none
 
   device-config-management:
+    description: "Device provisioning and configuration tooling — ATECC608A secure-element setup and device identity management."
     project_id: flippin-balls/device-config-management
     repo_path: /repos/device-config-management
     auto_merge: true
@@ -197,6 +203,7 @@ projects:
         deploy_target: none
 
   device-requisition:
+    description: "requisition step for devices"
     project_id: flippin-balls/device-requisition
     repo_path: /repos/device-requisition
     auto_merge: true
@@ -220,6 +227,7 @@ projects:
         deploy_target: none
 
   directory-api:
+    description: "Backend API for directory UI"
     project_id: flippin-balls/directory-api
     repo_path: /repos/directory-api
     auto_merge: true
@@ -243,6 +251,7 @@ projects:
         deploy_target: none
 
   directory-ui:
+    description: "All the machines and logs"
     project_id: flippin-balls/directory-ui
     repo_path: /repos/directory-ui
     auto_merge: true
@@ -271,6 +280,7 @@ projects:
         deploy_target: none
 
   esp-cryptoauthlib:
+    description: "Fork of https://github.com/MicrochipTech/cryptoauthlib"
     project_id: flippin-balls/esp-cryptoauthlib
     repo_path: /repos/esp-cryptoauthlib
     auto_merge: true
@@ -292,6 +302,7 @@ projects:
         deploy_target: none
 
   flashback-cns:
+    description: "Message broker / server"
     project_id: flippin-balls/flashback-cns
     repo_path: /repos/flashback-cns
     auto_merge: true
@@ -315,6 +326,7 @@ projects:
         deploy_target: none
 
   flashback-fleet-esp-common:
+    description: "ESP IDF Common components"
     project_id: flippin-balls/flashback-fleet-esp-common
     repo_path: /repos/flashback-fleet-esp-common
     auto_merge: true
@@ -336,6 +348,7 @@ projects:
         deploy_target: none
 
   flashback-heatmap:
+    description: "LoRa site survey heatmap tool for Flashback Fleet pinball devices"
     project_id: flippin-balls/flashback-heatmap
     repo_path: /repos/flashback-heatmap
     auto_merge: true
@@ -364,6 +377,7 @@ projects:
         deploy_target: none
 
   flashback-plugins:
+    description: "Claude Code plugin marketplace for the flashback-fleet team — shared skills, slash commands, subagents, and hooks."
     project_id: flippin-balls/flashback-plugins
     repo_path: /repos/flashback-plugins
     auto_merge: true
@@ -382,6 +396,7 @@ projects:
         deploy_target: none
 
   flashback-process:
+    description: "Cross-repo process, runbook, and design docs for the Flashback Fleet -- the flows no single service repo can validate on its own."
     project_id: flippin-balls/flashback-process
     repo_path: /repos/flashback-process
     auto_merge: true
@@ -400,6 +415,7 @@ projects:
         deploy_target: none
 
   healthcheck:
+    description: "End-to-end infrastructure health check for the Flashback play pipeline"
     project_id: flippin-balls/healthcheck
     repo_path: /repos/healthcheck
     auto_merge: true
@@ -423,6 +439,7 @@ projects:
         deploy_target: none
 
   hermes-bridge:
+    description: "Meet, Alice."
     project_id: flippin-balls/hermes-bridge
     repo_path: /repos/hermes-bridge
     auto_merge: true
@@ -444,6 +461,7 @@ projects:
         deploy_target: none
 
   infrastructure:
+    description: "pulumi infra"
     project_id: flippin-balls/infrastructure
     repo_path: /repos/infrastructure
     auto_merge: true
@@ -467,6 +485,7 @@ projects:
         deploy_target: none
 
   integration-tests:
+    description: "Integration test suite for Flashback Fleet — dockerized cross-service tests with mocks and seed data."
     project_id: flippin-balls/integration-tests
     repo_path: /repos/integration-tests
     auto_merge: true
@@ -490,6 +509,7 @@ projects:
         deploy_target: none
 
   kagent-agents:
+    description: "Bolt-on GitOps repo for team-authored kagent agents on the flashback-fleet cluster"
     project_id: flippin-balls/kagent-agents
     repo_path: /repos/kagent-agents
     auto_merge: true
@@ -508,6 +528,7 @@ projects:
         deploy_target: none
 
   log-analyzer:
+    description: "analyze all the logs"
     project_id: flippin-balls/log-analyzer
     repo_path: /repos/log-analyzer
     auto_merge: true
@@ -526,6 +547,7 @@ projects:
         deploy_target: none
 
   lora-nodes:
+    description: "Base station and embedded machine nodes"
     project_id: flippin-balls/lora-nodes
     repo_path: /repos/lora-nodes
     auto_merge: true
@@ -547,6 +569,7 @@ projects:
         deploy_target: none
 
   lora-pi-monitor:
+    description: "LoRa Pi fleet monitor (fault detection, systemd watchdogs)"
     project_id: flippin-balls/lora-pi-monitor
     repo_path: /repos/lora-pi-monitor
     auto_merge: true
@@ -570,6 +593,7 @@ projects:
         deploy_target: none
 
   management-api:
+    description: "FastAPI REST API for user wallet interactions — token purchases, balances, and payouts."
     project_id: flippin-balls/management-api
     repo_path: /repos/management-api
     auto_merge: true
@@ -593,6 +617,7 @@ projects:
         deploy_target: none
 
   management-dashboard:
+    description: "manage me"
     project_id: flippin-balls/management-dashboard
     repo_path: /repos/management-dashboard
     auto_merge: true
@@ -618,6 +643,7 @@ projects:
         deploy_target: none
 
   mcp-minions:
+    description: "MCP server to orchestrate the minions"
     project_id: flippin-balls/mcp-minions
     repo_path: /repos/mcp-minions
     auto_merge: true
@@ -641,6 +667,7 @@ projects:
         deploy_target: none
 
   parts-db:
+    description: "Parts inventory database — configuration and Dockerfile."
     project_id: flippin-balls/parts-db
     repo_path: /repos/parts-db
     auto_merge: true
@@ -662,6 +689,7 @@ projects:
         deploy_target: none
 
   pinball-db:
+    description: "The pinball catalog behind db.flashbackfleet.com — Python ETL and catalog data."
     project_id: flippin-balls/pinball-db
     repo_path: /repos/pinball-db
     auto_merge: true
@@ -719,6 +747,7 @@ projects:
         deploy_target: none
 
   playfield-relay:
+    description: "ESP-IDF firmware for the in-machine LoRa relay endpoint — receives commands and fires coin pulses."
     project_id: flippin-balls/playfield-relay
     repo_path: /repos/playfield-relay
     auto_merge: true
@@ -740,6 +769,7 @@ projects:
         deploy_target: none
 
   requisition-device-cli:
+    description: "Unified fbf CLI for device provisioning, flashing, and lifecycle management."
     project_id: flippin-balls/requisition-device-cli
     repo_path: /repos/requisition-device-cli
     auto_merge: true
@@ -763,6 +793,7 @@ projects:
         deploy_target: none
 
   store-front:
+    description: "Do account things with credits and stuff"
     project_id: flippin-balls/store-front
     repo_path: /repos/store-front
     auto_merge: true
@@ -790,6 +821,7 @@ projects:
         deploy_target: none
 
   storefront-api:
+    description: "Read-only public FastAPI service for browsing venues, machines, and promotions."
     project_id: flippin-balls/storefront-api
     repo_path: /repos/storefront-api
     auto_merge: true
@@ -813,6 +845,7 @@ projects:
         deploy_target: none
 
   ui-integration-tests:
+    description: "End-to-end Playwright tests for Flashback Fleet UIs, with Allure reporting."
     project_id: flippin-balls/ui-integration-tests
     repo_path: /repos/ui-integration-tests
     auto_merge: true
@@ -838,6 +871,7 @@ projects:
         deploy_target: none
 
   wallet-api:
+    description: "all things wallet"
     project_id: flippin-balls/wallet-api
     repo_path: /repos/wallet-api
     auto_merge: true
