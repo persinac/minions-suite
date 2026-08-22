@@ -74,6 +74,55 @@ def _mock_engine(db):
 # ---------------------------------------------------------------------------
 
 
+class TestRenderAvailableServices:
+    """The list the arbiter routes from. Job 9a1aeba4 misrouted to a docs repo
+    that rendered as a bare name — no language, no description, nothing saying
+    what the repo was for. The description on each line is the fix."""
+
+    @staticmethod
+    def _registry():
+        from minions.project_registry import ProjectConfig, ServiceTarget
+
+        return {
+            "flashback-cns": ProjectConfig(
+                name="flashback-cns",
+                project_id="flippin-balls/flashback-cns",
+                description="MQTT/LoRa command routing services",
+                services={"flashback-cns": ServiceTarget(name="flashback-cns", project_id="flippin-balls/flashback-cns", language="python")},
+            ),
+            "flashback-process": ProjectConfig(
+                name="flashback-process",
+                project_id="flippin-balls/flashback-process",
+                description="Cross-repo process, runbook, and design docs",
+                services={"flashback-process": ServiceTarget(name="flashback-process", project_id="flippin-balls/flashback-process")},
+            ),
+        }
+
+    def test_every_line_carries_the_project_description(self):
+        from minions.engine.dev import render_available_services
+
+        rendered = render_available_services(self._registry())
+
+        assert "`flashback-cns` (python) — project: flashback-cns — MQTT/LoRa command routing services" in rendered
+        assert "`flashback-process` — project: flashback-process — Cross-repo process, runbook, and design docs" in rendered
+
+    def test_a_project_without_a_description_still_renders(self):
+        """The lint test demands descriptions in the deployed registry, but the
+        renderer must not crash on a hand-rolled config that lacks one."""
+        from minions.engine.dev import render_available_services
+        from minions.project_registry import ProjectConfig, ServiceTarget
+
+        registry = {"api": ProjectConfig(name="api", project_id="o/api", services={"api": ServiceTarget(name="api")})}
+
+        assert "- `api` — project: api" in render_available_services(registry)
+
+    def test_an_empty_registry_renders_none(self):
+        """build_agent_prompt skips a None context; '' would add an empty section."""
+        from minions.engine.dev import render_available_services
+
+        assert render_available_services({}) is None
+
+
 class TestSpecAnalystCompletion:
     async def test_task_marked_done_on_success(self, db):
         """When spec analyst agent finishes 'done', its task should be marked DONE."""
@@ -148,6 +197,40 @@ class TestArbiterCompletion:
         arbiter_tasks = [t for t in tasks if t.agent_role == AgentRole.ARBITER]
         assert len(arbiter_tasks) == 1
         assert arbiter_tasks[0].status == TaskStatus.FAILED
+
+    async def test_the_original_ticket_reaches_the_arbiter(self, db):
+        """Refinement REPLACES job.spec and can drop the one repo name the
+        ticket contained — probe 97c5e836 lost `flashback-cns` that way, and
+        the arbiter then had nothing to route on. The raw ticket must ride
+        along in the context the arbiter actually receives."""
+        from minions.engine.dev import launch_arbiter
+
+        job = await db.create_job("fix the router lag — code is in flashback-cns")
+        await db.update_job_spec(job.id, "Refined: unblock the event loop.\n\n## Assumptions\nNone")
+        await db.update_job_status(job.id, JobStatus.SPEC_READY)
+        engine = _mock_engine(db)
+        engine._run_in_process.return_value = _make_agent(role=AgentRole.ARBITER, status="done")
+
+        await launch_arbiter(engine, job)
+
+        context = engine._run_in_process.call_args.kwargs["context"]
+        assert "flashback-cns" in context, "the raw ticket's repo name must survive into the arbiter's context"
+        assert "Original Ticket" in context
+
+    async def test_an_unrefined_spec_is_not_duplicated_into_the_context(self, db):
+        """No refinement happened — original_spec is unset (or identical), and
+        appending it would just repeat the spec the arbiter already has."""
+        from minions.engine.dev import launch_arbiter
+
+        job = await db.create_job("plain ticket, never refined")
+        await db.update_job_status(job.id, JobStatus.SPEC_READY)
+        engine = _mock_engine(db)
+        engine._run_in_process.return_value = _make_agent(role=AgentRole.ARBITER, status="done")
+
+        await launch_arbiter(engine, job)
+
+        context = engine._run_in_process.call_args.kwargs["context"]
+        assert context is None or "Original Ticket" not in context
 
 
 # ---------------------------------------------------------------------------

@@ -613,6 +613,36 @@ async def launch_spec_analyst(engine: JobEngine, job: Job):
         await engine._on_job_terminal(job.id)
 
 
+def render_available_services(registry) -> str | None:
+    """The service list the arbiter routes from, one line per service.
+
+    Each line carries the project's DESCRIPTION, because the name alone is the
+    whole reason job 9a1aeba4 misrouted: `flashback-process` rendered as a bare
+    name — no language, no hint that it is a docs repo — and the arbiter picked
+    it for a flashback-cns code task. The description is the only "what is this
+    repo for" signal a role with no read tools will ever get.
+
+    Returns None when the registry has no services, matching the previous
+    inline behaviour (build_agent_prompt skips an empty context).
+    """
+    lines = []
+    for project in registry.values():
+        if not project.services:
+            continue
+        for svc_name, svc in project.services.items():
+            if svc.language:
+                lang_str = f" ({svc.language})"
+            else:
+                lang_str = ""
+            line = f"- `{svc_name}`{lang_str} — project: {project.name}"
+            if project.description:
+                line += f" — {project.description}"
+            lines.append(line)
+    if not lines:
+        return None
+    return "## Available Services\n\nWhen creating tasks, use one of these service names:\n" + "\n".join(lines)
+
+
 async def launch_arbiter(engine: JobEngine, job: Job):
     """Launch the arbiter agent to break down the spec into tasks."""
     if await engine._has_running_agent(job.id, AgentRole.ARBITER):
@@ -645,16 +675,20 @@ async def launch_arbiter(engine: JobEngine, job: Job):
     await engine._nats_agent_status(job.id, agent.id, "arbiter", "launched")
     await engine._trello_comment(job, f"Arbiter started (agent={agent.id[:8]})")
 
-    # Build context with available services so the arbiter knows valid service names
-    available_services = []
-    for project in engine.registry.values():
-        if project.services:
-            for svc_name, svc in project.services.items():
-                lang_str = f" ({svc.language})" if svc.language else ""
-                available_services.append(f"- `{svc_name}`{lang_str} — project: {project.name}")
-    services_context = None
-    if available_services:
-        services_context = "## Available Services\n\nWhen creating tasks, use one of these service names:\n" + "\n".join(available_services)
+    services_context = render_available_services(engine.registry)
+
+    # The raw ticket rides along. Refinement REPLACES job.spec, and probe
+    # 97c5e836 showed it can drop the one repo name the ticket contained —
+    # leaving the arbiter to route on nothing. The original wording is the
+    # evidence the routing rules in arbiter.md tell it to use, and the
+    # create_task grounding guard already scans it; the arbiter must see the
+    # same text the guard will judge it against.
+    if job.original_spec and job.original_spec.strip() != (job.spec or "").strip():
+        ticket_context = f"## Original Ticket\n\nThe refined spec above may have dropped details. The raw ticket:\n\n{job.original_spec}"
+        if services_context:
+            services_context = f"{services_context}\n\n{ticket_context}"
+        else:
+            services_context = ticket_context
 
     if engine._k8s_enabled:
         prompt = engine._maybe_dry_run(build_agent_prompt(job, task, None, None, services_context))

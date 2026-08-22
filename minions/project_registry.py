@@ -76,6 +76,11 @@ class ProjectConfig:
     gitlab_url: str = ""
     repo_path: str = ""  # local clone path (optional, for watch mode)
     model: str = ""  # override per-project, empty = use default
+    # What the repo is FOR, from the GitHub repo description. The arbiter routes
+    # tasks from a name list alone; a bare name gave it nothing to tell a docs
+    # repo from a service and it once sent a flashback-cns code task to
+    # flashback-process (job 9a1aeba4).
+    description: str = ""
     review_profile: ReviewProfile = field(default_factory=ReviewProfile)
     ignore_paths: list[str] = field(default_factory=list)
     auto_approve_paths: list[str] = field(default_factory=list)
@@ -200,6 +205,7 @@ def build_registry(config_path: str) -> dict[str, ProjectConfig]:
             gitlab_url=proj.get("gitlab_url", default_gitlab_url),
             repo_path=proj.get("repo_path", ""),
             model=proj.get("model", default_model),
+            description=proj.get("description", ""),
             review_profile=_parse_profile(proj.get("review_profile", {})),
             ignore_paths=proj.get("ignore_paths", []),
             auto_approve_paths=proj.get("auto_approve_paths", []),

@@ -51,6 +51,18 @@ class TestServiceNames:
 
         assert not empty, f"Projects with no services: {empty}"
 
+    def test_every_project_has_a_description(self, projects):
+        """The arbiter routes from the service list, and the description is the
+        only "what is this repo for" signal that list carries. A bare name is
+        how job 9a1aeba4 sent a flashback-cns code task to flashback-process
+        (a docs repo). The file is regenerated from the GitHub App
+        installation, and the generator lives outside this repo — so this test
+        is what keeps a regeneration from silently dropping the descriptions:
+        set them on the GitHub repo (`gh repo edit -d`), not only here."""
+        undescribed = [name for name, project in projects.items() if not (project.get("description") or "").strip()]
+
+        assert not undescribed, f"Projects with no description: {undescribed}"
+
 
 class TestServiceTargets:
     def test_every_service_has_a_clone_url(self, projects):
