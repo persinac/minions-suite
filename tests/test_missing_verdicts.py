@@ -17,10 +17,10 @@ missing_verdicts() is the discriminator. It is deliberately conservative:
 whenever anything actually objects it returns nothing, so a caller acting on it
 can only ever short-circuit the no-objection case and fail-closed is untouched.
 
-NOT yet wired into the review handler. It is committed on its own because the
-call site restructures control flow in a function that runs on every review, and
-that change deserves its own pass rather than being made while a job is in
-flight — which is exactly what I started doing and backed out of.
+Wired into run_task_review since 0.8.43: when it names silent reviewers, they
+are re-run once (bounded, budget-checked) before aggregation, which still fails
+closed if the silence persists. tests/engine/test_review_fanout.py
+(TestSilenceIsRerunNotRevised) pins the wiring; this file pins the discriminator.
 """
 
 import pytest

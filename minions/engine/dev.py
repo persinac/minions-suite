@@ -1226,6 +1226,41 @@ async def _run_one_specialist(
     return specialty, verdict
 
 
+async def _collect_verdicts(
+    engine: JobEngine,
+    job: Job,
+    task: Task,
+    specialties: list[str],
+    project,
+    service,
+    mr_id: str,
+    mr_info: dict,
+    provider,
+    review_context: str,
+) -> dict[str, str | None]:
+    """Run the given specialists concurrently, mapping each to its verdict.
+
+    A specialist that raised maps to None — the same contract as
+    _run_one_specialist itself: one blowing up must not take the others with it,
+    and aggregate_verdicts fails closed on the None.
+    """
+    import asyncio
+
+    results = await asyncio.gather(
+        *[_run_one_specialist(engine, job, task, specialty, project, service, mr_id, mr_info, provider, review_context) for specialty in specialties],
+        return_exceptions=True,
+    )
+
+    verdicts: dict[str, str | None] = {}
+    for specialty, outcome in zip(specialties, results, strict=False):
+        if isinstance(outcome, BaseException):
+            logger.error("Reviewer %s raised for task %s: %s", specialty, task.id, outcome)
+            verdicts[specialty] = None
+        else:
+            verdicts[specialty] = outcome[1]
+    return verdicts
+
+
 async def run_task_review(engine: JobEngine, job: Job, task: Task):
     """Fan out expert reviewers across a task's PR, then act on their verdict.
 
@@ -1233,9 +1268,7 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
     diff, so a Python-only PR wakes three specialists rather than five. That
     conditionality is the cost control — each is a full agent run.
     """
-    import asyncio
-
-    from ..reviewers import APPROVE, aggregate_verdicts, cap_specialists, capped_specialists, infer_specialists, skipped_specialists
+    from ..reviewers import APPROVE, aggregate_verdicts, cap_specialists, capped_specialists, infer_specialists, missing_verdicts, skipped_specialists
     from .review import create_engineer_provider, create_reviewer_provider
 
     # A fan-out either happened for this PR or it did not. Checking per-specialty
@@ -1401,22 +1434,12 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
             job.id, "review_approvals_carried", "engine", f"task={task.id} carried={','.join(sorted(carried))} rerun={','.join(to_run)}"
         )
 
-    results = await asyncio.gather(
-        *[_run_one_specialist(engine, job, task, specialty, project, service, mr_id, mr_info, provider, review_context) for specialty in to_run],
-        return_exceptions=True,
-    )
-
     # Seeded with the carried approvals so aggregation sees the whole panel. A
     # skipped specialist absent from this dict would read as a MISSING verdict,
     # and aggregate_verdicts fails closed — so the saving would have turned every
     # revision into an automatic request_changes.
     verdicts: dict[str, str | None] = dict(carried)
-    for specialty, outcome in zip(to_run, results, strict=False):
-        if isinstance(outcome, BaseException):
-            logger.error("Reviewer %s raised for task %s: %s", specialty, task.id, outcome)
-            verdicts[specialty] = None
-        else:
-            verdicts[specialty] = outcome[1]
+    verdicts.update(await _collect_verdicts(engine, job, task, to_run, project, service, mr_id, mr_info, provider, review_context))
 
     if engine._k8s_enabled:
         # Dispatched to the cluster; verdicts arrive asynchronously.
@@ -1427,6 +1450,39 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
     if not current_task or current_task.status != TaskStatus.IN_REVIEW:
         logger.info("Fan-out finished but task %s is now %s — skipping verdict", task.id, current_task.status if current_task else "gone")
         return
+
+    # Silence is not an objection. missing_verdicts names the specialists that
+    # returned nothing usable — and only when nothing actually objected, so
+    # acting on it can never skip a revision that was genuinely requested. Those
+    # reviewers get ONE more run instead of their silence being laundered into a
+    # revision: job 33c89d9b's forced revision flipped the verdict on
+    # byte-identical code, and 2b63f1b6 revised a PR nobody had objected to. If
+    # the re-run is silent too, aggregation below still fails closed.
+    silent = missing_verdicts(verdicts)
+    if silent and engine.config.job_cost_limit_usd > 0:
+        usage = await engine.db.get_job_usage(job.id)
+        spent = float(usage.get("total_cost_usd") or 0.0)
+        if spent >= engine.config.job_cost_limit_usd:
+            # Chasing the missing answer would breach the ceiling; degrade to
+            # the fail-closed aggregate rather than spending more.
+            message = (
+                f"Job {job.id} has spent ${spent:.2f}, at or over its ${engine.config.job_cost_limit_usd:.2f} limit — not re-running silent reviewers"
+            )
+            logger.warning(message)
+            await engine.db.record_event(job.id, "job_cost_limit_exceeded", "engine", message)
+            silent = []
+    if silent:
+        logger.info("No objection, but no verdict from %s for task %s — re-running them once", ", ".join(silent), task.id)
+        await engine.db.record_event(job.id, "review_silent_rerun", "engine", f"task={task.id} rerun={','.join(silent)}")
+        verdicts.update(await _collect_verdicts(engine, job, task, silent, project, service, mr_id, mr_info, provider, review_context))
+
+        # Same staleness window as above — the re-run took real time.
+        current_task = await engine.db.get_task(task.id)
+        if not current_task or current_task.status != TaskStatus.IN_REVIEW:
+            logger.info(
+                "Silent-reviewer re-run finished but task %s is now %s — skipping verdict", task.id, current_task.status if current_task else "gone"
+            )
+            return
 
     verdict, reason = aggregate_verdicts(verdicts)
     logger.info("Aggregated review verdict for task %s: %s (%s)", task.id, verdict, reason)
