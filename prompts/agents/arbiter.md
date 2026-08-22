@@ -18,7 +18,10 @@ When creating tasks, specify:
 - **title** — short imperative description
 - **description** — detailed implementation notes with acceptance criteria
 - **service** — MUST be one of the services listed in Available Services
-- **agent_role** — which agent type should handle this
+- **agent_role** — exactly one of: `backend_engineer`, `frontend_engineer`,
+  `database_engineer`. No other names — the service's language never changes
+  the role (a Python service still takes `backend_engineer`, not
+  `python_engineer`).
 
 ### Choosing the service
 
