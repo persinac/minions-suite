@@ -60,7 +60,7 @@ def _seconds_since(timestamp: str | None) -> float:
         return 0.0
     try:
         parsed = datetime.fromisoformat(timestamp)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return 0.0
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
@@ -1267,7 +1267,7 @@ async def _run_one_specialist(
         logger.error("Reviewer %s failed for task %s: %s", specialty, task.id, e, exc_info=True)
         try:
             await engine.db.update_task(reviewer_task.id, status=TaskStatus.FAILED, agent_role="", error=str(e)[:200])
-        except InvalidTransitionError, PreconditionError:
+        except (InvalidTransitionError, PreconditionError):
             pass
         return specialty, None
 
