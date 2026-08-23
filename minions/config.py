@@ -455,6 +455,7 @@ class Config:
 
     # Langfuse (optional, LLM observability)
     langfuse_public_key: str = ""
+    slack_webhook_url: str = ""
     langfuse_secret_key: str = ""
     langfuse_host: str = "https://cloud.langfuse.com"
 
@@ -578,6 +579,7 @@ class Config:
             use_langgraph_engine=_env_or_bool("USE_LANGGRAPH_ENGINE", _get("langgraph", "use_engine"), True),
             # -- Langfuse (keys are secrets, host is a setting) --
             langfuse_public_key=os.getenv("LANGFUSE_PUBLIC_KEY", ""),  # SECRET
+            slack_webhook_url=os.getenv("SLACK_WEBHOOK_URL", ""),  # SECRET — destination is baked into the URL
             langfuse_secret_key=os.getenv("LANGFUSE_SECRET_KEY", ""),  # SECRET
             langfuse_host=_env_or("LANGFUSE_OTEL_HOST", _get("langfuse", "host"), "https://cloud.langfuse.com"),
         )
