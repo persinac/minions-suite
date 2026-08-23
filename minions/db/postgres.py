@@ -135,17 +135,22 @@ class PostgresDatabase:
     # ===================================================================
 
     async def get_cost_summary(self, project: str | None = None, days: int = 30) -> dict:
+        # Every job type counts. Until 0.8.56 this filtered on
+        # job_type = 'review' -- a type of which zero jobs have ever existed --
+        # so `minion --costs` reported $0.0000 for a deployment whose entire
+        # workload was dev jobs. The old "avg_cost_per_review" was also
+        # AVG(a.cost_usd): mean cost per AGENT ROW, mislabelled as per-review.
+        # The average here divides real dollars by real jobs.
         query = f"""
             SELECT
-                COUNT(DISTINCT j.id) as total_reviews,
+                COUNT(DISTINCT j.id) as total_jobs,
+                COUNT(DISTINCT j.id) FILTER (WHERE j.job_type = 'review') as review_jobs,
                 COALESCE(SUM(a.cost_usd), 0) as total_cost,
                 COALESCE(SUM(a.input_tokens), 0) as total_input_tokens,
-                COALESCE(SUM(a.output_tokens), 0) as total_output_tokens,
-                COALESCE(AVG(a.cost_usd), 0) as avg_cost_per_review
+                COALESCE(SUM(a.output_tokens), 0) as total_output_tokens
             FROM {JOB_SCHEMA}.jobs j
             LEFT JOIN {JOB_SCHEMA}.agents a ON a.job_id = j.id
-            WHERE j.job_type = 'review'
-            AND j.created_at >= NOW() - INTERVAL '%s days'
+            WHERE j.created_at >= NOW() - INTERVAL '%s days'
         """
         params = [days]
         if project:
@@ -155,12 +160,20 @@ class PostgresDatabase:
         async with self._pool.connection() as conn:
             cur = await conn.execute(query, params)
             row = await cur.fetchone()
+            total_jobs = row["total_jobs"]
+            total_cost = float(row["total_cost"])
+            if total_jobs:
+                avg_cost = total_cost / total_jobs
+            else:
+                avg_cost = 0.0
             return {
-                "total_reviews": row["total_reviews"],
-                "total_cost_usd": round(float(row["total_cost"]), 4),
+                "total_jobs": total_jobs,
+                "review_jobs": row["review_jobs"],
+                "dev_jobs": total_jobs - row["review_jobs"],
+                "total_cost_usd": round(total_cost, 4),
                 "total_input_tokens": row["total_input_tokens"],
                 "total_output_tokens": row["total_output_tokens"],
-                "avg_cost_per_review": round(float(row["avg_cost_per_review"]), 4),
+                "avg_cost_per_job": round(avg_cost, 4),
                 "period_days": days,
             }
 

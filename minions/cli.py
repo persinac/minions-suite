@@ -873,9 +873,9 @@ async def _show_costs(config: Config, project: str | None = None) -> None:
     print(f"\n=== Cost Summary (last {summary['period_days']} days) ===")
     if project:
         print(f"Project: {project}")
-    print(f"  Total reviews: {summary['total_reviews']}")
-    print(f"  Total cost:    ${summary['total_cost_usd']:.4f}")
-    print(f"  Avg per review: ${summary['avg_cost_per_review']:.4f}")
+    print(f"  Total jobs:   {summary['total_jobs']} (dev {summary['dev_jobs']}, review {summary['review_jobs']})")
+    print(f"  Total cost:   ${summary['total_cost_usd']:.4f}")
+    print(f"  Avg per job:  ${summary['avg_cost_per_job']:.4f}")
     print(f"  Total tokens:  {summary['total_input_tokens'] + summary['total_output_tokens']:,}")
 
     await db.close()

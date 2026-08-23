@@ -270,15 +270,14 @@ class SQLiteDatabase:
     async def get_cost_summary(self, project: str | None = None, days: int = 30) -> dict:
         base_query = """
             SELECT
-                COUNT(DISTINCT j.id) as total_reviews,
+                COUNT(DISTINCT j.id) as total_jobs,
+                COUNT(DISTINCT j.id) FILTER (WHERE j.job_type = 'review') as review_jobs,
                 COALESCE(SUM(a.cost_usd), 0) as total_cost,
                 COALESCE(SUM(a.input_tokens), 0) as total_input_tokens,
-                COALESCE(SUM(a.output_tokens), 0) as total_output_tokens,
-                COALESCE(AVG(a.cost_usd), 0) as avg_cost_per_review
+                COALESCE(SUM(a.output_tokens), 0) as total_output_tokens
             FROM jobs j
             LEFT JOIN agents a ON a.job_id = j.id
-            WHERE j.job_type = 'review'
-            AND j.created_at >= datetime('now', ?)
+            WHERE j.created_at >= datetime('now', ?)
         """
         params: list = [f"-{days} days"]
         if project:
@@ -287,12 +286,20 @@ class SQLiteDatabase:
 
         cursor = await self._db.execute(base_query, params)
         row = await cursor.fetchone()
+        total_jobs = row["total_jobs"]
+        total_cost = float(row["total_cost"])
+        if total_jobs:
+            avg_cost = total_cost / total_jobs
+        else:
+            avg_cost = 0.0
         return {
-            "total_reviews": row["total_reviews"],
-            "total_cost_usd": round(row["total_cost"], 4),
+            "total_jobs": total_jobs,
+            "review_jobs": row["review_jobs"],
+            "dev_jobs": total_jobs - row["review_jobs"],
+            "total_cost_usd": round(total_cost, 4),
             "total_input_tokens": row["total_input_tokens"],
             "total_output_tokens": row["total_output_tokens"],
-            "avg_cost_per_review": round(row["avg_cost_per_review"], 4),
+            "avg_cost_per_job": round(avg_cost, 4),
             "period_days": days,
         }
 

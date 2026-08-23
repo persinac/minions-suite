@@ -99,6 +99,7 @@ STATUS_CSS = {
     "deploying": "#ffc107",
     "deployed": "#4caf50",
     "done": "#4caf50",
+    "no_work_needed": "#26a69a",
     "failed": "#f44336",
     "pending": "#888",
     "in_progress": "#ffc107",
@@ -590,7 +591,7 @@ async def index():
         # Summary counts
         async with db.execute("SELECT COUNT(*) as c FROM jobs") as cur:
             total = (await cur.fetchone())["c"]
-        async with db.execute("SELECT COUNT(*) as c FROM jobs WHERE status NOT IN ('done','failed')") as cur:
+        async with db.execute("SELECT COUNT(*) as c FROM jobs WHERE status NOT IN ('done','failed','no_work_needed')") as cur:
             active = (await cur.fetchone())["c"]
         async with db.execute("SELECT COUNT(*) as c FROM jobs WHERE status = 'done'") as cur:
             done = (await cur.fetchone())["c"]
@@ -633,8 +634,14 @@ def _render_summary_cards(total: int, active: int, done: int, failed: int, total
 
 
 async def _render_job_list(db) -> str:
-    async with db.execute("SELECT * FROM jobs ORDER BY created_at DESC") as cur:
+    # LIMIT: this list re-renders on a 5s HTMX poll, and unbounded meant every
+    # job ever, each with its own task-count query, every 5 seconds, forever.
+    async with db.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 100") as cur:
         jobs = [dict(r) for r in await cur.fetchall()]
+
+    # One aggregate for every job's spend beats a per-row query in the loop.
+    async with db.execute("SELECT job_id, COALESCE(SUM(cost_usd), 0.0) as c FROM agents GROUP BY job_id") as cur:
+        job_costs = {r["job_id"]: r["c"] for r in await cur.fetchall()}
 
     if not jobs:
         return '<p style="color:#8b949e">No jobs yet.</p>'
@@ -671,6 +678,7 @@ async def _render_job_list(db) -> str:
             <div class="job-spec">{spec_preview}</div>
             <div class="job-meta">
                 <span>{age}</span>
+                <span>${job_costs.get(job_id, 0.0):.2f}</span>
                 {tc_html}
             </div>
             {error_html}
@@ -687,7 +695,7 @@ async def api_summary_html():
     try:
         async with db.execute("SELECT COUNT(*) as c FROM jobs") as cur:
             total = (await cur.fetchone())["c"]
-        async with db.execute("SELECT COUNT(*) as c FROM jobs WHERE status NOT IN ('done','failed')") as cur:
+        async with db.execute("SELECT COUNT(*) as c FROM jobs WHERE status NOT IN ('done','failed','no_work_needed')") as cur:
             active = (await cur.fetchone())["c"]
         async with db.execute("SELECT COUNT(*) as c FROM jobs WHERE status = 'done'") as cur:
             done = (await cur.fetchone())["c"]
