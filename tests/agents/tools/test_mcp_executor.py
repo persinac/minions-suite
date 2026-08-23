@@ -55,6 +55,7 @@ class TestStateToolInjections:
             "create_trello_tech_debt",
             "update_task_status",
             "report_pr",
+            "report_no_work_needed",
             "report_deploy_status",
             "submit_subtask_plan",
             "get_subtasks",
