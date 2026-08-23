@@ -1292,6 +1292,24 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
     async def complete_subtask(subtask_id: str, result: str | None = None) -> str:
         """Mark a subtask as completed with optional result."""
         try:
+            current = await db.get_subtask(subtask_id)
+            if not current:
+                return json.dumps({"error": f"Subtask {subtask_id} not found"})
+            if current.status == SubtaskStatus.COMPLETED:
+                # Idempotent: re-reporting done work is agreement, not an error.
+                return json.dumps({"subtask_id": subtask_id, "status": "completed"})
+            if current.status == SubtaskStatus.PENDING:
+                # The machine requires pending -> running -> completed, but an
+                # agent reporting completion on a pending subtask has plainly
+                # done the work and merely skipped start_subtask. Refusing cost
+                # job 3b8b8ba9 its first attempt: "Invalid subtask transition:
+                # pending -> completed" names no remedy, the agent gave up, and
+                # "finished with incomplete subtasks" consumed the attempt.
+                # Walk the legal path on its behalf instead.
+                if _nats_client:
+                    await _propose_transition("subtask", subtask_id, "running")
+                else:
+                    await db.update_subtask(subtask_id, status=SubtaskStatus.RUNNING, started_at=_now())
             if _nats_client:
                 kwargs = {}
                 if result:
@@ -1309,7 +1327,9 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
             # treating a cooldown as a permanent refusal.
             return json.dumps({"error": str(e), "retryable": True, "retry_after_seconds": e.retry_after_seconds})
         except InvalidTransitionError as e:
-            return json.dumps({"error": str(e)})
+            # The refusal must carry its remedy — a bare "invalid transition"
+            # is what agents give up on.
+            return json.dumps({"error": f"{e}. If the work is genuinely done, call start_subtask first, then complete_subtask."})
 
     @mcp.tool()
     async def fail_subtask(subtask_id: str, error: str) -> str:
