@@ -120,6 +120,27 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
 
     async def _on_job_terminal(self, job_id: str):
         """Upload artifacts to S3 and archive memory when a job reaches a terminal state."""
+        # Tell the human first — the DM must not depend on the uploader or the
+        # archiver surviving. Deduped through the events table because failure
+        # paths can reach this hook more than once, and two DMs for one job
+        # reads like two jobs. Best-effort throughout: a Slack outage that
+        # failed jobs would invert the point of notifications entirely.
+        if self.config.slack_webhook_url:
+            try:
+                from ..notify import notify, terminal_message
+
+                events = await self.db.get_events(job_id)
+                if not any(e.get("event_type") == "notify_terminal" for e in events):
+                    job = await self.db.get_job(job_id)
+                    if job:
+                        tasks = await self.db.get_tasks(job_id)
+                        usage = await self.db.get_job_usage(job_id)
+                        cost = float(usage.get("total_cost_usd") or 0.0)
+                        if await notify(self.config.slack_webhook_url, terminal_message(job, tasks, cost)):
+                            await self.db.record_event(job_id, "notify_terminal", "engine", "terminal DM sent")
+            except Exception:
+                logger.exception("Failed to send terminal notification for job %s", job_id)
+
         if self._artifact_uploader and self._artifact_uploader.is_enabled():
             try:
                 prefix = await self._artifact_uploader.upload_job_artifacts(job_id)
