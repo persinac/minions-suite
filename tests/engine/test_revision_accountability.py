@@ -185,3 +185,40 @@ class TestFeedbackWiringUnchanged:
 
         source = inspect.getsource(_fetch_pr_review_bodies)
         assert "_as_checklist(bodies)" in source
+
+
+PERSONA_FORMAT_REVIEW = """## Findings
+[CRITICAL][PY] app/service.py:42 — race on the balance update
+[WARNING][API] app/routes.py:7 — missing auth check
+"""
+
+INLINE_PREFIX_REVIEW = """**[BLOCKER]** the retry loop never terminates (app/retry.py:12)
+Some prose in between.
+- **[WARNING]** dropped error context (app/retry.py:30)
+"""
+
+
+class TestRealWorldFormatsAreExtracted:
+    """The original pattern demanded a lowercase bulleted bold — an
+    intersection nothing emits. The personas write [SEV][TAG] plain lines and
+    post_inline_comment writes an UPPERCASED bold; both must produce a
+    numbered checklist, because the fallback prose framing is what let job
+    793821e8 skip findings for four rounds."""
+
+    def test_the_persona_tagged_format_is_extracted(self):
+        out = _as_checklist([PERSONA_FORMAT_REVIEW])
+
+        assert "2 finding(s)" in out
+        assert "CRITICAL" in out and "app/service.py:42" in out
+
+    def test_the_uppercase_bold_format_is_extracted_with_and_without_bullets(self):
+        out = _as_checklist([INLINE_PREFIX_REVIEW])
+
+        assert "2 finding(s)" in out
+        assert "BLOCKER" in out and "app/retry.py:12" in out
+
+    def test_mixed_formats_pool_into_one_ordered_list(self):
+        out = _as_checklist([PERSONA_FORMAT_REVIEW, INLINE_PREFIX_REVIEW])
+
+        assert "4 finding(s)" in out
+        assert out.index("race on the balance") < out.index("retry loop never terminates"), "document order survives the merge"

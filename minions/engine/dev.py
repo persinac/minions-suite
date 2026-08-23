@@ -60,7 +60,7 @@ def _seconds_since(timestamp: str | None) -> float:
         return 0.0
     try:
         parsed = datetime.fromisoformat(timestamp)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return 0.0
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
@@ -1126,19 +1126,56 @@ async def _fetch_pr_review_bodies(engine: JobEngine, task: Task) -> str:
         return ""
 
     blocking = [r for r in reviews if r.get("state") == "CHANGES_REQUESTED"]
-    chosen = blocking or reviews
-    if not chosen:
+    others = [r for r in reviews if r.get("state") != "CHANGES_REQUESTED"]
+    # Blocking bodies lead, but the others are NOT dropped: an approving
+    # reviewer's body regularly carries real findings ("LGTM, but..."), and
+    # `blocking or reviews` discarded every one of them the moment anyone
+    # blocked -- the measured cost was a checklist of 2 items against a
+    # review text of 5.
+    chosen = blocking + others
+
+    # The personas are told their findings are posted as INLINE comments on
+    # the PR -- and those live on a different endpoint this function never
+    # read, so the most precise feedback (file:line) never reached a revision.
+    # Best effort: a failure here must not cost the review bodies too.
+    inline: list[str] = []
+    try:
+        result = subprocess.run(
+            ["gh", "api", f"repos/{repo}/pulls/{number}/comments", "--jq", "[.[] | {path, line: (.line // .original_line), body}]"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0:
+            for c in _json.loads(result.stdout or "[]"):
+                body = " ".join(str(c.get("body", "")).split())
+                if body:
+                    inline.append(f"- {body} ({c.get('path', '?')}:{c.get('line') or '?'})")
+        else:
+            logger.warning("Could not fetch PR inline comments for %s#%s: %s", repo, number, (result.stderr or "")[:160])
+    except Exception as e:
+        logger.warning("Could not fetch PR inline comments for %s#%s: %s", repo, number, e)
+
+    if not chosen and not inline:
         return ""
 
-    logger.info("Loaded %d PR review(s) as revision feedback for task %s", len(chosen), task.id)
+    logger.info("Loaded %d PR review(s) and %d inline comment(s) as revision feedback for task %s", len(chosen), len(inline), task.id)
     bodies = [r.get("body", "") for r in chosen]
+    if inline:
+        bodies.append("## Inline comments on the diff\n" + "\n".join(inline))
     return _as_checklist(bodies)
 
 
-# Reviewer findings are markdown bullets of the shape
-#   - **[warning]** path/to/file.py:26 — what is wrong
-# emitted by the specialist personas. Captures severity, location and text.
-_FINDING_RE = re.compile(r"^\s*[-*]\s+\*\*\[(?P<sev>[a-z]+)\]\*\*\s*(?P<rest>.+?)\s*$", re.MULTILINE)
+# Reviewer findings arrive in two real shapes:
+#   **[WARNING]** what is wrong (path.py:26)   -- post_inline_comment prefixes
+#     bodies with an UPPERCASED bold severity, bulleted or not
+#   [CRITICAL][PY] path.py:42 — what is wrong  -- the persona prompts' own
+#     format: all-caps severity + domain tag, no bullet, no bold
+# The original single pattern demanded a lowercase bulleted bold -- an
+# intersection nothing actually emits -- so the checklist never fired and
+# every revision fell through to the prose fallback.
+_FINDING_BOLD_RE = re.compile(r"^\s*(?:[-*]\s+)?\*\*\[(?P<sev>[a-z]+)\]\*\*\s*(?P<rest>.+?)\s*$", re.MULTILINE | re.IGNORECASE)
+_FINDING_TAGGED_RE = re.compile(r"^\s*\[(?P<sev>[A-Z]{2,})\]\[[A-Z0-9]{1,8}\]\s*(?P<rest>.+?)\s*$", re.MULTILINE)
 
 
 def _as_checklist(bodies: list[str]) -> str:
@@ -1162,7 +1199,12 @@ def _as_checklist(bodies: list[str]) -> str:
     weaker instructions than one that matches the regex.
     """
     joined = "\n\n---\n\n".join(b for b in bodies if b)
-    findings = [m.group("sev").upper() + " — " + " ".join(m.group("rest").split()) for m in _FINDING_RE.finditer(joined)]
+    matches = sorted(
+        [(m.start(), m.group("sev"), m.group("rest")) for m in _FINDING_BOLD_RE.finditer(joined)]
+        + [(m.start(), m.group("sev"), m.group("rest")) for m in _FINDING_TAGGED_RE.finditer(joined)],
+        key=lambda t: t[0],
+    )
+    findings = [sev.upper() + " — " + " ".join(rest.split()) for _, sev, rest in matches]
 
     if findings:
         numbered = "\n".join(f"{i}. [ ] {f}" for i, f in enumerate(findings, 1))
@@ -1267,7 +1309,7 @@ async def _run_one_specialist(
         logger.error("Reviewer %s failed for task %s: %s", specialty, task.id, e, exc_info=True)
         try:
             await engine.db.update_task(reviewer_task.id, status=TaskStatus.FAILED, agent_role="", error=str(e)[:200])
-        except InvalidTransitionError, PreconditionError:
+        except (InvalidTransitionError, PreconditionError):
             pass
         return specialty, None
 
