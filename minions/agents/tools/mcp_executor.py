@@ -91,6 +91,10 @@ _STATE_TOOL_INJECTIONS: dict[str, list[tuple[str, str]]] = {
     "create_trello_tech_debt": [("job_id", "job_id")],
     "update_task_status": [("task_id", "task_id")],
     "report_pr": [("task_id", "task_id")],
+    # Terminal no-PR close. Absent from this map until 0.8.49, the schema
+    # offered it to engineers while execute() answered "Unknown tool" --
+    # NO_WORK_NEEDED was unreachable from any in-process engineer.
+    "report_no_work_needed": [("task_id", "task_id")],
     "report_deploy_status": [("task_id", "task_id")],
     "submit_subtask_plan": [("task_id", "task_id")],
     "get_subtasks": [("task_id", "task_id")],
