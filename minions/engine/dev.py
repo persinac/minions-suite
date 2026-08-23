@@ -1295,6 +1295,50 @@ async def _collect_verdicts(
     return verdicts
 
 
+async def _ensure_reviewer_checkout(engine: JobEngine, job: Job, task: Task, service) -> None:
+    """Give the reviewer panel a real tree to read.
+
+    The in-process engineer path creates /repos/<service> before the engineer
+    runs; external dispatch never does -- the herder works in its own clone,
+    and the panel's file tools then point at a directory that does not exist.
+    read_file blames the FILE, search_code errors, and list_files answers []
+    as if the repo were empty rather than absent. Job 7ba724fd's first panel
+    launched exactly that blind.
+
+    Best effort by design: a review has always been able to proceed on the
+    diff alone, and still can -- but a missing tree is now recorded rather
+    than silent.
+    """
+    clone_url = getattr(service, "clone_url", None)
+    repo_path = getattr(service, "repo_path", None)
+    # projects.yaml gives strings; anything else is misconfiguration, and git
+    # would be invoked against it.
+    if not isinstance(clone_url, str) or not clone_url:
+        return
+    if not isinstance(repo_path, str) or not repo_path:
+        return
+    if not task.branch_name:
+        # Without the PR branch there is nothing correct to check out, and
+        # moving an in-process engineer's tree back to the default branch
+        # would be strictly worse than leaving it where it is.
+        return
+
+    from ..repos import ensure_checkout
+
+    ok = False
+    try:
+        ok = await ensure_checkout(clone_url, repo_path, default_branch=task.branch_name)
+    except Exception as e:
+        logger.warning("Reviewer checkout %s (%s) failed: %s", repo_path, task.branch_name, str(e)[:120])
+    if not ok:
+        await engine.db.record_event(
+            job.id,
+            "review_checkout_missing",
+            "engine",
+            f"task={task.id} path={repo_path} branch={task.branch_name} -- reviewers see the diff only",
+        )
+
+
 async def run_task_review(engine: JobEngine, job: Job, task: Task):
     """Fan out expert reviewers across a task's PR, then act on their verdict.
 
@@ -1365,6 +1409,8 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
             mr_id = match.group(1)
 
     project, service = engine._resolve_service(task.service)
+
+    await _ensure_reviewer_checkout(engine, job, task, service)
 
     # Fetch the diff as well as the file list: the DBA trigger keys on SQL and
     # ORM tokens in the diff, which no path pattern reveals.
