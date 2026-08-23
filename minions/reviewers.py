@@ -221,6 +221,31 @@ def missing_verdicts(verdicts: dict[str, str | None]) -> list[str]:
     return sorted(s for s, v in resolved.items() if v is None)
 
 
+def discussing_specialists(verdicts: dict[str, str | None]) -> list[str]:
+    """Specialties that answered DISCUSS, when the round is otherwise decisive.
+
+    A discuss verdict has no forum to land in — no human is watching an
+    autonomous run — so the specialists who asked for one get ONE more run
+    with an instruction to commit, the same shape as missing_verdicts.
+
+    Returns [] when anyone requested changes (a revision is happening
+    regardless, and the discussion points ride along in the review text) or
+    when anyone returned nothing usable (aggregation fails closed to
+    request_changes there, and re-asking a discusser cannot change that).
+    So, like missing_verdicts, acting on this can only ever affect the round
+    where discussion is the sole thing standing between the PR and a verdict.
+    """
+    if not verdicts:
+        return []
+
+    resolved = {s: normalise_verdict(v) for s, v in verdicts.items()}
+    if any(v == REQUEST_CHANGES for v in resolved.values()):
+        return []
+    if any(v is None for v in resolved.values()):
+        return []
+    return sorted(s for s, v in resolved.items() if v == DISCUSS)
+
+
 def aggregate_verdicts(verdicts: dict[str, str | None]) -> tuple[str, str]:
     """Collapse per-specialty verdicts into one decision.
 

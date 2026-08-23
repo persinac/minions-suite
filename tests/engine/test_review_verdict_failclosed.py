@@ -37,8 +37,12 @@ class TestMissingVerdictFailsClosed:
     def test_merge_is_unreachable_without_an_explicit_approval(self):
         """Anything short of approval must return before the merge call.
 
-        aggregate_verdicts collapses a missing verdict to request_changes, and
-        that branch — plus the discuss branch — must exit ahead of merge_mr.
+        aggregate_verdicts collapses a missing verdict to request_changes.
+        A persisting discuss verdict is DOWNGRADED to request_changes right
+        after aggregation (it used to have its own exit via
+        _retry_or_fail_review, which wedged on the fan-out guard), so the
+        request_changes branch is the single non-approval exit — and it must
+        sit ahead of merge_mr.
         """
         import inspect
 
@@ -46,14 +50,18 @@ class TestMissingVerdictFailsClosed:
 
         source = inspect.getsource(dev.run_task_review)
         aggregated = source.index("aggregate_verdicts(verdicts)")
-        blocked = source.index('if verdict == "request_changes":')
         discuss = source.index('if verdict == "discuss":')
+        blocked = source.index('if verdict == "request_changes":')
         merge_call = source.index("merge_provider.merge_mr")
 
-        assert aggregated < blocked < discuss < merge_call, "non-approval branches must precede the merge"
-        # Both guards have to leave the function, not merely log.
-        assert source[blocked:discuss].count("return") >= 1
-        assert source[discuss:merge_call].count("return") >= 1
+        assert aggregated < discuss < blocked < merge_call, "the discuss downgrade and the blocking exit must precede the merge"
+        # The downgrade must feed the blocking branch, not bypass it.
+        assert 'verdict = "request_changes"' in source[discuss:blocked]
+        # The blocking branch has to leave the function, not merely log.
+        assert source[blocked:merge_call].count("return") >= 1
+        # The wedge road is closed: nothing routes a verdict back through
+        # _retry_or_fail_review, whose PR_OPEN bounce dies on the fan-out guard.
+        assert "_retry_or_fail_review" not in source[aggregated:]
 
 
 class TestRetryOrFail:
