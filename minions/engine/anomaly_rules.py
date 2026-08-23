@@ -25,7 +25,7 @@ class Anomaly:
     suggested_action: str  # "retry_agent", "fail_job", "advance_job", "alert_only"
 
 
-async def check_stuck_tasks(db: AbstractDatabase, stuck_threshold_minutes: int = 15) -> list[Anomaly]:
+async def check_stuck_tasks(db: AbstractDatabase, stuck_threshold_minutes: int = 15, engineer_dispatch: str = "in_process") -> list[Anomaly]:
     """Detect tasks stuck at IN_PROGRESS with no subtask activity for too long."""
     anomalies: list[Anomaly] = []
     active_jobs = await db.get_active_jobs()
@@ -42,11 +42,39 @@ async def check_stuck_tasks(db: AbstractDatabase, stuck_threshold_minutes: int =
                 if updated.tzinfo is None:
                     updated = updated.replace(tzinfo=UTC)
                 elapsed_minutes = (now - updated.timestamp()) / 60.0
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 continue
 
             if elapsed_minutes < stuck_threshold_minutes:
                 continue
+
+            if task.status == "in_progress":
+                agent = await db.get_agent_for_task(task.id)
+                agent_live = agent is not None and agent.status in ("starting", "running")
+
+                if agent_live and str(agent.model or "").startswith("herder:"):
+                    # A working herder is invisible to this rule: herders create
+                    # no subtasks and send no heartbeats (3 heartbeat rows exist
+                    # system-wide against ~60 agents), so fifteen quiet minutes
+                    # is a healthy herder's NORMAL profile, not a stuck task.
+                    # Job 7ba724fd lost all three attempts to this rule — twice
+                    # here, once via the fallback it triggered — while its
+                    # herder was running pytest the whole time. A herder that
+                    # claimed and then DIED is the stale-claim detector's job
+                    # (herder_work_timeout_seconds, engine/dev.py), which keys
+                    # off agent age because age is the only signal a herder
+                    # emits. Once it marks the agent failed, this skip stops
+                    # applying and normal recovery resumes.
+                    continue
+
+                if not agent_live and engineer_dispatch == "external":
+                    # No live agent under external dispatch is a published work
+                    # item waiting for a claim, not a stuck task. The claim
+                    # wait is owned by herder_claim_timeout_seconds
+                    # (engine/dev.py); a retry from here consumes one of the
+                    # task's attempts without any agent ever having run — job
+                    # 3b8b8ba9's attempt 2 vanished exactly that way.
+                    continue
 
             subtasks = await db.get_subtasks(task.id)
             has_recent_activity = False
@@ -63,7 +91,7 @@ async def check_stuck_tasks(db: AbstractDatabase, stuck_threshold_minutes: int =
                         if (now - st_time.timestamp()) / 60.0 < stuck_threshold_minutes:
                             has_recent_activity = True
                             break
-                    except (ValueError, TypeError):
+                    except ValueError, TypeError:
                         continue
 
             if has_recent_activity:

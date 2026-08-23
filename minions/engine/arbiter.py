@@ -21,10 +21,13 @@ logger = logging.getLogger(__name__)
 class Arbiter:
     """Central coordination service for state transitions via NATS request/reply."""
 
-    def __init__(self, db: AbstractDatabase, timeout_config: TimeoutConfig, nats_client: NatsClient):
+    def __init__(self, db: AbstractDatabase, timeout_config: TimeoutConfig, nats_client: NatsClient, engineer_dispatch: str = "in_process"):
         self.db = db
         self.timeout_config = timeout_config
         self.nats_client = nats_client
+        # The stuck-task rule needs to know whether external herders are in
+        # play: a herder's silence is not evidence of a stuck task.
+        self.engineer_dispatch = engineer_dispatch
         self._monitor_task: asyncio.Task | None = None
         self._running = False
 
@@ -292,7 +295,7 @@ class Arbiter:
         for rule_fn in ALL_RULES:
             try:
                 if rule_fn.__name__ == "check_stuck_tasks":
-                    anomalies = await rule_fn(self.db, self.timeout_config.stuck_task_threshold_minutes)
+                    anomalies = await rule_fn(self.db, self.timeout_config.stuck_task_threshold_minutes, self.engineer_dispatch)
                 else:
                     anomalies = await rule_fn(self.db)
             except Exception:

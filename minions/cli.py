@@ -401,7 +401,7 @@ async def _run_server(config: Config) -> None:
         from .engine.arbiter import Arbiter
         from .server.mcp import set_nats_client
 
-        arbiter = Arbiter(db, TimeoutConfig(), nats_client)
+        arbiter = Arbiter(db, TimeoutConfig(), nats_client, engineer_dispatch=config.engineer_dispatch)
         set_nats_client(nats_client)
 
     # Start all components
@@ -524,7 +524,7 @@ async def _run_trello_only(config: Config) -> None:
         from .engine.arbiter import Arbiter
         from .server.mcp import set_nats_client
 
-        arbiter = Arbiter(db, TimeoutConfig(), nats_client)
+        arbiter = Arbiter(db, TimeoutConfig(), nats_client, engineer_dispatch=config.engineer_dispatch)
         set_nats_client(nats_client)
 
     engine_task = asyncio.create_task(job_engine.start(), name="job-engine")
