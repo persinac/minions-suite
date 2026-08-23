@@ -476,39 +476,3 @@ async def advance_job_via_graph(engine, job, checkpointer=None) -> None:
     }
 
     await graph.ainvoke(initial_state, config)
-
-
-async def resume_from_checkpoint(engine, job_id: str, checkpointer) -> bool:
-    """Attempt to resume a job from its last checkpoint.
-
-    Returns True if a checkpoint was found and resumed, False otherwise.
-    """
-    if not checkpointer:
-        return False
-
-    config = {
-        "configurable": {"thread_id": job_id},
-        "recursion_limit": GRAPH_RECURSION_LIMIT,
-    }
-
-    job = await engine.db.get_job(job_id)
-    if not job:
-        return False
-
-    job_type = getattr(job, "job_type", "dev") or "dev"
-    if job_type == "review":
-        graph = build_review_job_graph(checkpointer=checkpointer)
-    else:
-        graph = build_job_graph(checkpointer=checkpointer)
-
-    try:
-        state = await graph.aget_state(config)
-        if state and state.values:
-            logger.info("Resuming job %s from checkpoint", job_id)
-            # Update engine reference (not persisted in checkpoint)
-            await graph.ainvoke(None, config)
-            return True
-    except Exception as e:
-        logger.warning("Could not resume job %s from checkpoint: %s", job_id, e)
-
-    return False
