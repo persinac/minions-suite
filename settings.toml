@@ -119,7 +119,17 @@ agent_dispatch_mode = "in_process"
 
 [default.database]
 pool_min = 2
-pool_max = 10
+# The connection budget must fit the server: max_connections is 25 on the
+# shared instance (~22 usable after superuser slots), and THREE processes run
+# this config -- engine, dashboard, input-sources -- so pool_max is a
+# per-process cap. 3 x 6 = 18 leaves headroom for dbmate and ad-hoc psql.
+# 3 x 10 = 30 did not fit by construction, and the engine poll loop ate a
+# 30s PoolTimeout on 2026-08-23 to prove it.
+#
+# If starvation returns, the next lever is SPLITTING pools by purpose inside
+# the engine (agent tool traffic vs the poll loop) so a burst of agent reads
+# cannot starve the loop -- not raising this number.
+pool_max = 6
 
 [default.nats]
 enabled = false

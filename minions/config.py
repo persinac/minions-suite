@@ -163,7 +163,7 @@ class Config:
     # Database
     postgres_url: str = ""
     postgres_pool_min: int = 2
-    postgres_pool_max: int = 10
+    postgres_pool_max: int = 6
 
     # Agent settings
     agent_timeout: int = 600
@@ -520,7 +520,7 @@ class Config:
             # -- Database --
             postgres_url=_build_postgres_url(),  # secret — always from env
             postgres_pool_min=_env_or_int("PG_POOL_MIN", _get("database", "pool_min"), 2),
-            postgres_pool_max=_env_or_int("PG_POOL_MAX", _get("database", "pool_max"), 10),
+            postgres_pool_max=_env_or_int("PG_POOL_MAX", _get("database", "pool_max"), 6),
             # -- Git (secrets from env, settings from TOML) --
             git_provider=_env_or("GIT_PROVIDER", _get("git", "provider"), "gitlab"),
             gitlab_url=_env_or("GITLAB_URL", _get("git", "gitlab_url"), ""),

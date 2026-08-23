@@ -509,22 +509,18 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
     # =========================================================================
 
     async def _startup_cleanup(self):
-        """Detect orphaned agents from a prior unclean shutdown and recover their tasks."""
-        # If LangGraph engine is enabled, attempt checkpoint-based resume first
-        if self.config.use_langgraph_engine:
-            try:
-                from .checkpointer import create_checkpointer
-                from .job_graph import resume_from_checkpoint
+        """Detect orphaned agents from a prior unclean shutdown and recover their tasks.
 
-                checkpointer = await create_checkpointer(self.config)
-                active_jobs = await self.db.get_active_jobs()
-                for job in active_jobs:
-                    resumed = await resume_from_checkpoint(self, job.id, checkpointer)
-                    if resumed:
-                        logger.info("Startup cleanup: resumed job %s from LangGraph checkpoint", job.id)
-            except Exception as e:
-                logger.warning("LangGraph checkpoint resume failed, falling back to standard cleanup: %s", e)
-
+        No checkpoint resume happens here, on purpose. A ceremony used to run
+        first: build an AsyncPostgresSaver (its own connection pool), run
+        setup(), and loop every active job through a checkpoint lookup. It
+        never once resumed anything — the graph is compiled with
+        checkpointer=None in _advance, so no checkpoint was ever written to
+        find — and the pool it opened was never closed, which mattered on a
+        server with max_connections=25 shared by three processes. The
+        DB-status-driven poll loop below IS the resume mechanism, and it has
+        carried every restart since the graph engine shipped.
+        """
         logger.info("Startup cleanup: checking for orphaned agents...")
         orphaned_count = 0
         recovered_count = 0
