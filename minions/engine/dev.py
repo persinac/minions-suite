@@ -1346,7 +1346,7 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
     diff, so a Python-only PR wakes three specialists rather than five. That
     conditionality is the cost control — each is a full agent run.
     """
-    from ..reviewers import APPROVE, aggregate_verdicts, cap_specialists, capped_specialists, infer_specialists, missing_verdicts, skipped_specialists
+    from ..reviewers import APPROVE, aggregate_verdicts, cap_specialists, capped_specialists, discussing_specialists, infer_specialists, missing_verdicts, skipped_specialists
     from .review import create_engineer_provider, create_reviewer_provider
 
     # A fan-out either happened for this PR or it did not. Checking per-specialty
@@ -1564,9 +1564,57 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
             )
             return
 
+    # A discuss verdict has no forum to land in. The old handler bounced the
+    # task to PR_OPEN via _retry_or_fail_review, and the re-entry died on the
+    # fan-out guard: the discuss round's DONE reviewer tasks match the same
+    # (pr_url, revision_count), so the guard returned before any verdict
+    # handling, attempt never moved again, and the task sat IN_REVIEW forever.
+    # Nastiest part: DISCUSS aggregates only when NOBODY objected, so one
+    # benign "let's discuss" among approvals wedged the whole job.
+    #
+    # Same medicine as silence (the re-run above): the discussers get ONE more
+    # run, told to commit. discussing_specialists returns [] when anyone
+    # objected or went silent, so this can only fire when indecision is the
+    # sole thing standing between the PR and a verdict.
+    discussing = discussing_specialists(verdicts)
+    if discussing and engine.config.job_cost_limit_usd > 0:
+        usage = await engine.db.get_job_usage(job.id)
+        spent = float(usage.get("total_cost_usd") or 0.0)
+        if spent >= engine.config.job_cost_limit_usd:
+            message = f"Job {job.id} has spent ${spent:.2f}, at or over its ${engine.config.job_cost_limit_usd:.2f} limit -- not re-asking discussers"
+            logger.warning(message)
+            await engine.db.record_event(job.id, "job_cost_limit_exceeded", "engine", message)
+            discussing = []
+    if discussing:
+        logger.info("Discussion requested by %s for task %s -- re-asking them to commit", ", ".join(discussing), task.id)
+        await engine.db.record_event(job.id, "review_discuss_rerun", "engine", f"task={task.id} rerun={','.join(discussing)}")
+        decide_context = review_context + (
+            "\n\nNOTE: a previous pass answered 'discuss'. There is no discussion forum in this "
+            "pipeline. Re-review and commit to a verdict: approve, or request_changes with "
+            "concrete findings."
+        )
+        verdicts.update(await _collect_verdicts(engine, job, task, discussing, project, service, mr_id, mr_info, provider, decide_context))
+
+        # Same staleness window as the silent re-run -- this took real time.
+        current_task = await engine.db.get_task(task.id)
+        if not current_task or current_task.status != TaskStatus.IN_REVIEW:
+            logger.info("Discuss re-ask finished but task %s is now %s -- skipping verdict", task.id, current_task.status if current_task else "gone")
+            return
+
     verdict, reason = aggregate_verdicts(verdicts)
     logger.info("Aggregated review verdict for task %s: %s (%s)", task.id, verdict, reason)
     await engine.db.record_event(job.id, "review_aggregated", "engine", f"task={task.id} verdict={verdict} {reason}")
+
+    if verdict == "discuss":
+        # Still discussing after the re-ask (or the re-ask was skipped for
+        # budget). Persistent indecision is an unresolved concern: fail closed
+        # into the bounded revision path, where max_revisions owns the loop and
+        # the engineer answers the discussion points in the PR. Never back to
+        # PR_OPEN -- that road wedges on the fan-out guard.
+        logger.warning("Discussion unresolved for task %s -- failing closed to request_changes (%s)", task.id, reason)
+        await engine.db.record_event(job.id, "review_discuss_failclosed", "engine", f"task={task.id} {reason[:120]}")
+        verdict = "request_changes"
+        reason = f"discussion unresolved after re-ask: {reason}"
 
     if verdict == "request_changes":
         # Covers a genuine objection AND a missing verdict — aggregate_verdicts
@@ -1577,14 +1625,6 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
             logger.info("Review requested changes, task %s -> IN_PROGRESS for revision", task.id)
         except (InvalidTransitionError, PreconditionError) as e:
             logger.warning("Could not transition task %s for revision: %s", task.id, e)
-        return
-
-    if verdict == "discuss":
-        # No human is watching an autonomous run, so "needs discussion" cannot
-        # mean "wait indefinitely". Treat it as blocking and leave it for a human.
-        message = f"Reviewers want discussion, not approval: {reason}"
-        logger.warning("%s (task %s)", message, task.id)
-        await _retry_or_fail_review(engine, task, message)
         return
 
     # Approved.
