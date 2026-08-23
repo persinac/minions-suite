@@ -825,6 +825,23 @@ async def run_engineer(
         checkpoint_summary = await build_checkpoint_summary(engine, task.id)
         prior_error = task.error or "Unknown error"
         branch_name = task.branch_name
+
+        # A previous attempt may have pushed real work that the DB knows
+        # nothing about: report_pr verifies before recording, so an attempt
+        # that pushed and THEN died (label failure, refused report) leaves the
+        # branch on the remote and branch_name empty here. Generating a fresh
+        # name at that point ORPHANS the pushed work -- job 3b8b8ba9's attempt
+        # 3 rewrote four completed subtasks from scratch on a new branch while
+        # attempt 1's finished branch sat on origin. Ask the remote before
+        # inventing a name. Best effort: on any failure this is [] and the
+        # behavior is exactly the old one.
+        from ..repos import find_job_branches
+
+        pushed = await find_job_branches(service.clone_url, job.id[:8])
+        if pushed:
+            await engine.db.record_event(job.id, "retry_branch_detected", "engine", f"task={task.id} branches={','.join(pushed)}")
+        if not branch_name and pushed:
+            branch_name = pushed[0]
         if not branch_name:
             short_job_id = job.id[:8]
             slug = task.title.lower().replace(" ", "-")[:30]
@@ -855,6 +872,14 @@ async def run_engineer(
             return
 
         context = f"## Retry Context (attempt {task.attempt}/{task.max_attempts})\n\nPrior error: {prior_error}\n\n{checkpoint_summary}"
+        if pushed:
+            context += (
+                f"\n\n## Pushed work from a previous attempt\n"
+                f"Branch(es) already on the remote for this job: {', '.join(pushed)}.\n"
+                f"Fetch and check out {branch_name} FIRST and resume from it. The work there is "
+                f"real -- subtasks the ledger shows completed were done on that branch. Do not "
+                f"re-plan or rewrite it from scratch."
+            )
 
     elif is_revision:
         branch_name = task.branch_name
@@ -1346,7 +1371,16 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
     diff, so a Python-only PR wakes three specialists rather than five. That
     conditionality is the cost control — each is a full agent run.
     """
-    from ..reviewers import APPROVE, aggregate_verdicts, cap_specialists, capped_specialists, discussing_specialists, infer_specialists, missing_verdicts, skipped_specialists
+    from ..reviewers import (
+        APPROVE,
+        aggregate_verdicts,
+        cap_specialists,
+        capped_specialists,
+        discussing_specialists,
+        infer_specialists,
+        missing_verdicts,
+        skipped_specialists,
+    )
     from .review import create_engineer_provider, create_reviewer_provider
 
     # A fan-out either happened for this PR or it did not. Checking per-specialty

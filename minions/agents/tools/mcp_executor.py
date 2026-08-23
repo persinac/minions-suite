@@ -509,28 +509,38 @@ class McpToolExecutor:
             except Exception as e:
                 logger.warning("GitLab create_mr failed, falling back to git push: %s", e)
 
-        # GitHub: use gh CLI + add labels after
+        # GitHub. The PR is the deliverable and the label is bookkeeping, so
+        # they are separate steps: `gh pr create --label` resolves labels
+        # BEFORE creating anything, and the per-job label can never pre-exist.
+        # Job 3b8b8ba9's engineer finished all its code and then died right
+        # here -- "could not add label: 'minions-job-3b8b8ba9' not found" --
+        # with the PR never created. (GitLab above is untouched: its API
+        # creates labels implicitly.)
+        code, out, err = await self._run_gh("pr", "create", "--title", title, "--body", body, "--base", base)
+        if code != 0:
+            return json.dumps({"error": f"gh pr create failed: {err[:300]}"})
+        pr_url = out.strip()
+
+        # Best effort from here down: never fail a created PR over its label.
+        label = labels[0]
+        code, _, err = await self._run_gh("label", "create", label, "--color", "5319E7", "--description", "Opened by a minion agent.")
+        if code != 0 and "already exists" not in err:
+            logger.warning("Could not create label %s: %s", label, err[:120])
+        code, _, err = await self._run_gh("pr", "edit", pr_url, "--add-label", label)
+        if code != 0:
+            logger.warning("Could not label PR %s with %s: %s", pr_url, label, err[:120])
+        return json.dumps({"pr_url": pr_url, "created": True})
+
+    async def _run_gh(self, *args: str) -> tuple[int, str, str]:
         proc = await asyncio.create_subprocess_exec(
             "gh",
-            "pr",
-            "create",
-            "--title",
-            title,
-            "--body",
-            body,
-            "--base",
-            base,
-            "--label",
-            ",".join(labels),
+            *args,
             cwd=self.working_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            return json.dumps({"error": f"gh pr create failed: {stderr.decode()[:300]}"})
-        pr_url = stdout.decode().strip()
-        return json.dumps({"pr_url": pr_url, "created": True})
+        return proc.returncode, stdout.decode(), stderr.decode()
 
     async def _check_ci_status(self, args: dict) -> str:
         pr_url = args.get("pr_url", "")

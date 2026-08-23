@@ -224,3 +224,40 @@ async def ensure_checkout(
 
     logger.info("Cloned %s", dest)
     return True
+
+
+async def find_job_branches(clone_url: str, short_job_id: str) -> list[str]:
+    """Branches already pushed to the remote for this job, sorted.
+
+    A retry that cannot see a previous attempt's pushed branch re-plans and
+    rewrites everything from scratch: job 3b8b8ba9's attempt 3 recreated four
+    completed subtasks' worth of work on a fresh branch while attempt 1's
+    finished, pushed branch sat on the remote, because report_pr had been
+    refused and branch_name was never recorded — the DB knew nothing, and
+    nobody asked the remote.
+
+    `git ls-remote` needs no checkout. The pattern matches the job id anywhere
+    in the name because agents have spelled it both feat/job-<id>/<slug> and
+    feat-job-<id>-<slug> within the same day. Failure (network, auth, no such
+    remote) returns [] — the caller behaves exactly as before this existed.
+    """
+    if not clone_url or not short_job_id:
+        return []
+
+    await configure_git()
+
+    from .providers.github_app import refresh_env_token
+
+    await refresh_env_token()
+
+    code, out = await _run_git("ls-remote", "--heads", clone_url, f"*job-{short_job_id}*", timeout=60)
+    if code != 0:
+        logger.warning("ls-remote against %s failed (%s): %s", clone_url, code, out[:200])
+        return []
+
+    branches = []
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) == 2 and parts[1].startswith("refs/heads/"):
+            branches.append(parts[1].removeprefix("refs/heads/"))
+    return sorted(branches)
