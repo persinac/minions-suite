@@ -130,7 +130,7 @@ class TestDeployHandoff:
     """A NO_WORK_NEEDED task must not strand the job in MERGED.
 
     Job c2b97f39 sat in MERGED for two days on engineer tasks of
-    {done, no_work_needed}. launch_deploy_monitor's terminal set was
+    {done, no_work_needed}. advance_merged_job's terminal set was
     (DONE, FAILED), so `all_done` was False and the `if not merged_tasks`
     branch fell through to a bare `return` — re-run silently on every tick.
 
@@ -151,37 +151,37 @@ class TestDeployHandoff:
 
     async def test_a_no_work_needed_task_does_not_wedge_the_job(self, db, monkeypatch):
         """The exact shape of c2b97f39."""
-        from minions.engine.deploy import launch_deploy_monitor
+        from minions.engine.deploy import advance_merged_job
 
         job_id = await self._merged_job(db, [(TaskStatus.NO_WORK_NEEDED, ""), (TaskStatus.DONE, "code_reviewer")])
 
         engine = _engine(db, monkeypatch)
-        await launch_deploy_monitor(engine, await db.get_job(job_id))
+        await advance_merged_job(engine, await db.get_job(job_id))
 
         job = await db.get_job(job_id)
         assert job.status == JobStatus.DEPLOYED, f"job wedged in {job.status}; it must leave MERGED"
 
     async def test_every_task_finding_nothing_also_leaves_merged(self, db, monkeypatch):
-        from minions.engine.deploy import launch_deploy_monitor
+        from minions.engine.deploy import advance_merged_job
 
         job_id = await self._merged_job(db, [(TaskStatus.NO_WORK_NEEDED, ""), (TaskStatus.NO_WORK_NEEDED, "")])
 
         engine = _engine(db, monkeypatch)
-        await launch_deploy_monitor(engine, await db.get_job(job_id))
+        await advance_merged_job(engine, await db.get_job(job_id))
 
         assert (await db.get_job(job_id)).status == JobStatus.DEPLOYED
 
     async def test_it_does_not_advance_on_a_genuinely_unfinished_task(self, db, monkeypatch):
         """Control: the fix widens the terminal set, it must not empty it. An
         engineer still working is not a reason to declare the job deployed."""
-        from minions.engine.deploy import launch_deploy_monitor
+        from minions.engine.deploy import advance_merged_job
 
         job_id = await self._merged_job(db, [(TaskStatus.NO_WORK_NEEDED, "")])
         extra = await db.create_task(Task(job_id=job_id, title="wip", description="d", service="svc9", agent_role=AgentRole.BACKEND_ENGINEER))
         await db.update_task(extra.id, status=TaskStatus.IN_PROGRESS)
 
         engine = _engine(db, monkeypatch)
-        await launch_deploy_monitor(engine, await db.get_job(job_id))
+        await advance_merged_job(engine, await db.get_job(job_id))
 
         assert (await db.get_job(job_id)).status == JobStatus.MERGED
 
