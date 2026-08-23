@@ -41,7 +41,11 @@ from minions.engine import job_graph
 # is precisely the case the pre-0.8.39 router mistook for "route again".
 WAITING_CASES = [
     ("dev-dev_in_progress", "dev", JobStatus.DEV_IN_PROGRESS),
-    ("dev-deploying", "dev", JobStatus.DEPLOYING),
+    # dev-deploying left this list in 0.8.53: DEPLOYING stopped being a waiting
+    # state when the deploy leg was retired — check_deployed now HEALS a parked
+    # job forward (deployment is delegated to each repo's own CD), and healing
+    # is progress, not a yield. test_deploying_is_healed_not_parked below owns
+    # that contract at this same dispatch layer.
     ("review-review_in_progress", "review", JobStatus.REVIEW_IN_PROGRESS),
 ]
 
@@ -144,6 +148,23 @@ async def test_waiting_state_yields_instead_of_spinning(e2e_engine, db, graph_sp
 
     assert graph_spy["routes"], "router never consulted"
     assert graph_spy["routes"][-1] == "__end__", f"router did not yield; returned {graph_spy['routes'][-1]!r}"
+
+
+async def test_deploying_is_healed_not_parked(e2e_engine, db, caplog):
+    """Since the deploy leg's retirement, DEPLOYING is a legacy state: nothing
+    produces it any more, and a job found there was left by the pre-0.8.53
+    monitor that could never conclude. The dispatch layer must advance it —
+    through DEPLOYED to DONE — rather than treat it as work in flight."""
+    job = await _job_in_state(db, "dev", JobStatus.DEPLOYING)
+
+    with caplog.at_level(logging.WARNING, logger="minions.engine.job_engine"):
+        await e2e_engine._advance(job)
+
+    assert not _fallbacks(caplog), f"graph degraded to the legacy dispatcher: {_fallbacks(caplog)}"
+    after = await db.get_job(job.id)
+    assert after.status == JobStatus.DONE, f"a legacy DEPLOYING job must heal forward, not park (got {after.status})"
+    healed = [e for e in await db.get_events(job.id) if e.get("event_type") == "deploy_healed"]
+    assert healed, "the heal must leave a trace"
 
 
 @pytest.mark.parametrize(("label", "kind", "status"), WAITING_CASES, ids=[c[0] for c in WAITING_CASES])

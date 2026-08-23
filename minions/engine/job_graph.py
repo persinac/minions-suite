@@ -215,14 +215,14 @@ async def check_review_node(state: JobGraphState) -> dict:
 
 
 async def deploy_node(state: JobGraphState) -> dict:
-    """Launch the deploy monitor."""
+    """Complete a MERGED job -- deployment is delegated to the repo's own CD."""
     from . import deploy
 
     engine = state["engine"]
     job = await engine.db.get_job(state["job_id"])
 
     try:
-        await deploy.launch_deploy_monitor(engine, job)
+        await deploy.advance_merged_job(engine, job)
     except Exception as e:
         logger.error("deploy_node failed: %s", e, exc_info=True)
         return {"error": str(e)[:500], "current_phase": "fail"}
@@ -233,7 +233,7 @@ async def deploy_node(state: JobGraphState) -> dict:
 
 
 async def check_deploy_node(state: JobGraphState) -> dict:
-    """Check if deployment is complete."""
+    """Heal a job left parked at DEPLOYING by the pre-0.8.53 monitor."""
     from . import deploy
 
     engine = state["engine"]

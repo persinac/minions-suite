@@ -677,7 +677,7 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
             elif job.status == JobStatus.DEV_IN_PROGRESS:
                 await dev.manage_dev_tasks(self, job)
             elif job.status == JobStatus.MERGED:
-                await deploy.launch_deploy_monitor(self, job)
+                await deploy.advance_merged_job(self, job)
             elif job.status == JobStatus.DEPLOYING:
                 await deploy.check_deployed(self, job)
             elif job.status == JobStatus.DEPLOYED:
