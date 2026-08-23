@@ -60,6 +60,7 @@ class TrelloPoller:
             await self._resolve_list_ids()
             await self._resolve_minion_label()
             await self._rehydrate_active()
+            await self._reconcile_stranded_cards()
             self._running = True
             logger.info(
                 "Trello poller started -- board=%s poll=%ds",
@@ -128,6 +129,77 @@ class TrelloPoller:
                 }
         if self._active:
             logger.info("Rehydrated %d active job(s) from DB", len(self._active))
+
+    async def _reconcile_stranded_cards(self):
+        """Move cards whose job finished while this poller was not watching.
+
+        _monitor_jobs walks only the in-memory _active dict, and
+        _rehydrate_active can repopulate it solely from get_active_jobs() --
+        which excludes terminal jobs by definition. So a job that reaches its
+        terminal state while this process is down is invisible to the poller
+        forever: nothing revisits the card, and it sits in "In progress" with
+        no mechanism left that could ever move it.
+
+        Not hypothetical, and not rare. Card 1MJtZ4rq sat there for 24 hours
+        after job 43a3e937 merged PR #142, with no card-move event recorded at
+        all, and the 2026-08-19 checkpoint carries an earlier one. Every
+        release restarts this process, and nine shipped on 2026-08-23 alone --
+        each one an open window.
+
+        Startup is the right moment: the window this closes is the restart
+        that just happened, the in-progress list is small, and it runs once.
+
+        Ownership is decided by the DATABASE, not the label: a card minions
+        never picked up has no job row, so it cannot be touched here, while a
+        card whose label a human stripped is still recovered. Reading the list
+        unfiltered also keeps the label-gate warning -- which names on-deck --
+        from firing about the wrong list.
+        """
+        try:
+            cards = await self._get_cards(self._list_ids[LIST_IN_PROGRESS])
+        except httpx.HTTPError as e:
+            # Never fatal: start() raising takes the whole process down, and a
+            # stranded card is worth strictly less than a running poller.
+            logger.error("Could not read %s to reconcile stranded cards: %s", LIST_IN_PROGRESS, e)
+            return
+
+        reconciled = 0
+        for card in cards:
+            card_id = card.get("id")
+            if not card_id or card_id in self._active:
+                # Already rehydrated: the job is still running and the normal
+                # monitor owns it.
+                continue
+            try:
+                job = await self.db.get_job_by_external_id(card_id)
+            except Exception:
+                logger.exception("Could not look up the job for card %s", card_id[:8])
+                continue
+            if not job or job.status not in TERMINAL_STATUSES:
+                continue
+
+            logger.warning(
+                "Card %s (%r) was stranded in %s: job %s finished as %s while nothing was watching -- moving it now",
+                card_id[:8],
+                card.get("name", "")[:60],
+                LIST_IN_PROGRESS,
+                job.id[:8],
+                job.status,
+            )
+            self._active[card_id] = {
+                "job_id": job.id,
+                "started_at": job.created_at,
+                "card_name": card.get("name", f"(job={job.id[:8]})"),
+            }
+            try:
+                await self._handle_completion(card_id, self._active[card_id], job)
+                reconciled += 1
+            except Exception:
+                logger.exception("Could not reconcile stranded card %s", card_id[:8])
+                self._active.pop(card_id, None)
+
+        if reconciled:
+            logger.info("Reconciled %d stranded card(s) on startup", reconciled)
 
     async def _intake_interval_elapsed(self) -> bool:
         """Whether enough time has passed since the last job to admit another.
