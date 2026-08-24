@@ -297,7 +297,15 @@ class PostgresDatabase:
 
     async def get_job_by_external_id(self, external_id: str) -> Job | None:
         async with self._pool.connection() as conn:
-            cur = await conn.execute(f"SELECT * FROM {JOB_SCHEMA}.jobs WHERE external_id = %s", (external_id,))
+            # Newest first. A card can legitimately be re-queued after a
+            # terminal job -- a misroute closed as no_work_needed, say -- and
+            # then TWO jobs share this external_id. Unordered, the row returned
+            # was arbitrary (physical order, i.e. usually the OLD one), which
+            # would tell _reconcile_stranded_cards that a live card's job is
+            # already terminal and file it to Done underneath the running job.
+            cur = await conn.execute(
+                f"SELECT * FROM {JOB_SCHEMA}.jobs WHERE external_id = %s ORDER BY created_at DESC LIMIT 1", (external_id,)
+            )
             row = await cur.fetchone()
             if not row:
                 return None

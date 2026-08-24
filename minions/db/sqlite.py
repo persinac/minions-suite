@@ -390,7 +390,9 @@ class SQLiteDatabase:
         return [_row_to_job(r) for r in rows]
 
     async def get_job_by_external_id(self, external_id: str) -> Job | None:
-        cursor = await self._db.execute("SELECT * FROM jobs WHERE external_id = ?", (external_id,))
+        # Newest first -- see the PostgreSQL implementation for why a re-queued
+        # card makes the unordered form actively dangerous.
+        cursor = await self._db.execute("SELECT * FROM jobs WHERE external_id = ? ORDER BY created_at DESC LIMIT 1", (external_id,))
         row = await cursor.fetchone()
         if not row:
             return None
