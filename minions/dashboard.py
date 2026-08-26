@@ -31,7 +31,14 @@ def _stringify_row(row: dict) -> dict:
 
 
 class _PgCursorWrapper:
-    """Wraps a psycopg AsyncCursor to match the aiosqlite Row interface."""
+    """Wraps a psycopg AsyncCursor to yield plain JSON-ready dicts.
+
+    The shape (and the `?` placeholders in the queries below) is inherited from
+    the removed SQLite backend. Postgres is the only backend now, so this is
+    dialect translation for no one — but the queries were written against it,
+    so collapsing it means rewriting all 39 placeholder sites at once. Left
+    deliberately; see the note on _PgConnectionWrapper.execute.
+    """
 
     def __init__(self, cursor):
         self._cursor = cursor
@@ -73,7 +80,9 @@ class _PgConnectionWrapper:
 
     @asynccontextmanager
     async def execute(self, sql, params=None):
-        # Translate SQLite ? placeholders to psycopg %s
+        # Translate ? placeholders to psycopg %s. Vestigial — the SQLite backend
+        # these were written for is gone. Kept because the alternative is editing
+        # every query in this file in one pass, against thin test coverage.
         pg_sql = sql.replace("?", "%s")
         # Qualify table names with minions schema (PgBouncer resets search_path)
         for tbl in self._MINION_TABLES:

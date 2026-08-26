@@ -78,7 +78,6 @@ def settings_dir(tmp_path, monkeypatch):
         "AGENT_TIMEOUT",
         "ENGINE_POLL_INTERVAL",
         "MAX_CONCURRENT_REVIEWS",
-        "DB_BACKEND",
         "NATS_ENABLED",
         "GITLAB_ISSUES_ENABLED",
         "GITLAB_ISSUES_POLL_INTERVAL",
