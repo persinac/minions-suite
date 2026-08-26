@@ -267,7 +267,6 @@ async def _run_server(config: Config) -> None:
     from .preflight import print_preflight, run_preflight
     from .project_registry import build_registry
     from .server.mcp import create_server
-    from .server.middleware import ToolAuditMiddleware
 
     # Run preflight checks before anything else
     checks = run_preflight(config)
@@ -365,9 +364,10 @@ async def _run_server(config: Config) -> None:
             memory_store = None
             memory_archiver = None
 
-    # Create MCP server with audit middleware
+    # Create MCP server. create_server() installs the audit middleware itself --
+    # adding it here too gave every MCP tool call two log lines and two rows in
+    # tool_calls, with two independently measured durations.
     mcp = create_server(db, config, tuplespace=memory_tuplespace, memory_enabled=config.memory_enabled)
-    mcp.add_middleware(ToolAuditMiddleware(db))
 
     # Create artifact uploader
     from .artifact_uploader import ArtifactUploader

@@ -60,7 +60,7 @@ def _seconds_since(timestamp: str | None) -> float:
         return 0.0
     try:
         parsed = datetime.fromisoformat(timestamp)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 0.0
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
@@ -1320,7 +1320,7 @@ async def _run_one_specialist(
         logger.error("Reviewer %s failed for task %s: %s", specialty, task.id, e, exc_info=True)
         try:
             await engine.db.update_task(reviewer_task.id, status=TaskStatus.FAILED, agent_role="", error=str(e)[:200])
-        except (InvalidTransitionError, PreconditionError):
+        except InvalidTransitionError, PreconditionError:
             pass
         return specialty, None
 
@@ -2106,22 +2106,29 @@ async def manage_dev_tasks(engine: JobEngine, job: Job):
     if not all_terminal:
         return
 
+    # Every branch below writes a job status, and every one of those writes is
+    # legal only from DEV_IN_PROGRESS. Two advances can race into this block --
+    # both read the job as dev_in_progress, the first writes, and the second
+    # then attempts an illegal self-edge. `merged -> merged` is not an edge, so
+    # it raises, manage_dev_node catches the exception and records the job
+    # FAILED -- and a job whose PR merged cleanly is filed as a failure, its
+    # Trello card left stranded in In progress.
+    #
+    # Job 1e7a3d17 is the worked example: PR flashback-cns#179 merged at
+    # 04:15:43 on 2026-08-26 and the job was marked failed one second later.
+    # Losing this race is a no-op, not an error -- the winner has already done
+    # exactly what this call was going to do.
+    current = await engine.db.get_job(job.id)
+    if current is not None and current.status != JobStatus.DEV_IN_PROGRESS:
+        logger.info("Job %s already advanced to %s — another advance won the race, nothing to do", job.id, current.status)
+        return
+
     all_failed = all(t.status == TaskStatus.FAILED for t in dev_tasks)
     if all_failed:
         await engine.db.update_job_status(job.id, JobStatus.FAILED, error="All dev tasks failed")
         await engine._on_job_terminal(job.id)
         return
 
-    # Every engineer looked and found the work already present. That is a
-    # legitimate outcome, not a failure, and it must not advance the job to
-    # MERGED: there is no PR to merge and no change to deploy, so claiming a
-    # merge would send a deploy monitor to watch a rollout that never happens.
-    #
-    # Checked before has_merged, because a job where nothing needed doing has no
-    # merged task and would otherwise fall through to "terminal but none merged"
-    # and be recorded as a failure -- the exact misfiling this status exists to
-    # end. A MIX still merges: one task finding nothing to do does not cancel
-    # another's real PR.
     # Every engineer looked and found the work already present. That is a
     # legitimate outcome, not a failure, and it must not advance the job to
     # MERGED: there is no PR to merge and no change to deploy, so claiming a
