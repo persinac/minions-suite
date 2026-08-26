@@ -9,7 +9,6 @@ from minions.core.models import (
     Job,
     JobStatus,
     Message,
-    RiskLevel,
     Subtask,
     SubtaskStatus,
     Task,
@@ -68,9 +67,6 @@ class TestEnums:
     def test_orchestrator_is_arbiter_alias(self):
         assert AgentRole.ORCHESTRATOR is AgentRole.ARBITER
         assert AgentRole.ORCHESTRATOR.value == "arbiter"
-
-    def test_risk_level_values(self):
-        assert set(RiskLevel) == {"patch", "minor", "major", "unknown"}
 
     def test_task_review_status_values(self):
         expected = {"pending_review", "approved", "changes_requested", "revision_in_progress", "revision_complete"}

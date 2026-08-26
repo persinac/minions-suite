@@ -32,7 +32,6 @@ Each step is an independent agent with its own tools, operating within a state m
 
 ### Standalone Features
 
-- **Renovate Auto-Merge** — Classifies dependency bumps by risk (patch/minor/major), auto-merges low-risk updates with green CI, escalates the rest
 - **GitLab Issues Poller** — Watches for labeled issues (`minions`), creates development jobs automatically
 - **Trello Poller** — Converts cards from an "on-deck" list into jobs, syncs status back
 - **MCP Server** — Exposes all operations (review, job submission, task control, cost queries) as MCP tools on port 8321
@@ -140,15 +139,15 @@ GitLab Issue / Trello Card / CLI / MCP / Webhook
                JobEngine              <- polls DB for active jobs
                     |
         +-----------+-----------+
-        |           |           |
-        v           v           v
-     Review     Development   Renovate
-     Agent      Orchestrator  Auto-Merge
-        |           |
-        v           v
+        |                       |
+        v                       v
+     Review                Development
+     Agent                 Orchestrator
+        |                       |
+        v                       v
    Code Review   Spec Analyst -> Arbiter -> Engineers -> Reviewer -> Deploy Monitor
-        |           |
-        v           v
+        |                       |
+        v                       v
    GitProvider   GitProvider + Shell + Filesystem
         |           |
         v           v
@@ -334,7 +333,6 @@ When NATS is enabled, job lifecycle events are published:
 | `agents.*` | Agent lifecycle events |
 | `arbiter.state.transition` | State transition requests |
 | `arbiter.heartbeat` | Agent liveness signals |
-| `renovate.*` | Renovate merge/escalate events |
 
 ## MCP Server Tools
 

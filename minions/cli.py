@@ -690,16 +690,6 @@ async def _run_pollers(config: Config) -> int:
     else:
         trello_poller = None
 
-    # Renovate
-    if config.renovate_enabled:
-        from .renovate.engine import RenovateEngine
-
-        renovate_engine = RenovateEngine(db, config, projects, nats_client=nats_client)
-        tasks.append(_supervise(asyncio.create_task(renovate_engine.start(), name="renovate-engine"), shutdown))
-        sources_started.append("renovate")
-    else:
-        renovate_engine = None
-
     if sources_started:
         logger.info("Input sources started: %s", ", ".join(sources_started))
     elif config.engine_enabled:
@@ -724,8 +714,6 @@ async def _run_pollers(config: Config) -> int:
             await gitlab_poller.stop()
         if trello_poller:
             await trello_poller.stop()
-        if renovate_engine:
-            await renovate_engine.stop()
         for t in tasks:
             t.cancel()
         if nats_client:
