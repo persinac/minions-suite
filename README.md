@@ -253,7 +253,6 @@ If no profile is configured, roles and languages are auto-inferred from changed 
 | `GITLAB_TOKEN` | \*\* | - | GitLab personal access token |
 | `GITLAB_URL` | \*\* | - | GitLab instance URL |
 | `GH_TOKEN` | \*\* | - | GitHub token |
-| `DB_BACKEND` | No | `sqlite` | `sqlite` or `postgres` |
 | `POSTGRES_URL` | No | - | Postgres connection string |
 | `NATS_ENABLED` | No | `false` | Enable NATS pub/sub |
 | `NATS_SERVER_IP` | No | `localhost:4222` | NATS server address |
@@ -348,18 +347,25 @@ The MCP server (port 8321) exposes tools for external clients:
 
 ## Database
 
-- **SQLite** (default, dev) — `aiosqlite`, file-based
-- **PostgreSQL** (prod) — `psycopg3` async connection pool
+**PostgreSQL only** — `psycopg3` async connection pool, configured via `POSTGRES_URL`.
+Schema is applied by [dbmate](https://github.com/amacneil/dbmate) (`task db:migrate`);
+pgvector is required.
 
 Schema: jobs, tasks, subtasks, agents, messages, events, tool calls, heartbeats, state transitions
 
 ## Tests
 
-412 unit tests via `pytest` + `pytest-asyncio`. All use in-memory SQLite, no external services required.
+Tests run via `pytest` + `pytest-asyncio`, split across two suites (root `tests/`
+and `agent-memory/tests`). `task test` runs both.
+
+**They need a real PostgreSQL with pgvector on `:5434`** — not SQLite. Without it,
+DB-backed tests *error* at fixture setup rather than failing, which is easy to
+misread as a broken change. `task up` provides a suitable container; see
+[CLAUDE.md](CLAUDE.md#tests) for a standalone one.
 
 ```bash
 task test
-# or
+# or, root suite only
 uv run pytest
 ```
 

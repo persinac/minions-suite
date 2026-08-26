@@ -26,8 +26,6 @@ Three distinct defects, each of which alone would have been survivable:
 
 from pathlib import Path
 
-import pytest
-
 from minions.core.models import TaskStatus
 
 
@@ -207,14 +205,3 @@ class TestCompletedAgentsAreNotReportedStale:
         body = src[start : src.index("\n    async def ", start + 1)]
 
         assert "a.id IS NULL" in body, "a heartbeat with no agent row would be dropped from detection"
-
-
-@pytest.mark.asyncio
-async def test_sqlite_stale_heartbeats_still_returns_a_list():
-    """The dev backend no-ops this; the arbiter iterates the result either way."""
-    pytest.importorskip("aiosqlite", reason="sqlite backend driver not installed in this environment")
-    from minions.db.sqlite import SQLiteDatabase
-
-    db = SQLiteDatabase(":memory:")
-
-    assert await db.get_stale_heartbeats(300) == []

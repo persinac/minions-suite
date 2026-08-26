@@ -39,13 +39,11 @@ minions/
 │
 ├── db/                             # Persistence layer
 │   ├── abstract.py                 # AbstractDatabase protocol
-│   ├── sqlite.py                   # SQLite implementation (dev, aiosqlite)
-│   └── postgres.py                 # PostgreSQL implementation (prod, psycopg3)
+│   └── postgres.py                 # PostgreSQL implementation (psycopg3)
 │
 ├── engine/                         # Job orchestration
 │   ├── job_engine.py               # Core JobEngine: poll loop, K8s dispatch, startup recovery
 │   ├── job_graph.py                # LangGraph StateGraph for job orchestration (USE_LANGGRAPH_ENGINE)
-│   ├── checkpointer.py             # LangGraph checkpointer factory (Postgres/SQLite)
 │   ├── review.py                   # Review job handlers (launch, run in-process, check completion)
 │   ├── dev.py                      # Dev handlers (spec analyst, arbiter, engineers, revisions)
 │   ├── deploy.py                   # Deploy monitor launch, deployment checks
@@ -90,10 +88,12 @@ Each agent role has its own tool set (defined in `agents/tools/definitions.py`):
 - **GitLab** — Uses REST API v4 directly; true inline comments via discussions API with version SHAs
 - **GitHub** — Uses `gh` CLI subprocess; `post_inline_comment` falls back to regular PR comment (no true inline support)
 
-## Database Backends
+## Database
 
-- **SQLite** (default, dev) — `aiosqlite`; file path from `DB_PATH` env var
-- **PostgreSQL** (prod) — `psycopg3` async connection pool; set `DB_BACKEND=postgres` and `POSTGRES_URL`
+**PostgreSQL only** — `psycopg3` async connection pool, `POSTGRES_URL`. There is no
+second backend and no `DB_BACKEND` switch: `_create_db()` in `cli.py` constructs
+`PostgresDatabase` unconditionally. Tests run against a real Postgres with pgvector
+(see Tests below), so dev and prod share one backend by construction.
 
 ## Coding Conventions
 
