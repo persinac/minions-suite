@@ -72,10 +72,6 @@ minions/
 │   ├── mcp.py                      # FastMCP tool registrations (port 8321)
 │   └── middleware.py               # ToolAuditMiddleware
 │
-├── renovate/                       # Renovate auto-merge (self-contained feature)
-│   ├── classifier.py               # Risk classification, version parsing
-│   └── engine.py                   # RenovateEngine polling loop
-│
 └── connectors/                     # NATS message bus
     └── nats_client.py              # Persistent NATS connection + publisher/subscriber
 ```

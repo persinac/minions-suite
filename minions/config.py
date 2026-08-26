@@ -429,11 +429,6 @@ class Config:
     # not the runaway case this guards against.
     trello_min_job_interval: int = 0
 
-    # Renovate auto-merge (optional)
-    renovate_enabled: bool = False
-    renovate_poll_interval: int = 60
-    renovate_max_concurrent: int = 2
-
     # AWS
     aws_profile: str = "mcp-minions"
 
@@ -558,10 +553,6 @@ class Config:
             trello_poll_interval=_env_or_int("TRELLO_POLL_INTERVAL", _get_nested("pollers", "trello", "poll_interval"), 180),
             trello_require_label=_env_or_bool("TRELLO_REQUIRE_LABEL", _get_nested("pollers", "trello", "require_label"), True),
             trello_min_job_interval=_env_or_int("TRELLO_MIN_JOB_INTERVAL", _get_nested("pollers", "trello", "min_job_interval"), 0),
-            # -- Pollers: Renovate --
-            renovate_enabled=_env_or_bool("RENOVATE_ENABLED", _get_nested("pollers", "renovate", "enabled"), False),
-            renovate_poll_interval=_env_or_int("RENOVATE_POLL_INTERVAL", _get_nested("pollers", "renovate", "poll_interval"), 60),
-            renovate_max_concurrent=_env_or_int("RENOVATE_MAX_CONCURRENT", _get_nested("pollers", "renovate", "max_concurrent"), 2),
             # -- AWS --
             aws_profile=_env_or("AWS_PROFILE_NAME", _get("aws", "profile"), "mcp-minions"),
             # -- S3 Artifacts --

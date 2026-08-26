@@ -145,7 +145,7 @@ tasks:
         echo "  Dashboard  : http://localhost:8322"
         echo "  Memory     : http://localhost:8322/memory"
         echo "  Metrics    : http://localhost:8322/metrics"
-        echo "  Pollers    : gitlab-issues, trello, renovate (if configured)"
+        echo "  Pollers    : gitlab-issues, trello (if configured)"
         {{if eq .LANGFUSE "true"}}echo "  Langfuse   : http://localhost:3000"{{end}}
         echo ""
         echo "  Starting MCP server on :8321 ..."

@@ -384,9 +384,9 @@ async def _ci_gate_passes(engine: JobEngine, project, provider, mr_id: str, targ
 
     1. The repo must HAVE required checks. GitHub does not enforce anything on an
        unprotected branch, so this is the only thing standing between an agent
-       and an ungated repo. Fails CLOSED — deliberate pressure on the
-       least-verified repos, the inverse of renovate's should_auto_merge where an
-       empty ci_status counts as success.
+       and an ungated repo. Fails CLOSED — an absent or unreadable set of
+       required checks blocks the merge rather than passing it, which puts
+       deliberate pressure on the least-verified repos.
 
     2. Whether those checks are green is GitHub's call, read via mergeable_state
        and ultimately enforced by branch protection refusing the merge —

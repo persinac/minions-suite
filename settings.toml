@@ -145,11 +145,6 @@ poll_interval = 120
 [default.pollers.trello]
 poll_interval = 180
 
-[default.pollers.renovate]
-enabled = false
-poll_interval = 60
-max_concurrent = 2
-
 [default.memory]
 enabled = false
 l3_token_budget = 2000

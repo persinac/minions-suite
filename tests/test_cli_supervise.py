@@ -50,7 +50,7 @@ class TestSupervise:
         async def finishes():
             return None
 
-        _supervise(asyncio.create_task(finishes(), name="renovate-engine"), shutdown)
+        _supervise(asyncio.create_task(finishes(), name="trello-poller"), shutdown)
         await asyncio.wait_for(shutdown.wait(), timeout=2)
 
         assert shutdown.is_set()

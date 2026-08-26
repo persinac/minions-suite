@@ -4,8 +4,8 @@ Two layers, and the second is not ours:
 
 1. The repo must HAVE required checks. GitHub enforces nothing on an unprotected
    branch, so this is the only thing between an agent and an ungated repo. Fails
-   closed — the inverse of renovate's should_auto_merge, where an empty
-   ci_status counted as success.
+   closed — an absent or unreadable set of required checks blocks the merge
+   rather than passing it.
 2. Whether those checks are green is GitHub's call, read via mergeable_state and
    ultimately enforced by branch protection refusing the merge server-side, even
    for the App that opened the PR.
