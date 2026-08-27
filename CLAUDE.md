@@ -139,6 +139,40 @@ export SECRETS_CMD="./scripts/aws-sm-run minion/prod --"
 export SECRETS_CMD=""
 ```
 
+**Which Doppler project:** **`mcp-minions`**, config **`dev`**. `SECRETS_CMD` is defined
+**once**, in the root `Taskfile.yml`, and inherited by every included taskfile — it used
+to be declared separately in `minion.yaml`, `e2e.yaml` and `memory.yaml`, which is how
+they drifted apart. Change the config with `MINION_DOPPLER_CONFIG=prd task minion:server`.
+
+Two details that look like fussiness and are not:
+
+- **`--project` is hardcoded, and the config override is not called `DOPPLER_CONFIG`.**
+  The Doppler CLI reads `DOPPLER_PROJECT`/`DOPPLER_CONFIG` from the environment, and this
+  dev box already exports `nexus`/`prd` for an unrelated agent. Deriving the flags from
+  those names would resolve to a different project entirely. Explicit flags beat ambient
+  env in the CLI's precedence — but only if you don't build them out of that same env.
+- **`${SECRETS_CMD-…}`, not `${SECRETS_CMD:-…}`.** The colon form substitutes on empty as
+  well as unset, so `SECRETS_CMD=""` — the documented opt-out — would still get wrapped.
+
+A committed `doppler.yaml` does **not** change what `doppler run` resolves; only
+`doppler setup` reads it. It is committed so `doppler setup` is non-interactive, but
+nothing depends on it.
+
+**This is local only.** Nothing in the deployed path touches Doppler:
+
+| where | how secrets arrive |
+|---|---|
+| `task minion:*` (local) | `doppler run --` → `mcp-minions`/`dev` |
+| `task docker:up` | `.env` file, via compose `env_file` |
+| k8s (prod) | `envFrom` three secretRefs; `minion-suite-config` is an **ExternalSecret** synced hourly from the `aws-secrets-manager` ClusterSecretStore |
+
+The app itself never shells out to Doppler — it reads environment variables. The one
+reference in `minions/preflight.py` runs `doppler me` as a health check, nothing more.
+Expect its `doppler auth` WARN to persist inside the pod regardless of this setting:
+`doppler_required` is `"doppler" in secrets_cmd and not container` (`preflight.py:407`),
+so in a container it is always false and the message ("SECRETS_CMD does not use it")
+names the wrong reason.
+
 `scripts/aws-sm-run` is a self-contained uv script (manages its own `boto3` dep via PEP 723 inline metadata). It accepts one or more secret names before `--` and `os.execvpe`s the command with secrets merged into the environment — identical behaviour to `doppler run --`.
 
 ## Commands

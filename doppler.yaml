@@ -1,0 +1,3 @@
+setup:
+  project: mcp-minions
+  config: dev

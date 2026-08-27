@@ -1,8 +1,6 @@
 version: '3'
 
-vars:
-  SECRETS_CMD:
-    sh: echo "${SECRETS_CMD:-}"
+# SECRETS_CMD comes from the root Taskfile.
 
 tasks:
   test:

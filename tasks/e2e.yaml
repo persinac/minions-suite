@@ -16,9 +16,7 @@ version: '3'
 # that at a throwaway repo before running it.
 
 vars:
-  # Same secrets runner contract as tasks/minion.yaml.
-  SECRETS_CMD:
-    sh: echo "${SECRETS_CMD:-}"
+  # SECRETS_CMD comes from the root Taskfile.
   TICKETS: tests/e2e/tickets
 
 tasks:

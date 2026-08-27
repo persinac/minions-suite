@@ -2,6 +2,34 @@ version: '3'
 
 dotenv: ['.env.local', '.env']
 
+vars:
+  # Secrets runner. ONE definition, inherited by every included taskfile.
+  #
+  # It used to be declared separately in minion.yaml, e2e.yaml and memory.yaml,
+  # which is how it drifted: 59ea3c2 changed minion.yaml's default from
+  # `doppler run --` to empty and left the comment claiming otherwise, so for
+  # months `task minion:server` ran on whatever was exported or sitting in .env
+  # while the docs, the comment and preflight's own WARN all described a doppler
+  # run that was not happening.
+  #
+  # --project is HARDCODED and the config override is deliberately NOT named
+  # DOPPLER_CONFIG. The Doppler CLI reads DOPPLER_PROJECT/DOPPLER_CONFIG from the
+  # environment, and this box already exports nexus/prd for an unrelated agent --
+  # so `${DOPPLER_CONFIG:-dev}` would silently resolve to prd on someone else's
+  # project. Explicit flags beat ambient env in the CLI's precedence; deriving
+  # the flags FROM that env throws the protection away.
+  #
+  # Swap providers:  SECRETS_CMD="./scripts/aws-sm-run minion/prod --" task minion:server
+  # No wrapper:      SECRETS_CMD="" task minion:server
+  # Other config:    MINION_DOPPLER_CONFIG=prd task minion:server
+  #
+  # `${SECRETS_CMD-...}`, NOT `${SECRETS_CMD:-...}`. The colon form substitutes
+  # on empty as well as unset, so `SECRETS_CMD=""` -- the documented way to opt
+  # out -- would still get wrapped in doppler. That was harmless while the
+  # default was empty and stops being harmless the moment it is not.
+  SECRETS_CMD:
+    sh: echo "${SECRETS_CMD-doppler run --project mcp-minions --config ${MINION_DOPPLER_CONFIG:-dev} --}"
+
 includes:
   minion:
     taskfile: tasks/minion.yaml

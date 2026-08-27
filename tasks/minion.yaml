@@ -1,12 +1,8 @@
 version: '3'
 
-vars:
-  # Secrets runner — override via env var to swap providers.
-  # Default: doppler run --
-  # AWS SM:  SECRETS_CMD="./scripts/aws-sm-run minion/prod --" task minion:server
-  # None:    SECRETS_CMD="" task minion:server  (env vars already in shell)
-  SECRETS_CMD:
-    sh: echo "${SECRETS_CMD:-}"
+# SECRETS_CMD is defined once in the root Taskfile and inherited here. It used
+# to be redeclared in this file, e2e.yaml and memory.yaml independently, which
+# is how the three drifted apart.
 
 tasks:
   preflight:
