@@ -134,7 +134,7 @@ def _parse(raw: str) -> tuple[dict | None, str]:
 
     try:
         payload = json.loads(text)
-    except (json.JSONDecodeError, ValueError):
+    except json.JSONDecodeError, ValueError:
         return None, f"unparseable reply: {text[:120]}"
 
     if not isinstance(payload, dict):
@@ -267,7 +267,12 @@ def resolve_model(
 
     Precedence: an explicit per-project model wins (someone chose it
     deliberately), then the reviewer default, then the difficulty tier, then the
-    global default.
+    MEDIUM tier for an unscored ticket, and only then the global default.
+
+    Unscored falls to medium rather than to `config.model` because that default
+    is Opus: failing open sent every spec the classifier choked on to the
+    dearest model in the system, which is the opposite of what an absence of
+    evidence should buy.
 
     Reviewers get their own model at EVERY difficulty — a floor, not a tier.
     Difficulty scores how hard a ticket is to implement, which says nothing about
@@ -334,4 +339,20 @@ def resolve_model(
         if engineer_default:
             return engineer_default
 
-    return tier_model or config.model
+    # Unknown difficulty falls back to the MEDIUM tier, not the global default.
+    #
+    # `config.model` is Opus, so a spec the classifier could not score used to
+    # get the most expensive model in the system — fail-open straight to the
+    # premium tier. That is backwards: not being able to score a ticket is not
+    # evidence that it is hard, and the classifier fails open on malformed or
+    # empty specs, which skew trivial rather than difficult.
+    #
+    # It was not a rounding error. Two unclassified backend_engineer runs on
+    # 2026-07-25 cost $20.57 — $10.28 each, against $0.23 for the same role on
+    # the easy tier — and unclassified work was $26.85 of the first $153.64
+    # spent. Quiet since, because classification has been succeeding; the point
+    # is that it is a landmine, not that it is currently firing.
+    #
+    # Mirrors the finisher branch above, which already prefers a named tier over
+    # the global default for the same reason.
+    return tier_model or config.model_medium or config.model

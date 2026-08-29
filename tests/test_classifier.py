@@ -81,12 +81,44 @@ class TestResolveModel:
         assert resolve_model(config, MEDIUM) == config.model_medium
         assert resolve_model(config, HARD) == config.model_hard
 
-    def test_unclassified_falls_back_to_the_default(self):
+    def test_unclassified_falls_back_to_the_medium_tier(self):
+        """Not to `config.model`, which is Opus.
+
+        This asserted the opposite until 2026-08-29. Failing open sent every
+        spec the classifier could not score to the most expensive model in the
+        system — two unclassified backend_engineer runs on 2026-07-25 cost
+        $20.57, against $0.23 for the same role on the easy tier.
+        """
         config = Config.from_env()
 
-        assert resolve_model(config, None) == config.model
-        assert resolve_model(config, "") == config.model
-        assert resolve_model(config, "bogus") == config.model
+        assert resolve_model(config, None) == config.model_medium
+        assert resolve_model(config, "") == config.model_medium
+        assert resolve_model(config, "bogus") == config.model_medium
+
+    def test_unscored_is_never_the_premium_tier(self):
+        """The property that matters, stated independently of which model is which.
+
+        Pinned against config.model_hard as well: if someone later points
+        model_medium at the hard tier, this still catches it.
+        """
+        config = Config.from_env()
+
+        for difficulty in (None, "", "bogus"):
+            assert resolve_model(config, difficulty) != config.model_hard, "an unscored ticket must not buy the premium tier"
+
+    def test_the_global_default_is_still_the_last_resort(self):
+        """model_medium is preferred, but an empty one must not resolve to ''."""
+
+        class _NoMedium:
+            model = "fallback-model"
+            model_easy = "cheap"
+            model_medium = ""
+            model_hard = "dear"
+            model_reviewer = ""
+            model_engineer = ""
+            model_finisher = ""
+
+        assert resolve_model(_NoMedium(), None) == "fallback-model"
 
     def test_explicit_project_model_beats_the_tier(self):
         """Someone who set a model in projects.yaml chose it deliberately."""
