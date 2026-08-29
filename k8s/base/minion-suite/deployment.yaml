@@ -177,6 +177,21 @@ spec:
             # than by turns.
             - name: AGENT_MAX_TURNS
               value: "100"
+            # Only read by tests/conftest.py, and only when an agent is working
+            # a ticket against THIS repo -- `mcp-minions` is a registered project
+            # pointing at persinac/minions-suite, with `test_command: pytest`.
+            #
+            # Without it conftest falls back to localhost:5434, which does not
+            # exist in this pod, and every DB-backed test ERRORS at fixture setup
+            # instead of failing. On an unmodified tree that looks exactly like
+            # the agent having broken 1400 tests, and it will try to fix them.
+            #
+            # Deliberately NOT POSTGRES_URL. conftest namespaces into a
+            # `minions_test` schema so aiming it at production would be isolated
+            # from job data -- but it would still run DDL on the production
+            # instance, and two concurrent runs would collide on the one schema.
+            - name: TEST_POSTGRES_URL
+              value: "postgresql://minion:minion@minion-test-pg:5432/minion"
           # There is no health endpoint anywhere in the codebase. `--server` serves
           # only the MCP SSE surface, and probing GET /sse would open a long-lived
           # event stream per probe that the kubelet then abandons. TCP instead.

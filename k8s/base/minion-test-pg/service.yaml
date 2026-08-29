@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: minion-test-pg
+  labels:
+    app.kubernetes.io/name: minion-test-pg
+    app.kubernetes.io/component: test-fixture
+spec:
+  # ClusterIP with no ingress. Nothing outside the namespace should ever reach
+  # this, and the credentials in deployment.yaml are written on that assumption.
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: minion-test-pg
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres

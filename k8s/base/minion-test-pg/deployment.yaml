@@ -1,0 +1,105 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minion-test-pg
+  labels:
+    app.kubernetes.io/name: minion-test-pg
+    app.kubernetes.io/component: test-fixture
+spec:
+  replicas: 1
+  # Recreate, not RollingUpdate. The data lives in an emptyDir and there is no
+  # reason for two of these to exist at once fighting over the same Service.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: minion-test-pg
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: minion-test-pg
+        app.kubernetes.io/component: test-fixture
+    spec:
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      securityContext:
+        # 999 is the `postgres` user baked into the upstream image this one is
+        # built on. Running it as 1000 like the app pods makes initdb fail on
+        # the data directory it has just created.
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: postgres
+          # pgvector, not plain postgres:17. tests/conftest_pg_schema.sql
+          # declares `public.vector(1536)`, so stock postgres fails the whole
+          # session at fixture setup with `type "public.vector" does not exist`.
+          image: pgvector/pgvector:pg17
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities: {drop: ["ALL"]}
+          env:
+            # These credentials are deliberately the same throwaway trio that
+            # tests/conftest.py defaults to and CLAUDE.md documents for the
+            # local container. This database holds no data that outlives a pod
+            # restart and its Service is ClusterIP with no ingress -- it is a
+            # test fixture, not a store. Keeping the values identical to the
+            # documented local ones means a developer and an agent run the
+            # suite against the same shape.
+            - name: POSTGRES_USER
+              value: minion
+            - name: POSTGRES_PASSWORD
+              value: minion
+            - name: POSTGRES_DB
+              value: minion
+            # The upstream entrypoint refuses to initdb into a directory that is
+            # itself the mount point on some volume types. Using a subdirectory
+            # sidesteps that for good, at no cost on emptyDir.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - name: postgres
+              containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: initdb
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+          # pg_isready, not a TCP probe. Postgres binds the port during initdb
+          # while still refusing connections, so TCP goes ready several seconds
+          # before the database actually is -- and the first test session to
+          # arrive in that window fails at fixture setup, which reads as a
+          # broken change rather than a cold fixture.
+          startupProbe:
+            exec:
+              command: ["pg_isready", "-U", "minion", "-d", "minion"]
+            periodSeconds: 3
+            failureThreshold: 40
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "minion", "-d", "minion"]
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "minion", "-d", "minion"]
+            periodSeconds: 30
+            failureThreshold: 5
+          resources:
+            requests: {cpu: "100m", memory: "256Mi"}
+            limits: {cpu: "1", memory: "1Gi"}
+      volumes:
+        # emptyDir on purpose. Every pod restart is a clean database, which is
+        # exactly what a test fixture should be -- and it means the initdb
+        # script below re-runs, so the vector extension can never go missing.
+        - name: data
+          emptyDir:
+            sizeLimit: 4Gi
+        - name: initdb
+          configMap:
+            name: minion-test-pg-initdb
