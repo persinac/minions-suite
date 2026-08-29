@@ -67,6 +67,67 @@ def _seconds_since(timestamp: str | None) -> float:
     return (datetime.now(UTC) - parsed).total_seconds()
 
 
+# Agent.error substrings that mean "the platform killed this, not the work".
+#
+# Deliberately narrow. Every entry here buys a retry that does NOT cost the task
+# an attempt, so anything whose cause could be permanent must stay OUT: an
+# AuthenticationError also dies at turn 0, and treating it as infrastructure
+# would requeue a misconfigured model until max_infra_retries ran out with
+# nothing learned. Shutdown and connection failures are transient by
+# construction -- the next attempt runs somewhere else.
+_INFRA_DEATH_MARKERS = (
+    # Set by JobEngine.stop on the way down...
+    "interrupted by engine shutdown",
+    # ...and by _startup_cleanup on the way back up, for agents whose process
+    # vanished with the pod. Substring match covers the "(k8s disabled)" and
+    # "k8s job not found after restart" variants.
+    "orphaned by restart",
+    "k8s job not found after restart",
+    "apiconnectionerror",
+    "stuck in starting state",
+)
+
+
+def is_infrastructure_death(agent) -> bool:
+    """True if this agent died of a platform fault before doing any work.
+
+    Public because job_engine's startup cleanup needs the identical rule: a
+    rollout kills agents on the way down AND orphans them on the way back up,
+    and the two paths must not disagree about what counts as the platform's
+    fault.
+
+    Both halves matter. `num_turns == 0` is the load-bearing one: an agent that
+    completed turns produced work and may have produced the very mess the next
+    attempt has to clean up, so it should still cost an attempt no matter what
+    killed it. The marker list then narrows turn-0 deaths to causes that are
+    actually transient.
+    """
+    if getattr(agent, "status", None) != "failed":
+        return False
+    if (getattr(agent, "num_turns", 0) or 0) > 0:
+        return False
+    error = (getattr(agent, "error", None) or "").lower()
+    return any(marker in error for marker in _INFRA_DEATH_MARKERS)
+
+
+async def count_infra_deaths(db, job_id: str, task_id: str) -> int:
+    """How many times the platform has already killed an agent on this task.
+
+    Derived from the agent rows rather than a counter column: the evidence is
+    already recorded, and a column would need a migration to say something the
+    data already says. Includes the death being judged right now, so the caller
+    compares against the cap with <=.
+    """
+    try:
+        agents = await db.get_agents_for_job(job_id)
+    except Exception:
+        # Never let a bookkeeping query decide a task's fate. Returning a number
+        # no cap can exceed means "no free retry", which is the old behaviour.
+        logger.debug("could not count infra deaths for task %s", task_id, exc_info=True)
+        return 1 << 30
+    return sum(1 for a in agents if getattr(a, "task_id", None) == task_id and is_infrastructure_death(a))
+
+
 def _agent_predates_current_attempt(agent, task: Task, unbounded: bool = False) -> bool:
     """True if `agent` is a leftover from an attempt before the task's current one.
 
@@ -2070,7 +2131,43 @@ async def manage_dev_tasks(engine: JobEngine, job: Job):
                     # Agent succeeded but task wasn't updated — check subtasks first
                     await _try_complete_task(engine, task, "orphan recovery")
                 else:
-                    if task.attempt < task.max_attempts:
+                    # A platform kill is not evidence the work cannot be done, so
+                    # it gets a requeue that leaves `attempt` alone. Without this
+                    # three engine restarts failed a task on their own -- see
+                    # _is_infrastructure_death and config.max_infra_retries.
+                    free_retry = False
+                    if is_infrastructure_death(latest_agent):
+                        deaths = await count_infra_deaths(engine.db, job.id, task.id)
+                        free_retry = deaths <= engine.config.max_infra_retries
+                        if not free_retry:
+                            logger.warning(
+                                "Task %s: %d infrastructure deaths exceeds max_infra_retries=%d — charging an attempt",
+                                task.id,
+                                deaths,
+                                engine.config.max_infra_retries,
+                            )
+
+                    if free_retry:
+                        try:
+                            await engine.db.update_task(task.id, status=TaskStatus.FAILED, agent_role="", error="agent died without completing")
+                            # attempt deliberately NOT incremented.
+                            await engine.db.update_task(task.id, status=TaskStatus.PENDING, agent_role="", error=None)
+                            requeued = True
+                            logger.info(
+                                "Orphan recovery: task %s requeued after an infrastructure death, attempt %d/%d unchanged",
+                                task.id,
+                                task.attempt,
+                                task.max_attempts,
+                            )
+                            await engine.db.record_event(
+                                job.id,
+                                "task_infra_requeue",
+                                "engine",
+                                f"task={task.id} agent={latest_agent.id} attempt={task.attempt}/{task.max_attempts} error={(latest_agent.error or '')[:80]}",
+                            )
+                        except InvalidTransitionError as e:
+                            logger.warning("Orphan recovery: could not requeue task %s after infrastructure death: %s", task.id, e)
+                    elif task.attempt < task.max_attempts:
                         try:
                             await engine.db.update_task(task.id, status=TaskStatus.FAILED, agent_role="", error="agent died without completing")
                             await engine.db.update_task(task.id, status=TaskStatus.PENDING, agent_role="", attempt=task.attempt + 1)

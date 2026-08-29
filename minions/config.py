@@ -388,6 +388,23 @@ class Config:
     # thing a lower cap would prevent is now much cheaper than when it was 3.
     max_revisions: int = 3
 
+    # How many times a task may be requeued after an agent died of an
+    # INFRASTRUCTURAL cause without consuming one of its max_attempts.
+    #
+    # An engine restart kills every in-process agent (see JobEngine.stop). Those
+    # deaths used to burn an attempt each, so three rollouts failed a task whose
+    # work was never at fault -- "max attempts reached after agent death" was 6
+    # of the ~21 failed tasks measured on 2026-08-29, and jobs touched by an
+    # agent death carried $20.83 of the $43.72 in failed spend. The work is not
+    # the problem; the attempt budget exists to stop an agent that cannot do the
+    # job, and a pod that went away is not evidence of that.
+    #
+    # Separate budget rather than "free forever" because a permanent fault can
+    # also kill at turn 0 -- an AuthenticationError would otherwise requeue
+    # until the heat death of the cluster. 3 covers a rollout, a node eviction
+    # and one more; beyond that something is wrong that retrying will not fix.
+    max_infra_retries: int = 3
+
     # Upper bound on concurrent reviewers per PR. 0 disables the cap.
     #
     # Set to 2 on 2026-08-20. Measured over 20 PRs with 2+ verdicts: at width
@@ -495,6 +512,7 @@ class Config:
             max_concurrent_jobs=_env_or_int("MAX_CONCURRENT_JOBS", _get("engine", "max_concurrent_jobs"), 1),
             engine_enabled=_env_or_bool("ENGINE_ENABLED", _get("engine", "enabled"), True),
             max_revisions=_env_or_int("MAX_REVISIONS", _get("engine", "max_revisions"), 3),
+            max_infra_retries=_env_or_int("MAX_INFRA_RETRIES", _get("engine", "max_infra_retries"), 3),
             review_fanout_max=_env_or_int("REVIEW_FANOUT_MAX", _get("engine", "review_fanout_max"), 2),
             agent_timeout=_env_or_int("AGENT_TIMEOUT", _get("engine", "agent_timeout"), 600),
             agent_cost_limit_usd=_env_or_float("AGENT_COST_LIMIT_USD", _get("engine", "agent_cost_limit_usd"), 8.0),
