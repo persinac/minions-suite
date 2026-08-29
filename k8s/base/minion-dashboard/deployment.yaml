@@ -15,6 +15,18 @@ spec:
       labels:
         app.kubernetes.io/name: minion-dashboard
         app.kubernetes.io/component: ui
+      annotations:
+        # This Prometheus is the Helm chart with kubernetes_sd_configs, not the
+        # operator — there are no ServiceMonitor/PodMonitor CRDs in the cluster,
+        # so discovery is by pod annotation and this is how the target appears.
+        #
+        # Scraped from the DASHBOARD, not the engine: these gauges are read from
+        # the database rather than accumulated in memory, and the engine serves
+        # no HTTP at all (only the MCP SSE surface). See dashboard.py's
+        # Prometheus section for why DB-backed rather than in-process counters.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8322"
+        prometheus.io/path: "/metrics"
     spec:
       imagePullSecrets:
         - name: ecr-creds
@@ -64,15 +76,20 @@ spec:
             # set explicitly so it can never become a third dispatcher.
             - name: ENGINE_ENABLED
               value: "false"
-          # /metrics is the only route that returns 200 without touching the DB.
-          # Do NOT probe the DB-backed routes: dashboard handlers swallow
-          # exceptions and return empty JSON, so they report healthy with Postgres
-          # down — a probe against them proves nothing.
+          # /healthz touches nothing. Do NOT probe the DB-backed routes:
+          # dashboard handlers swallow exceptions and return empty JSON, so they
+          # report healthy with Postgres down — a probe against them proves
+          # nothing.
+          #
+          # These pointed at /metrics until that route became DB-backed. Probing
+          # it now would make LIVENESS depend on Postgres, so a slow query on a
+          # cold metrics cache would restart a pod whose only problem was a busy
+          # database. /healthz exists to keep the probe honest and cheap.
           readinessProbe:
-            httpGet: {path: /metrics, port: 8322}
+            httpGet: {path: /healthz, port: 8322}
             periodSeconds: 10
           livenessProbe:
-            httpGet: {path: /metrics, port: 8322}
+            httpGet: {path: /healthz, port: 8322}
             periodSeconds: 20
             failureThreshold: 3
           resources:

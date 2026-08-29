@@ -26,11 +26,20 @@ import logging
 import sys
 from pathlib import Path
 
-from minions.config import Config
-from minions.core.models import JobStatus
-from minions.core.spec_contract import extract_assumptions
+ROOT = Path(__file__).resolve().parents[1]
 
-TICKETS = Path(__file__).resolve().parents[1] / "tests" / "e2e" / "tickets"
+# pyproject.toml declares no [build-system], so `minions` is never installed into
+# the venv -- it imports only because the project root happens to be on sys.path.
+# True for `python -m minions`, false for a script file, where sys.path[0] is
+# scripts/ rather than the cwd. Without this, `task e2e:probe` dies on import.
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from minions.config import Config  # noqa: E402
+from minions.core.models import JobStatus  # noqa: E402
+from minions.core.spec_contract import extract_assumptions  # noqa: E402
+
+TICKETS = ROOT / "tests" / "e2e" / "tickets"
 
 
 def _resolve_ticket(name: str) -> Path:

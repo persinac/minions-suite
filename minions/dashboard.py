@@ -4,6 +4,7 @@ import asyncio
 import html
 import json
 import logging
+import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
@@ -1468,17 +1469,155 @@ async def api_memory_operations(project: str = "", limit: int = 50):
         await db.close()
 
 
+@app.get("/healthz")
+async def healthz():
+    """Liveness/readiness target. Touches nothing on purpose.
+
+    This exists because /metrics used to be the probe target -- it was the only
+    route that answered without hitting the DB. It now reads the database on
+    scrape, so probing it would make LIVENESS depend on Postgres: a slow query
+    on a cold cache would fail the probe and the kubelet would restart a pod
+    whose only problem was a busy database. That turns a database hiccup into a
+    restart loop.
+    """
+    return {"status": "ok"}
+
+
+# -- Prometheus --
+#
+# These gauges are read from the DATABASE on scrape, not accumulated in this
+# process. That is deliberate:
+#
+#   * The engine runs `strategy: Recreate`, one replica, so in-process counters
+#     reset on every rollout. "Was haiku worth it last month" is unanswerable
+#     from a counter that forgets each deploy. The DB already holds the durable,
+#     fully-dimensioned record.
+#   * It is served from the DASHBOARD rather than the engine because the engine
+#     has no HTTP server at all -- `--server` exposes only the MCP SSE surface.
+#     These are facts about data, not about process internals, so they do not
+#     need to live where the work happens.
+#
+# The cost of reading on scrape is a DB round-trip per scrape, so results are
+# cached: _get_db() opens a fresh connection per request with no pool, and
+# pool_max is deliberately 6 across three processes. An uncached 15s scrape
+# would spend a meaningful slice of the connection budget on telemetry.
+_METRICS_TTL_SECONDS = 60.0
+_metrics_cache: tuple[float, str] | None = None
+
+
+def _metric_lines(name: str, help_text: str, samples: list[tuple[dict, float]]) -> list[str]:
+    """Render one gauge family in the Prometheus text exposition format."""
+    lines = [f"# HELP {name} {help_text}", f"# TYPE {name} gauge"]
+    for labels, value in samples:
+        if labels:
+            rendered = ",".join(f'{k}="{_escape_label(v)}"' for k, v in labels.items())
+            lines.append(f"{name}{{{rendered}}} {value}")
+        else:
+            lines.append(f"{name} {value}")
+    return lines
+
+
+def _escape_label(value) -> str:
+    return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+
+
+async def _render_metrics() -> str:
+    """Build the exposition payload from a single pass over the DB."""
+    from .db.postgres import PostgresDatabase
+
+    config = Config.from_env()
+    db = PostgresDatabase(_postgres_url, 1, 2)
+    await db.connect()
+    try:
+        eff = await db.get_model_effectiveness(days=config.metrics_window_days, turn_ceiling=config.agent_max_turns)
+        out = await db.get_outcome_breakdown(days=config.metrics_window_days)
+    finally:
+        await db.close()
+
+    lines: list[str] = []
+    detail = eff["rows"]
+    lines += _metric_lines(
+        "minion_spend_usd",
+        "Agent spend in USD by model, role and job difficulty",
+        [({"model": r["model"], "role": r["role"], "difficulty": r["difficulty"]}, r["spend_usd"]) for r in detail],
+    )
+    lines += _metric_lines(
+        "minion_agent_runs",
+        "Agent invocations by model, role and job difficulty",
+        [({"model": r["model"], "role": r["role"], "difficulty": r["difficulty"]}, r["runs"]) for r in detail],
+    )
+    lines += _metric_lines(
+        "minion_agent_failures",
+        "Agent invocations that ended status=failed",
+        [({"model": r["model"], "role": r["role"], "difficulty": r["difficulty"]}, r["failed"]) for r in detail],
+    )
+    lines += _metric_lines(
+        "minion_agent_turn_ceiling_hits",
+        "Agent runs that reached the configured turn ceiling (a SILENT failure: status stays done, error stays null)",
+        # Labelled by the keys this rollup actually groups on. by_model_difficulty
+        # carries no `role`, so labelling it with one is a KeyError at scrape time.
+        [({"model": r["model"], "difficulty": r["difficulty"]}, r["ceiling_hits"]) for r in eff["by_model_difficulty"]],
+    )
+    lines += _metric_lines(
+        "minion_agent_turns_avg",
+        "Mean turns per agent run by model",
+        [({"model": r["model"]}, r["avg_turns"]) for r in eff["by_model"]],
+    )
+    lines += _metric_lines(
+        "minion_jobs",
+        "Jobs by terminal status in the window",
+        [({"status": r["status"]}, r["jobs"]) for r in out["by_status"]],
+    )
+    lines += _metric_lines(
+        "minion_job_spend_usd",
+        "Spend in USD by job status — spend against failed is spend that bought nothing",
+        [({"status": r["status"]}, r["spend_usd"]) for r in out["by_status"]],
+    )
+    # The headline. All spend over finished jobs, so failed work is charged to
+    # the successes it did not produce. Absent (not zero) when nothing finished:
+    # a zero here would read as "free" on a graph.
+    if out["cost_per_success_usd"] is not None:
+        lines += _metric_lines(
+            "minion_cost_per_success_usd",
+            "Total spend divided by jobs reaching done — the fully-loaded cost of one finished job",
+            [({}, out["cost_per_success_usd"])],
+        )
+    q = out["quality"]
+    lines += _metric_lines("minion_tasks_revised", "Tasks that went through at least one revision round", [({}, q["tasks_revised"])])
+    lines += _metric_lines("minion_revisions_total", "Total revision rounds across all tasks", [({}, q["revisions_total"])])
+    lines += _metric_lines(
+        "minion_review_verdicts",
+        "Review verdicts recorded on tasks",
+        [({"verdict": "approve"}, q["verdict_approve"]), ({"verdict": "request_changes"}, q["verdict_request_changes"])],
+    )
+    lines += _metric_lines(
+        "minion_metrics_window_days",
+        "Lookback window these gauges are computed over",
+        [({}, out["period_days"])],
+    )
+    return "\n".join(lines) + "\n"
+
+
 @app.get("/metrics")
 async def prometheus_metrics():
-    """Prometheus metrics endpoint."""
+    """Prometheus metrics, computed from the database and cached briefly."""
+    global _metrics_cache
     from fastapi.responses import Response
 
-    try:
-        from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+    now = time.monotonic()
+    if _metrics_cache is not None and now - _metrics_cache[0] < _METRICS_TTL_SECONDS:
+        return Response(content=_metrics_cache[1], media_type="text/plain; version=0.0.4; charset=utf-8")
 
-        return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
-    except ImportError:
-        return Response(content="# prometheus_client not installed\n", media_type="text/plain")
+    try:
+        payload = await _render_metrics()
+    except Exception as e:
+        # A scrape must never 500 the dashboard, and a silent empty payload
+        # would read as "zero spend" on a graph. Say what broke instead.
+        logger.warning("metrics render failed: %s", e, exc_info=True)
+        return Response(content=f"# metrics unavailable: {_escape_label(e)[:200]}\n", media_type="text/plain")
+
+    _metrics_cache = (now, payload)
+    return Response(content=payload, media_type="text/plain; version=0.0.4; charset=utf-8")
 
 
 def run_dashboard(port: int = 8322):

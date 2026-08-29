@@ -725,6 +725,30 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
         return json.dumps(summary)
 
     @mcp.tool()
+    async def get_model_effectiveness(project: str | None = None, days: int = 30) -> str:
+        """Compare models on cost AND quality, to decide whether a cheaper one earns its keep.
+
+        Spend alone is misleading: a model that is cheaper per token but needs an
+        extra revision round costs more overall. Every row here pairs dollars with
+        failure rate, average turns and turn-ceiling hits.
+
+        Read `cost_per_success_usd` first — it divides ALL spend by the jobs that
+        actually finished, so failed work is charged to the successes it did not
+        produce. Compare models WITHIN a difficulty (`by_model_difficulty`): the
+        classifier already routes easy tickets to the cheap tier, so the headline
+        per-model numbers partly measure ticket mix.
+
+        External `herder:` runs are excluded from the model rows (unmetered) and
+        reported as `external_runs`.
+        """
+        # config is Optional on this server; 60 mirrors Config.agent_max_turns'
+        # own default rather than inventing a second one.
+        ceiling = config.agent_max_turns if config else 60
+        effectiveness = await db.get_model_effectiveness(project=project, days=days, turn_ceiling=ceiling)
+        outcomes = await db.get_outcome_breakdown(project=project, days=days)
+        return json.dumps({"models": effectiveness, "outcomes": outcomes})
+
+    @mcp.tool()
     async def get_agent_logs(job_id: str) -> str:
         """List agent invocations for a job with their metrics."""
         agents = await db.get_agents_for_job(job_id)

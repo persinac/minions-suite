@@ -198,6 +198,9 @@ task minion:preflight
 task minion:status
 task minion:costs -- --project payments-api
 
+# Model effectiveness — cost joined to quality
+uv run python -m minions --effectiveness --days 90
+
 # Code formatting
 task fmt
 task lint
@@ -207,6 +210,38 @@ task docker:build
 task docker:up
 task docker:down
 ```
+
+## Measuring effectiveness
+
+`minion --effectiveness` (also the `get_model_effectiveness` MCP tool) joins cost to
+quality so a cheaper model cannot look good on the spend line while costing more overall.
+
+The headline is **cost per success** — *all* spend divided by jobs that reached `done`, so
+failed work is charged to the successes it did not produce. On the data as of 2026-08-26
+that was $5.46, against the $3.14 you get by looking only at successful jobs.
+
+Three things the raw tables will mislead you about, all handled in
+`get_model_effectiveness` (`db/postgres.py`):
+
+- **`herder:` rows are not a model.** They are external subscription-backed workers
+  recording $0.00 by design. Averaged in they invent a flawless free model; they are
+  excluded and reported as `external_runs`.
+- **Turn-ceiling exhaustion is silent.** Hitting `AGENT_MAX_TURNS` leaves the agent row
+  `status=done, error=NULL`. `ceiling_hits` is the only place that failure is visible.
+- **Compare within a difficulty.** The classifier already routes easy tickets to the cheap
+  tier, so un-stratified per-model numbers partly measure ticket mix. Use
+  `by_model_difficulty`.
+
+`/metrics` on the dashboard (`:8322`) exposes the same aggregates as Prometheus gauges,
+read from the DB on scrape and cached for `metrics_window_days`-wide queries. They are
+DB-backed rather than in-process counters because the engine is `strategy: Recreate` —
+counters would reset every rollout. Probes use `/healthz`, which touches nothing; do not
+point them back at `/metrics`, which now queries Postgres.
+
+To compare models without the ticket-mix confound, `task e2e:matrix -- --models a,b` runs
+one ticket corpus through each. **It covers only the analyst and arbiter (~7% of spend by
+role)** — not the engineer (~46%) or reviewer (~40%) — so it answers "does this model
+reason worse about an ambiguous ticket", not "does it write worse code".
 
 ## Tests
 
