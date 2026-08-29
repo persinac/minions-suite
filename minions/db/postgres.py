@@ -49,7 +49,46 @@ def _ts(value) -> str | None:
 # Counting fields roll up by summation; everything else is derived afterwards.
 # avg_turns deliberately is NOT here -- averaging an average across groups of
 # unequal size is wrong, so it is recomputed from turns_total / runs.
-_SUMMED = ("runs", "spend_usd", "input_tokens", "output_tokens", "cache_read_tokens", "failed", "ceiling_hits", "turns_total")
+_SUMMED = ("runs", "spend_usd", "input_tokens", "output_tokens", "cache_read_tokens", "failed", "real_failed", "ceiling_hits", "turns_total")
+
+# jobs.error phrases meaning "this job did not fail on its own merits".
+#
+# Free text is a brittle key and these will miss a differently-worded kill. It is
+# the only record there is: the schema has no cancellation reason, so an operator
+# stopping a job that already shipped lands in jobs.error exactly like a crash.
+# Measured 2026-08-29: 6 of 24 `failed` jobs were one of these, and 5 of those 6
+# say the work was complete and delivered -- so reading `failed` as "wasted" both
+# overstated failure and understated cost-per-success.
+#
+# Checked in this order: an operator kill routinely says BOTH ("Killed by
+# operator. Work is complete and delivered as ..."), and delivery is the more
+# specific claim, so it wins.
+_DELIVERED_PHRASES = ("work is complete",)
+_CANCELLED_PHRASES = ("superseded", "killed by operator")
+
+
+def _sql_outcome_case(alias: str = "j") -> str:
+    """Build the CASE that lifts operator-cancelled jobs out of `failed`.
+
+    Phrases are interpolated as SQL literals rather than bound as parameters, on
+    purpose. This CASE sits in the SELECT list, and psycopg binds %s by position
+    in the query TEXT -- placeholders here would have to precede every WHERE
+    param, which is the exact ordering trap that once silently swapped `days`
+    and `turn_ceiling`. These are module constants with no external input, and
+    the assert below keeps them incapable of closing the quote.
+    """
+    phrases = _DELIVERED_PHRASES + _CANCELLED_PHRASES
+    assert all("'" not in p for p in phrases), "outcome phrases must not contain quotes"
+    # `%%`, not `%`: this SQL is executed with bound parameters, so psycopg reads
+    # a lone % as the start of a placeholder and rejects the query outright.
+    delivered = " OR ".join(f"{alias}.error ILIKE '%%{p}%%'" for p in _DELIVERED_PHRASES)
+    cancelled = " OR ".join(f"{alias}.error ILIKE '%%{p}%%'" for p in _CANCELLED_PHRASES)
+    return f"""CASE
+                WHEN {alias}.status <> '{JobStatus.FAILED}' THEN {alias}.status
+                WHEN {delivered} THEN 'delivered'
+                WHEN {cancelled} THEN 'cancelled'
+                ELSE {alias}.status
+            END"""
 
 
 def _derive(row: dict) -> dict:
@@ -58,11 +97,13 @@ def _derive(row: dict) -> dict:
     if runs:
         row["avg_turns"] = round(row["turns_total"] / runs, 1)
         row["failure_rate"] = round(row["failed"] / runs, 4)
+        row["real_failure_rate"] = round(row["real_failed"] / runs, 4)
         row["ceiling_rate"] = round(row["ceiling_hits"] / runs, 4)
         row["cost_per_run_usd"] = round(row["spend_usd"] / runs, 4)
     else:
         row["avg_turns"] = 0.0
         row["failure_rate"] = 0.0
+        row["real_failure_rate"] = 0.0
         row["ceiling_rate"] = 0.0
         row["cost_per_run_usd"] = 0.0
     return row
@@ -90,6 +131,7 @@ def _effectiveness_row(r) -> dict:
             "turns_total": round(float(r["avg_turns"]) * runs),
             "max_turns": int(r["max_turns"]),
             "failed": int(r["failed"]),
+            "real_failed": int(r["real_failed"]),
             "ceiling_hits": int(r["ceiling_hits"]),
         }
     )
@@ -277,6 +319,20 @@ class PostgresDatabase:
            tickets to the cheap tier, so an un-stratified per-model comparison
            measures ticket mix as much as model. Compare within a difficulty.
 
+        4. `real_failed` counts only failures that did work first (num_turns > 0).
+           Read THAT, not `failed`, before blaming a model. An agent killed by an
+           engine restart or a transport error dies at turn 0 having made no
+           model call at all, so it says nothing about the model -- but it lands
+           in `failed` identically to a genuine one.
+
+           This is not hypothetical. Every failure in the table on 2026-08-29 --
+           all 23 across four models -- had num_turns = 0, and 19 of them came
+           from a single incident on 2026-07-25/26. They concentrated in
+           backend_engineer purely because at ~32 turns it is the role most
+           likely to be mid-flight when the engine restarts, which made a
+           duration effect look like a model effect: it is where the claim
+           "haiku fails 3x as often" came from, and that claim was wrong.
+
         Money is summed as numeric: cost_usd is REAL, and float error compounds
         over thousands of rows.
         """
@@ -300,6 +356,7 @@ class PostgresDatabase:
                 COALESCE(AVG(a.num_turns), 0) AS avg_turns,
                 COALESCE(MAX(a.num_turns), 0) AS max_turns,
                 COUNT(*) FILTER (WHERE a.status = 'failed') AS failed,
+                COUNT(*) FILTER (WHERE a.status = 'failed' AND COALESCE(a.num_turns, 0) > 0) AS real_failed,
                 COUNT(*) FILTER (WHERE a.num_turns >= %s) AS ceiling_hits
             FROM {JOB_SCHEMA}.agents a
             LEFT JOIN {JOB_SCHEMA}.jobs j ON j.id = a.job_id
@@ -339,10 +396,27 @@ class PostgresDatabase:
     async def get_outcome_breakdown(self, project: str | None = None, days: int = 30) -> dict:
         """Where the money went, and how much of it bought a finished job.
 
-        The headline is `cost_per_success_usd`: TOTAL spend over jobs that reached
-        `done`, not the spend of successful jobs alone. Failed work is a real cost
-        of the successes -- amortising it is the whole point, and it is what makes
-        a cheap-but-flaky model show up as expensive.
+        The headline is `cost_per_success_usd`: TOTAL spend over jobs that
+        succeeded, not the spend of successful jobs alone. Failed work is a real
+        cost of the successes -- amortising it is the whole point, and it is what
+        makes a cheap-but-flaky model show up as expensive.
+
+        `status = failed` is not the same question as "did this job fail". An
+        operator who kills a job whose PR already merged leaves a row that is
+        byte-identical to a crash, because jobs.error is the only place the
+        reason is recorded. Those are split out here (see _sql_outcome_case):
+
+          done       reached DONE on its own
+          delivered  operator-killed AFTER shipping its work -- counts as a
+                     success, because it produced the thing that was asked for
+          cancelled  superseded or otherwise called off -- neither a success nor
+                     a failure, so it is excluded from both
+          failed     everything left, which is what "failed" should have meant
+
+        Measured 2026-08-29: this moved 6 of 24 `failed` jobs, and cost per
+        success from $4.52 to $3.94. Spend is NOT reclassified -- every dollar
+        stays in the denominator's numerator, including cancelled work, because
+        amortising all spend over real successes is the point of the metric.
         """
         where = ["j.created_at >= NOW() - MAKE_INTERVAL(days => %s)"]
         params: list = [days]
@@ -352,13 +426,13 @@ class PostgresDatabase:
         where_sql = " AND ".join(where)
 
         status_sql = f"""
-            SELECT j.status,
+            SELECT {_sql_outcome_case("j")} AS status,
                    COUNT(DISTINCT j.id) AS jobs,
                    COALESCE(SUM(a.cost_usd::numeric), 0) AS spend_usd
             FROM {JOB_SCHEMA}.jobs j
             LEFT JOIN {JOB_SCHEMA}.agents a ON a.job_id = j.id
             WHERE {where_sql}
-            GROUP BY j.status
+            GROUP BY 1
             ORDER BY spend_usd DESC
         """
         quality_sql = f"""
@@ -383,7 +457,13 @@ class PostgresDatabase:
 
         total_spend = sum(r["spend_usd"] for r in by_status)
         total_jobs = sum(r["jobs"] for r in by_status)
-        successes = sum(r["jobs"] for r in by_status if r["status"] == JobStatus.DONE)
+        completed = sum(r["jobs"] for r in by_status if r["status"] == JobStatus.DONE)
+        delivered = sum(r["jobs"] for r in by_status if r["status"] == "delivered")
+        cancelled = sum(r["jobs"] for r in by_status if r["status"] == "cancelled")
+        # A job that shipped its work and was then stopped by hand produced the
+        # thing that was asked for, so it belongs in the denominator. Counting it
+        # as a failure charged its cost to jobs it had no part in.
+        successes = completed + delivered
         # A window with no completed job has no meaningful cost-per-success. None
         # says that; 0.0 would read as "free".
         if successes:
@@ -397,6 +477,9 @@ class PostgresDatabase:
             "total_jobs": total_jobs,
             "total_spend_usd": round(total_spend, 4),
             "successful_jobs": successes,
+            "completed_jobs": completed,
+            "delivered_jobs": delivered,
+            "cancelled_jobs": cancelled,
             "cost_per_success_usd": cost_per_success,
             "quality": {k: int(v) for k, v in q.items()},
         }
