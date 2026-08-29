@@ -784,7 +784,8 @@ async def _run_pollers(config: Config) -> int:
     # that dies; this covers one that hangs, which looks healthy from outside.
     watched = [(name, poller) for name, poller in (("gitlab-issues-poller", gitlab_poller), ("trello-poller", trello_poller)) if poller]
     if watched:
-        tasks.append(_supervise(asyncio.create_task(_watch_pollers(watched, shutdown), name="poller-watchdog"), shutdown))
+        watchdog = _watch_pollers(watched, shutdown, POLLER_WATCHDOG_INTERVAL, POLLER_STALE_INTERVALS)
+        tasks.append(_supervise(asyncio.create_task(watchdog, name="poller-watchdog"), shutdown))
 
     if sources_started:
         logger.info("Input sources started: %s", ", ".join(sources_started))
