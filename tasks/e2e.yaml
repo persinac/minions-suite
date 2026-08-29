@@ -63,6 +63,14 @@ tasks:
     cmds:
       - "{{.SECRETS_CMD}} uv run python scripts/e2e_grade.py {{.CLI_ARGS}}"
 
+  matrix:
+    desc: "Compare models over the whole ticket corpus. Usage: task e2e:matrix -- --models claude-haiku-4-5,claude-sonnet-5"
+    cmds:
+      # Every cell is a real probe run, so cost scales with models x tickets --
+      # roughly $0.05-0.16 each. Point POSTGRES_URL at the local container
+      # (see the header) unless you want experiment jobs in the deployed DB.
+      - "{{.SECRETS_CMD}} uv run python scripts/e2e_matrix.py {{.CLI_ARGS}}"
+
   live-and-grade:
     desc: "Run a ticket then grade it. Usage: task e2e:live-and-grade -- missing-bound"
     cmds:

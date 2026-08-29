@@ -869,6 +869,64 @@ async def _show_costs(config: Config, project: str | None = None) -> None:
     await db.close()
 
 
+def _eff_table(rows: list[dict], key_fields: tuple[str, ...], label_width: int = 34) -> None:
+    """Print one effectiveness rollup. Dollars and failure rate side by side."""
+    print(f"  {'':{label_width}}  {'runs':>5} {'spend':>9} {'$/run':>8} {'turns':>6} {'fail':>10} {'ceil':>5}")
+    for r in rows:
+        label = " / ".join(str(r[f]) for f in key_fields)
+        print(
+            f"  {label:{label_width}.{label_width}}  {r['runs']:>5} {r['spend_usd']:>8.2f}$ {r['cost_per_run_usd']:>7.3f}$ "
+            f"{r['avg_turns']:>6.1f} {r['failed']:>4} ({r['failure_rate'] * 100:>4.1f}%) {r['ceiling_hits']:>5}"
+        )
+
+
+async def _show_effectiveness(config: Config, project: str | None = None, days: int = 30) -> None:
+    """Show cost joined to quality, so a cheap-but-flaky model cannot hide."""
+    db = _create_db(config)
+    await db.connect()
+    try:
+        eff = await db.get_model_effectiveness(project=project, days=days, turn_ceiling=config.agent_max_turns)
+        out = await db.get_outcome_breakdown(project=project, days=days)
+
+        print(f"\n=== Effectiveness (last {days} days) ===")
+        if project:
+            print(f"Project: {project}")
+
+        print("\n-- Headline --")
+        print(f"  Total spend:            ${out['total_spend_usd']:.2f} over {out['total_jobs']} jobs")
+        if out["cost_per_success_usd"] is None:
+            print("  Cost per success:       n/a (no job reached done in this window)")
+        else:
+            print(f"  Cost per SUCCESS:       ${out['cost_per_success_usd']:.2f}  ({out['successful_jobs']} done)")
+            print("                          ^ all spend / finished jobs — failed work is a cost of the successes")
+
+        print("\n-- Where the money went --")
+        for r in out["by_status"]:
+            share = 0.0
+            if out["total_spend_usd"]:
+                share = r["spend_usd"] / out["total_spend_usd"] * 100
+            print(f"  {r['status']:18s} {r['jobs']:>3} jobs  ${r['spend_usd']:>8.2f}  ({share:4.1f}%)")
+
+        print(f"\n-- By model (ceiling = runs at >= {eff['turn_ceiling']} turns, today's AGENT_MAX_TURNS) --")
+        _eff_table(eff["by_model"], ("model",))
+        if eff["external_runs"]:
+            print(f"  (+ {eff['external_runs']} external herder runs, {eff['external_failed']} failed — unmetered, excluded above)")
+
+        print("\n-- By model x difficulty (compare WITHIN a difficulty; the classifier routes easy work to the cheap tier) --")
+        _eff_table(eff["by_model_difficulty"], ("model", "difficulty"))
+
+        print("\n-- By role --")
+        _eff_table(eff["by_role"], ("role",))
+
+        q = out["quality"]
+        print("\n-- Rework --")
+        print(f"  Tasks revised:      {q['tasks_revised']} ({q['revisions_total']} revisions, max {q['revisions_max']} on one task)")
+        print(f"  Tasks retried:      {q['tasks_retried']}")
+        print(f"  Review verdicts:    {q['verdict_approve']} approve / {q['verdict_request_changes']} request_changes")
+    finally:
+        await db.close()
+
+
 async def _run_agent_worker(config: Config) -> int:
     """K8s agent worker mode: pull work item, run LiteLLM loop, publish result."""
     import os
@@ -974,8 +1032,10 @@ def main():
     parser.add_argument("--status", action="store_true", help="Show recent review status")
     parser.add_argument("--job-status", metavar="JOB_ID", help="Show job status + tasks + agents")
     parser.add_argument("--costs", action="store_true", help="Show cost summary")
+    parser.add_argument("--effectiveness", action="store_true", help="Show cost joined to quality, per model/role/difficulty")
     parser.add_argument("--backfill-artifacts", action="store_true", help="Upload artifacts for completed jobs to S3")
-    parser.add_argument("--project", "-p", dest="global_project", help="Project filter (for --costs)")
+    parser.add_argument("--project", "-p", dest="global_project", help="Project filter (for --costs/--effectiveness)")
+    parser.add_argument("--days", type=int, default=30, help="Lookback window for --effectiveness (default: 30)")
 
     args = parser.parse_args()
 
@@ -1013,6 +1073,10 @@ def main():
 
     if args.costs:
         asyncio.run(_show_costs(config, args.global_project))
+        return
+
+    if args.effectiveness:
+        asyncio.run(_show_effectiveness(config, args.global_project, args.days))
         return
 
     if args.backfill_artifacts:

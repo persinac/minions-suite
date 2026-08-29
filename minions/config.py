@@ -184,6 +184,13 @@ class Config:
     job_cost_limit_usd: float = 25.0
     agent_max_turns: int = 60
 
+    # Lookback for the /metrics gauges. Wide by default: these are cost and
+    # quality aggregates for judging a model over time, not an ops signal that
+    # needs to react in minutes, and a short window makes a low-volume week look
+    # like a regression. Narrow it with `minion --effectiveness --days N` when
+    # you want a specific period rather than by moving this.
+    metrics_window_days: int = 90
+
     # How long shutdown waits for in-flight in-process agents before giving up
     # on them. Every rollout SIGTERMs the pod, and stop() used to mark running
     # agents failed the instant it was called — so a routine image bump threw
@@ -493,6 +500,7 @@ class Config:
             agent_cost_limit_usd=_env_or_float("AGENT_COST_LIMIT_USD", _get("engine", "agent_cost_limit_usd"), 8.0),
             job_cost_limit_usd=_env_or_float("JOB_COST_LIMIT_USD", _get("engine", "job_cost_limit_usd"), 25.0),
             agent_max_turns=_env_or_int("AGENT_MAX_TURNS", _get("engine", "agent_max_turns"), 60),
+            metrics_window_days=_env_or_int("METRICS_WINDOW_DAYS", _get("engine", "metrics_window_days"), 90),
             shutdown_grace_seconds=_env_or_float("SHUTDOWN_GRACE_SECONDS", _get("engine", "shutdown_grace_seconds"), 300.0),
             require_ci_pass=_env_or_bool("REQUIRE_CI_PASS", _get("engine", "require_ci_pass"), True),
             ci_merge_wait_seconds=_env_or_int("CI_MERGE_WAIT_SECONDS", _get("engine", "ci_merge_wait_seconds"), 300),

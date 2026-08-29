@@ -128,7 +128,31 @@ task minion:server
 # Check job status
 task minion:status
 task minion:costs -- --project payments-api
+
+# Is the cheap model actually cheaper? Cost joined to quality.
+uv run python -m minions --effectiveness --days 90
 ```
+
+## Measuring effectiveness
+
+Spend alone cannot tell you whether a cheaper model is worth it — one that costs half as
+much per token but needs an extra revision round is a loss, and a spend-by-model chart
+shows it as a win.
+
+`--effectiveness` pairs the dollars with failure rate, average turns and turn-ceiling
+hits, per model, role and difficulty. Its headline is **cost per success**: all spend
+divided by the jobs that actually finished, so failed work is charged to the successes it
+did not produce.
+
+The same aggregates are exposed as Prometheus gauges on the dashboard's `/metrics`
+(`minion_cost_per_success_usd`, `minion_spend_usd`, `minion_agent_failures`, …). They are
+read from the database on scrape rather than accumulated in memory, so they survive
+rollouts and cover history rather than starting from zero on each deploy.
+
+To compare models on equal footing, `task e2e:matrix -- --models a,b` runs one fixed
+ticket corpus through each — the per-model numbers above are confounded by the difficulty
+classifier already routing easy tickets to the cheap tier. Note the matrix exercises only
+the spec analyst and arbiter, not the engineer or reviewer.
 
 ## Architecture
 

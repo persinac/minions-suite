@@ -20,10 +20,19 @@ import argparse
 import asyncio
 import re
 import sys
+from pathlib import Path
 
-from minions.config import Config
-from minions.core.models import JobStatus
-from minions.core.spec_contract import extract_assumptions, has_assumptions
+# pyproject.toml declares no [build-system], so `minions` is never installed into
+# the venv -- it imports only because the project root happens to be on sys.path.
+# True for `python -m minions`, false for a script file, where sys.path[0] is
+# scripts/ rather than the cwd. Without this, `task e2e:grade` dies on import.
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from minions.config import Config  # noqa: E402
+from minions.core.models import JobStatus  # noqa: E402
+from minions.core.spec_contract import extract_assumptions, has_assumptions  # noqa: E402
 
 TERMINAL = {JobStatus.DONE, JobStatus.NO_WORK_NEEDED, JobStatus.FAILED}
 

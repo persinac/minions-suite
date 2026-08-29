@@ -46,6 +46,79 @@ def _ts(value) -> str | None:
     return str(value)
 
 
+# Counting fields roll up by summation; everything else is derived afterwards.
+# avg_turns deliberately is NOT here -- averaging an average across groups of
+# unequal size is wrong, so it is recomputed from turns_total / runs.
+_SUMMED = ("runs", "spend_usd", "input_tokens", "output_tokens", "cache_read_tokens", "failed", "ceiling_hits", "turns_total")
+
+
+def _derive(row: dict) -> dict:
+    """Add the ratios that make a row comparable across models."""
+    runs = row["runs"] or 0
+    if runs:
+        row["avg_turns"] = round(row["turns_total"] / runs, 1)
+        row["failure_rate"] = round(row["failed"] / runs, 4)
+        row["ceiling_rate"] = round(row["ceiling_hits"] / runs, 4)
+        row["cost_per_run_usd"] = round(row["spend_usd"] / runs, 4)
+    else:
+        row["avg_turns"] = 0.0
+        row["failure_rate"] = 0.0
+        row["ceiling_rate"] = 0.0
+        row["cost_per_run_usd"] = 0.0
+    return row
+
+
+def _effectiveness_row(r) -> dict:
+    """Normalise one SQL row: Decimal -> float, and keep turns as a total.
+
+    The query returns AVG(num_turns); multiplying back to a total here is what
+    lets _roll_up combine groups correctly. Rounding to int is safe because
+    num_turns is an INT column, so the product is a whole number up to float
+    representation error.
+    """
+    runs = int(r["runs"])
+    return _derive(
+        {
+            "model": r["model"],
+            "role": r["role"],
+            "difficulty": r["difficulty"],
+            "runs": runs,
+            "spend_usd": round(float(r["spend_usd"]), 4),
+            "input_tokens": int(r["input_tokens"]),
+            "output_tokens": int(r["output_tokens"]),
+            "cache_read_tokens": int(r["cache_read_tokens"]),
+            "turns_total": round(float(r["avg_turns"]) * runs),
+            "max_turns": int(r["max_turns"]),
+            "failed": int(r["failed"]),
+            "ceiling_hits": int(r["ceiling_hits"]),
+        }
+    )
+
+
+def _roll_up(rows: list[dict], keys: tuple[str, ...]) -> list[dict]:
+    """Collapse detail rows onto a subset of their grouping keys.
+
+    Done in Python rather than as extra GROUP BY queries: the detail set is at
+    most a few dozen rows, and one round-trip beats four.
+    """
+    out: dict[tuple, dict] = {}
+    for row in rows:
+        k = tuple(row[key] for key in keys)
+        acc = out.get(k)
+        if acc is None:
+            acc = {key: row[key] for key in keys}
+            acc.update(dict.fromkeys(_SUMMED, 0))
+            acc["max_turns"] = 0
+            out[k] = acc
+        for field in _SUMMED:
+            acc[field] += row[field]
+        acc["max_turns"] = max(acc["max_turns"], row["max_turns"])
+    for acc in out.values():
+        acc["spend_usd"] = round(acc["spend_usd"], 4)
+        _derive(acc)
+    return sorted(out.values(), key=lambda r: r["spend_usd"], reverse=True)
+
+
 class PostgresDatabase:
     """Async PostgreSQL database for production use."""
 
@@ -176,6 +249,157 @@ class PostgresDatabase:
                 "avg_cost_per_job": round(avg_cost, 4),
                 "period_days": days,
             }
+
+    async def get_model_effectiveness(self, project: str | None = None, days: int = 30, turn_ceiling: int = 100) -> dict:
+        """Cost joined to quality, per (model, role, difficulty).
+
+        Cost alone cannot answer "is the cheaper model worth it": a model that
+        costs half as much per token and needs one extra revision round is a
+        loss, and a spend-by-model chart shows it as a win. So every row carries
+        the failure rate and turn count next to the dollars.
+
+        Three things the raw tables do not give you:
+
+        1. `herder:%` models are excluded. Those rows are external
+           subscription-backed workers recording $0.00 by design -- real work at
+           no metered cost. Averaged in with metered models they drag every
+           per-run figure toward zero. Counted separately as `external_runs`.
+
+        2. Turn-ceiling hits are surfaced. Exhausting AGENT_MAX_TURNS leaves the
+           row status='done', error=NULL -- byte-identical to a clean finish (see
+           k8s/base/minion-suite/deployment.yaml). A model that quietly runs out
+           of turns looks perfect here unless it is counted, so it is.
+           `turn_ceiling` is the CURRENT configured limit, not what was in force
+           when the row was written; a run predating a limit change is judged
+           against today's number.
+
+        3. Rows are stratified by difficulty. The classifier already routes easy
+           tickets to the cheap tier, so an un-stratified per-model comparison
+           measures ticket mix as much as model. Compare within a difficulty.
+
+        Money is summed as numeric: cost_usd is REAL, and float error compounds
+        over thousands of rows.
+        """
+        where = ["a.started_at >= NOW() - MAKE_INTERVAL(days => %s)"]
+        params: list = [days]
+        if project:
+            where.append(f"EXISTS (SELECT 1 FROM {JOB_SCHEMA}.tasks t WHERE t.job_id = a.job_id AND t.service = %s)")
+            params.append(project)
+        where_sql = " AND ".join(where)
+
+        detail_sql = f"""
+            SELECT
+                COALESCE(a.model, 'unknown') AS model,
+                COALESCE(a.role, 'unknown') AS role,
+                COALESCE(j.difficulty, 'unclassified') AS difficulty,
+                COUNT(*) AS runs,
+                COALESCE(SUM(a.cost_usd::numeric), 0) AS spend_usd,
+                COALESCE(SUM(a.input_tokens), 0) AS input_tokens,
+                COALESCE(SUM(a.output_tokens), 0) AS output_tokens,
+                COALESCE(SUM(a.cache_read_tokens), 0) AS cache_read_tokens,
+                COALESCE(AVG(a.num_turns), 0) AS avg_turns,
+                COALESCE(MAX(a.num_turns), 0) AS max_turns,
+                COUNT(*) FILTER (WHERE a.status = 'failed') AS failed,
+                COUNT(*) FILTER (WHERE a.num_turns >= %s) AS ceiling_hits
+            FROM {JOB_SCHEMA}.agents a
+            LEFT JOIN {JOB_SCHEMA}.jobs j ON j.id = a.job_id
+            WHERE {where_sql} AND COALESCE(a.model, '') NOT LIKE 'herder:%%'
+            GROUP BY 1, 2, 3
+            ORDER BY spend_usd DESC
+        """
+        external_sql = f"""
+            SELECT COUNT(*) AS runs, COUNT(*) FILTER (WHERE a.status = 'failed') AS failed
+            FROM {JOB_SCHEMA}.agents a
+            WHERE {where_sql} AND COALESCE(a.model, '') LIKE 'herder:%%'
+        """
+
+        async with self._pool.connection() as conn:
+            # turn_ceiling FIRST: psycopg binds %s by position in the query TEXT,
+            # and the ceiling placeholder sits in the SELECT list, which precedes
+            # the WHERE clause holding days and project. Passing them in logical
+            # order instead silently swapped the two -- the window became
+            # `NOW() - turn_ceiling days` and the ceiling filter became
+            # `num_turns >= days`, so every run counted as a ceiling hit.
+            cur = await conn.execute(detail_sql, [turn_ceiling, *params])
+            detail = [_effectiveness_row(r) for r in await cur.fetchall()]
+            cur = await conn.execute(external_sql, params)
+            ext = await cur.fetchone()
+
+        return {
+            "period_days": days,
+            "turn_ceiling": turn_ceiling,
+            "rows": detail,
+            "by_model": _roll_up(detail, ("model",)),
+            "by_model_difficulty": _roll_up(detail, ("model", "difficulty")),
+            "by_role": _roll_up(detail, ("role",)),
+            "external_runs": ext["runs"],
+            "external_failed": ext["failed"],
+        }
+
+    async def get_outcome_breakdown(self, project: str | None = None, days: int = 30) -> dict:
+        """Where the money went, and how much of it bought a finished job.
+
+        The headline is `cost_per_success_usd`: TOTAL spend over jobs that reached
+        `done`, not the spend of successful jobs alone. Failed work is a real cost
+        of the successes -- amortising it is the whole point, and it is what makes
+        a cheap-but-flaky model show up as expensive.
+        """
+        where = ["j.created_at >= NOW() - MAKE_INTERVAL(days => %s)"]
+        params: list = [days]
+        if project:
+            where.append(f"EXISTS (SELECT 1 FROM {JOB_SCHEMA}.tasks t WHERE t.job_id = j.id AND t.service = %s)")
+            params.append(project)
+        where_sql = " AND ".join(where)
+
+        status_sql = f"""
+            SELECT j.status,
+                   COUNT(DISTINCT j.id) AS jobs,
+                   COALESCE(SUM(a.cost_usd::numeric), 0) AS spend_usd
+            FROM {JOB_SCHEMA}.jobs j
+            LEFT JOIN {JOB_SCHEMA}.agents a ON a.job_id = j.id
+            WHERE {where_sql}
+            GROUP BY j.status
+            ORDER BY spend_usd DESC
+        """
+        quality_sql = f"""
+            SELECT
+                COUNT(*) FILTER (WHERE t.revision_count > 0) AS tasks_revised,
+                COUNT(*) FILTER (WHERE t.pr_number IS NOT NULL) AS tasks_with_pr,
+                COALESCE(SUM(t.revision_count), 0) AS revisions_total,
+                COALESCE(MAX(t.revision_count), 0) AS revisions_max,
+                COUNT(*) FILTER (WHERE t.verdict = 'approve') AS verdict_approve,
+                COUNT(*) FILTER (WHERE t.verdict = 'request_changes') AS verdict_request_changes,
+                COUNT(*) FILTER (WHERE t.attempt > 1) AS tasks_retried
+            FROM {JOB_SCHEMA}.tasks t
+            JOIN {JOB_SCHEMA}.jobs j ON j.id = t.job_id
+            WHERE {where_sql}
+        """
+
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(status_sql, params)
+            by_status = [{"status": r["status"], "jobs": r["jobs"], "spend_usd": round(float(r["spend_usd"]), 4)} for r in await cur.fetchall()]
+            cur = await conn.execute(quality_sql, params)
+            q = dict(await cur.fetchone())
+
+        total_spend = sum(r["spend_usd"] for r in by_status)
+        total_jobs = sum(r["jobs"] for r in by_status)
+        successes = sum(r["jobs"] for r in by_status if r["status"] == JobStatus.DONE)
+        # A window with no completed job has no meaningful cost-per-success. None
+        # says that; 0.0 would read as "free".
+        if successes:
+            cost_per_success = round(total_spend / successes, 4)
+        else:
+            cost_per_success = None
+
+        return {
+            "period_days": days,
+            "by_status": by_status,
+            "total_jobs": total_jobs,
+            "total_spend_usd": round(total_spend, 4),
+            "successful_jobs": successes,
+            "cost_per_success_usd": cost_per_success,
+            "quality": {k: int(v) for k, v in q.items()},
+        }
 
     # ===================================================================
     # Jobs
