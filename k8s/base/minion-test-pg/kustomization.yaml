@@ -1,0 +1,33 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# A throwaway Postgres that exists only so an agent working on THIS repo can run
+# its own test suite.
+#
+# The suite needs a real Postgres with pgvector -- not SQLite, and not the
+# production database. Without one, every DB-backed test errors at fixture setup
+# and an agent reads that as having broken 1400 tests it never touched.
+#
+# It is deliberately NOT the deployed database. conftest namespaces itself into a
+# `minions_test` schema, so pointing at production would technically be isolated
+# from job data -- but it would still run DDL against the production instance,
+# and two concurrent test runs would collide on that one schema.
+
+resources:
+  - deployment.yaml
+  - service.yaml
+
+configMapGenerator:
+  - name: minion-test-pg-initdb
+    files:
+      - initdb/01-extensions.sql
+    options:
+      # Stable name: the Deployment references this ConfigMap by name and the
+      # only thing in it is an initdb script that runs on a fresh volume anyway,
+      # so a content hash would churn the pod template for no benefit.
+      disableNameSuffixHash: true
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: minion-suite
+    includeSelectors: false

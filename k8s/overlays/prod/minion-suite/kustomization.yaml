@@ -12,6 +12,11 @@ resources:
   - ../../../base/minion-suite
   - ../../../base/input-sources
   - ../../../base/minion-dashboard
+  # Not part of the product -- a test fixture. `mcp-minions` is now a registered
+  # project pointing at this repo, so an agent can be handed a ticket against the
+  # orchestrator itself, and its test_command is `pytest`. That suite needs a real
+  # Postgres with pgvector or every DB-backed test errors at fixture setup.
+  - ../../../base/minion-test-pg
 
 labels:
   - pairs:
