@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote
@@ -34,6 +35,19 @@ class GitLabIssuesPoller:
         self._running = False
         # Keyed by "{project_id}:{issue_iid}"
         self._active: dict[str, dict[str, Any]] = {}
+        # Liveness stamp read by the poller watchdog in cli.py. Advanced only
+        # after a poll cycle returns without raising, so a poller that fails
+        # every cycle goes stale instead of looking busy. Seeded at construction
+        # so the first cycle gets a full window before the watchdog judges it.
+        self.last_poll_at = time.monotonic()
+
+    @property
+    def poll_interval(self) -> int:
+        """Seconds between poll cycles, under the name the watchdog reads.
+
+        Each poller names its own config key; the watchdog wants one name.
+        """
+        return self.config.gitlab_issues_poll_interval
 
     async def start(self):
         """Main polling loop."""
@@ -50,6 +64,10 @@ class GitLabIssuesPoller:
             while self._running:
                 try:
                     await self._poll()
+                    # Reached only when the cycle actually completed. Stamping
+                    # before the call, or in a `finally`, would make a poller
+                    # that raises every cycle look identical to a healthy one.
+                    self.last_poll_at = time.monotonic()
                 except httpx.HTTPError as e:
                     logger.error("GitLab API error during poll: %s", e)
                 except Exception:
