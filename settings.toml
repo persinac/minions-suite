@@ -36,6 +36,12 @@ max_concurrent_reviews = 3
 max_concurrent_jobs = 1
 max_revisions = 3
 
+# Requeues allowed after an agent dies of an infrastructural cause (engine
+# restart, transport failure) WITHOUT spending one of the task's max_attempts.
+# A rollout is not evidence that the work cannot be done. Bounded so a permanent
+# fault that also kills at turn 0 cannot requeue forever.
+max_infra_retries = 3
+
 # --- Spend ceilings (USD; 0 disables) ---------------------------------------
 # Nothing bounded cost before these existed. The agent loop stopped on turns or
 # wall-clock only, with max_turns hardcoded at 100 — one backend_engineer run

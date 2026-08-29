@@ -606,12 +606,35 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
                 if not task:
                     continue
                 terminal = {TaskStatus.MERGED, TaskStatus.DONE, TaskStatus.FAILED}
-                if task.status not in terminal and task.attempt < task.max_attempts:
+                # A restart is the platform's fault, not the work's. Re-read the
+                # agent so the just-written orphan error is what gets judged --
+                # the in-memory row still says `running`, and the same rule has
+                # to hold here as in dev.manage_dev_tasks or a rollout charges an
+                # attempt on the way up that it was spared on the way down.
+                free_retry = False
+                orphaned = await self.db.get_agent(agent.id)
+                if orphaned is not None and dev.is_infrastructure_death(orphaned):
+                    deaths = await dev.count_infra_deaths(self.db, agent.job_id, task.id)
+                    free_retry = deaths <= self.config.max_infra_retries
+
+                if task.status not in terminal and (free_retry or task.attempt < task.max_attempts):
                     try:
                         await self.db.update_task(task.id, status=TaskStatus.FAILED, agent_role="", error="agent orphaned by restart")
-                        await self.db.update_task(task.id, status=TaskStatus.PENDING, agent_role="", attempt=task.attempt + 1)
+                        if free_retry:
+                            await self.db.update_task(task.id, status=TaskStatus.PENDING, agent_role="", error=None)
+                            logger.info(
+                                "Startup cleanup: task %s requeued after restart, attempt %d/%d unchanged",
+                                task.id,
+                                task.attempt,
+                                task.max_attempts,
+                            )
+                            await self.db.record_event(
+                                agent.job_id, "task_infra_requeue", "engine", f"task={task.id} agent={agent.id} reason=restart"
+                            )
+                        else:
+                            await self.db.update_task(task.id, status=TaskStatus.PENDING, agent_role="", attempt=task.attempt + 1)
+                            logger.info("Startup cleanup: recovered task %s (attempt %d/%d)", task.id, task.attempt + 1, task.max_attempts)
                         recovered_count += 1
-                        logger.info("Startup cleanup: recovered task %s (attempt %d/%d)", task.id, task.attempt + 1, task.max_attempts)
                     except InvalidTransitionError as e:
                         logger.warning("Startup cleanup: could not recover task %s: %s", task.id, e)
 
