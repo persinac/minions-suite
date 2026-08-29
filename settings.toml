@@ -104,7 +104,10 @@ max_jobs_per_month = 500
 # ranks value, not difficulty, and would send a typo fix (0.5) to the most
 # expensive model precisely because it is trivial and low-impact.
 #
-# Fail-open: an unclassifiable spec leaves difficulty unset and uses `model`.
+# Fail-open: an unclassifiable spec leaves difficulty unset and uses model_medium.
+# NOT `model` (Opus), which is what it used to do -- two unclassified engineer
+# runs on 2026-07-25 cost $20.57 that way. Being unable to score a ticket is not
+# evidence that the ticket is hard.
 classifier_enabled = true
 classifier_model = "claude-haiku-4-5"
 classifier_max_chars = 6000
