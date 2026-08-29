@@ -21,7 +21,7 @@ spec:
         # See k8s/base/minion-suite/deployment.yaml for why this exists. This
         # Deployment mounts the same ConfigMap and reads it the same way, so it
         # goes stale the same way and needs the same trigger.
-        minion-suite/projects-checksum: "15edd7d073a6f27d0c97d7a2da84f5460c9625b33cdd8ccde180302ae50bb859"
+        minion-suite/projects-checksum: "61df8c04d60222749b1b1274a54d63601579bb030d404b1228d2cd7b48e91aab"
     spec:
       imagePullSecrets:
         - name: ecr-creds

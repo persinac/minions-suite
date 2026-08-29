@@ -628,10 +628,26 @@ projects:
         default_branch: main
         deploy_target: none
 
+  # This is the minion suite's OWN repo -- the orchestrator, self-hosted.
+  #
+  # The key stays `mcp-minions` (it matches the Doppler project and any task
+  # rows already written against it), but everything it points at moved:
+  # `flippin-balls/mcp-minions` is a stale mirror, last pushed 2026-08-22, and
+  # live development is on `persinac/minions-suite`. A job routed here before
+  # 2026-08-29 would have cloned the mirror and opened a PR nobody reads.
+  #
+  # The description names BOTH spellings on purpose. The arbiter routes on spec
+  # evidence and grounds on these descriptions, and a ticket will say
+  # "minions-suite" far more often than it says "mcp-minions".
+  #
+  # repo_path moved with it. `ensure_checkout` decides a checkout is usable from
+  # `_is_git_repo(path)` alone and never compares its remote to `clone_url`, so
+  # a directory left over from the mirror would be silently fetched from the old
+  # origin and this repoint would not take. A new path cannot collide with one.
   mcp-minions:
-    description: "MCP server to orchestrate the minions"
-    project_id: flippin-balls/mcp-minions
-    repo_path: /repos/mcp-minions
+    description: "minions-suite (aka mcp-minions) — the minion suite itself: MCP server, job engine, and agent orchestration"
+    project_id: persinac/minions-suite
+    repo_path: /repos/minions-suite
     auto_merge: true
     review_profile:
       roles: [backend]
@@ -642,10 +658,10 @@ projects:
       timeout: 1800
     services:
       mcp-minions:
-        project_id: flippin-balls/mcp-minions
+        project_id: persinac/minions-suite
         git_provider: github
-        clone_url: https://github.com/flippin-balls/mcp-minions.git
-        repo_path: /repos/mcp-minions
+        clone_url: https://github.com/persinac/minions-suite.git
+        repo_path: /repos/minions-suite
         language: python
         test_command: pytest
         lint_command: ruff check .
