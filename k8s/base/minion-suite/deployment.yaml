@@ -34,7 +34,7 @@ spec:
         #
         # Kept in sync by scripts/sync-config-checksum.sh and enforced by
         # tests/test_projects_yaml.py::TestConfigChecksum.
-        minion-suite/projects-checksum: "15edd7d073a6f27d0c97d7a2da84f5460c9625b33cdd8ccde180302ae50bb859"
+        minion-suite/projects-checksum: "61df8c04d60222749b1b1274a54d63601579bb030d404b1228d2cd7b48e91aab"
     spec:
       # The engine drains in-flight in-process agents on SIGTERM
       # (shutdown_grace_seconds, default 300s) rather than failing them
