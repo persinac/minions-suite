@@ -34,4 +34,4 @@ labels:
 images:
   - name: minion-suite
     newName: 162756281464.dkr.ecr.us-east-1.amazonaws.com/minion-suite
-    newTag: "0.8.62"
+    newTag: "0.8.63"
