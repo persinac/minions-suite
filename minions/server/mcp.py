@@ -1027,18 +1027,29 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
 
     @mcp.tool()
     async def report_no_work_needed(task_id: str, reason: str) -> str:
-        """Report that the task's requested change is ALREADY PRESENT in the codebase.
+        """Close this task with no PR. Two cases only.
 
-        Use this when you have read the code and confirmed the work described by
-        the ticket has already been done — not when the task is hard, blocked, or
-        partly finished. Give a concrete `reason`: name the file, symbol, or
-        commit that already satisfies it, so a human can check the claim.
+        (1) ALREADY PRESENT — you read the code and the work described by the
+        ticket has already been done. Name the file, symbol or commit that
+        satisfies it, so a human can check the claim.
+
+        (2) NOT DELIVERABLE BY CODE — the task requires an action you cannot
+        perform: an operation gated on MFA, a hardware token, a console session,
+        or a one-time human approval. Name the exact blocking action, e.g.
+        "needs kms:PutKeyPolicy with an MFA session".
+
+        Not for a task that is merely hard, or blocked on something that will
+        later clear. Case (2) is a permanent limit on the agent, not a temporary
+        one on the work.
 
         This closes the task without a PR and is terminal. If every engineer task
         on the job reports it, the job finishes as `no_work_needed` rather than
         being merged or deployed.
 
-        Prefer this over inventing a docs-only change to justify the run.
+        Prefer this over inventing a docs-only change — or a script wrapping the
+        very action you cannot take — to justify the run. Job f7e0563f merged 607
+        lines of script, test and notes for an MFA-gated KMS change that still
+        has not happened.
         """
         if not reason or not reason.strip():
             # An unexplained "nothing to do" is indistinguishable from an agent

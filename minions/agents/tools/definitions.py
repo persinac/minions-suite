@@ -509,15 +509,23 @@ ENGINEER_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     _fn(
         "report_no_work_needed",
         (
-            "Report that the change this task asks for is ALREADY PRESENT in the codebase. "
-            "Use it only after reading the code and confirming that — not when the task is hard, "
-            "blocked, or partly done. Closes the task with no PR. Prefer this over inventing a "
-            "docs-only change to justify the run."
+            "Close this task with no PR. Two cases only: (1) the change is ALREADY PRESENT in the "
+            "codebase, confirmed by reading it; or (2) no code change can deliver it, because it "
+            "requires an action you cannot perform — an operation gated on MFA, a hardware token, "
+            "a console session, or a one-time human approval. "
+            "NOT for a task that is merely hard, or blocked on something that will later clear: "
+            "case (2) is about a permanent limit on you, not a temporary one on the work. "
+            "Prefer this over inventing a docs-only change — or a script wrapping the action you "
+            "cannot take — to justify the run."
         ),
         {
             "reason": {
                 "type": "string",
-                "description": "Concrete evidence: the file, symbol or commit that already satisfies the task, so a human can check the claim.",
+                "description": (
+                    "Concrete evidence a human can check: for case (1) the file, symbol or commit that already "
+                    "satisfies the task; for case (2) the exact blocking action, e.g. 'needs kms:PutKeyPolicy "
+                    "with an MFA session'."
+                ),
             },
         },
     ),
