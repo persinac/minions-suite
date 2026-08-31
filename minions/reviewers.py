@@ -2,9 +2,10 @@
 
 Ported from the swarm orchestrator's pre-scan. Every specialist is now
 signal-gated, including `api` and `backend-architecture` — conditionality is
-the cost control, and it used to stop at three of five. `backend-architecture`
-is still the broad default (it fires on almost anything that isn't purely
-frontend/UI), but it is no longer unconditional, and neither is `api`.
+the cost control, and it used to stop at three of five, now six.
+`backend-architecture` is still the broad default (it fires on almost
+anything that isn't purely frontend/UI), but it is no longer unconditional,
+and neither is `api`.
 
 That changed after job 3945783f (2026-08-31): on a pure-C firmware diff,
 `api` correctly self-abstained ("no public-surface changes") but still cost a
@@ -13,10 +14,18 @@ at all — it approved on "no architectural footprint, no loops, no scaling
 implications", which is true and also not a review of anything. Neither
 persona's checklist covers embedded C, so neither could have caught the
 actual bug in that diff (`#ifdef DEV_PRINT` vs `#if DEV_PRINT` — the engineer
-found it, not a reviewer). Gating `api` on real API/contract signals stops
-the wasted run; broadening `backend-architecture`'s content to cover
-embedded/systems C (see prompts/reviewers/backend-architecture.md) plus
-giving it an N/A path stops the rubber stamp.
+found it, not a reviewer).
+
+First fix folded the embedded-C checklist into `backend-architecture` itself.
+That was wrong: on job de255816 (the very next firmware PR), only
+`backend-architecture` fired, when a firmware diff should wake it AND a
+dedicated embedded specialist — the same "generalist plus specialist" shape
+`dba`/`pythonista`/`frontend` already have relative to `backend-architecture`.
+`firmware` (prompts/reviewers/firmware.md) now owns the embedded-specific
+hazards (ISR safety, volatile correctness, buffer/pointer bounds, guard
+correctness); `backend-architecture` keeps the language-agnostic
+architecture lens and defers embedded specifics to it, same as it already
+defers SQL to `dba` and Python idiom to `pythonista`.
 
 Note the DBA trigger is deliberately CONTENT-based as well as path-based. A
 migration is obvious from its path, but a lock-taking `ALTER TABLE` or an N+1
@@ -24,7 +33,9 @@ migration is obvious from its path, but a lock-taking `ALTER TABLE` or an N+1
 findings a DBA is actually there to catch. `project_registry.infer_profile`
 matches on paths alone and would miss every one of them. `api`'s trigger is
 built the same way for the same reason: a FastAPI route defined in `main.py`
-has no tell-tale path either.
+has no tell-tale path either. `firmware`, like `frontend` and `pythonista`,
+is extension-based — C/C++ hazards don't depend on which repo the file lives
+in, so gate on the language, not the path.
 """
 
 import logging
@@ -38,8 +49,9 @@ BACKEND_ARCHITECTURE = "backend-architecture"
 DBA = "dba"
 PYTHONISTA = "pythonista"
 FRONTEND = "frontend"
+FIRMWARE = "firmware"
 
-_ALL_SPECIALTIES = (API, BACKEND_ARCHITECTURE, PYTHONISTA, DBA, FRONTEND)
+_ALL_SPECIALTIES = (API, BACKEND_ARCHITECTURE, FIRMWARE, PYTHONISTA, DBA, FRONTEND)
 
 _DB_PATH = re.compile(r"(\.sql$|/migrations?/|^migrations?/|/migrate/|/alembic/|/versions/)", re.IGNORECASE)
 
@@ -96,6 +108,12 @@ _API_SIGNALS = (
     "graphene.objecttype",
     "strawberry.type",
 )
+
+_FIRMWARE_EXT = (".c", ".h", ".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx", ".ino", ".s")
+
+
+def _is_firmware(path: str) -> bool:
+    return path.lower().endswith(_FIRMWARE_EXT)
 
 
 def _is_frontend(path: str) -> bool:
@@ -170,6 +188,9 @@ def infer_specialists(changed_files: list[str], diff: str = "") -> list[str]:
     if changed_files and not _is_pure_frontend(changed_files):
         selected.append(BACKEND_ARCHITECTURE)
 
+    if any(_is_firmware(path) for path in changed_files):
+        selected.append(FIRMWARE)
+
     if any(path.lower().endswith(".py") for path in changed_files):
         selected.append(PYTHONISTA)
 
@@ -199,17 +220,19 @@ def skipped_specialists(selected: list[str]) -> list[str]:
 #
 # `backend-architecture` is the anchor: it's still the single broadest
 # correctness lens, now covering everything except pure-frontend diffs rather
-# than everything unconditionally. The other four are ranked by how likely
-# their signal is to matter when several fire together — a DBA or frontend
-# finding usually has a bigger blast radius (data integrity, a broken UI)
-# than an idiom nit, and `api` ranks last: even when it fires on a genuine
-# signal, a contract nit is the easiest of the four to live without for one
-# review round if something else is competing for the slot.
+# than everything unconditionally. `firmware` slots in at the TOP of the
+# remaining priority, ahead of everything that predates it: firmware ships to
+# physical devices with no hardware-in-the-loop testing anywhere in this
+# pipeline (confirmed 2026-08-31 — no self-hosted/bench runner in any of the
+# three firmware repos), so a review here is the only check that will ever
+# run on that code. The other four keep the relative order they already had —
+# that ranking (pythonista, dba, frontend, api last) predates this change and
+# isn't being revisited here.
 
 FANOUT_ANCHOR = BACKEND_ARCHITECTURE
 
 # Order in which a fired conditional claims the remaining slot(s).
-_CONDITIONAL_PRIORITY = (PYTHONISTA, DBA, FRONTEND, API)
+_CONDITIONAL_PRIORITY = (FIRMWARE, PYTHONISTA, DBA, FRONTEND, API)
 
 
 def cap_specialists(selected: list[str], limit: int) -> list[str]:

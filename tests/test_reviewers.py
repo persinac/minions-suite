@@ -23,6 +23,7 @@ from minions.reviewers import (
     API,
     BACKEND_ARCHITECTURE,
     DBA,
+    FIRMWARE,
     FRONTEND,
     PYTHONISTA,
     infer_specialists,
@@ -92,6 +93,34 @@ class TestBackendGating:
 
     def test_empty_diff_wakes_nobody(self):
         assert infer_specialists([]) == []
+
+
+class TestFirmwareGating:
+    """firmware wakes ALONGSIDE backend-architecture, not instead of it — the
+    lesson from job de255816, where folding embedded checks into
+    backend-architecture's own checklist meant only one reviewer fired on a
+    firmware diff instead of a generalist plus a specialist."""
+
+    @pytest.mark.parametrize(
+        "path",
+        ["src/atecc_hex_utils.c", "include/atecc_utils.h", "main/DeviceContext.cpp", "src/hal.S"],
+    )
+    def test_fires_on_c_and_cpp_extensions(self, path):
+        assert FIRMWARE in infer_specialists([path])
+
+    def test_fires_alongside_backend_architecture_not_instead_of_it(self):
+        selected = infer_specialists(["src/atecc_hex_utils.c"])
+        assert FIRMWARE in selected
+        assert BACKEND_ARCHITECTURE in selected
+
+    def test_silent_on_python(self):
+        assert FIRMWARE not in infer_specialists(["app/service.py"])
+
+    def test_silent_on_docs_only(self):
+        assert FIRMWARE not in infer_specialists(["README.md"])
+
+    def test_one_c_file_among_many_is_enough(self):
+        assert FIRMWARE in infer_specialists(["app/service.py", "src/driver.c"])
 
 
 class TestPythonista:
@@ -195,22 +224,26 @@ class TestRealPrs:
         assert set(selected) == {BACKEND_ARCHITECTURE, PYTHONISTA, DBA}
         assert API not in selected
         assert FRONTEND not in selected
-        assert sorted(skipped_specialists(selected)) == sorted([API, FRONTEND])
+        assert sorted(skipped_specialists(selected)) == sorted([API, FIRMWARE, FRONTEND])
 
     def test_a_frontend_only_pr_wakes_only_the_frontend_reviewer(self):
         selected = infer_specialists(["src/components/Cart.tsx"], diff="+const [x, setX] = useState(0)\n")
 
         assert selected == [FRONTEND]
-        assert sorted(skipped_specialists(selected)) == sorted([API, BACKEND_ARCHITECTURE, PYTHONISTA, DBA])
+        assert sorted(skipped_specialists(selected)) == sorted([API, BACKEND_ARCHITECTURE, FIRMWARE, PYTHONISTA, DBA])
 
     def test_the_esp_common_pr(self):
-        """Job 3945783f, for real: pure C, no API surface, not frontend."""
+        """Job 3945783f, for real: pure C, no API surface, not frontend —
+        should wake backend-architecture AND firmware. (It didn't, the first
+        time this fix shipped: folding embedded checks into
+        backend-architecture's own persona instead of a separate specialist
+        meant job de255816's firmware PR got only one reviewer.)"""
         files = ["src/atecc_hex_utils.c", "src/atecc_utils_crypto.c"]
         diff = "+#define DEV_PRINT 0\n"
 
         selected = infer_specialists(files, diff)
 
-        assert selected == [BACKEND_ARCHITECTURE]
+        assert selected == [BACKEND_ARCHITECTURE, FIRMWARE]
 
 
 class TestPrompts:
@@ -219,7 +252,7 @@ class TestPrompts:
         from pathlib import Path
 
         root = Path(__file__).resolve().parents[1] / "prompts" / "reviewers"
-        for specialty in (API, BACKEND_ARCHITECTURE, DBA, PYTHONISTA, FRONTEND):
+        for specialty in (API, BACKEND_ARCHITECTURE, DBA, PYTHONISTA, FRONTEND, FIRMWARE):
             assert (root / f"{specialty}.md").is_file(), f"missing prompt for {specialty}"
 
     def test_every_prompt_states_its_verdict_contract(self):
@@ -386,10 +419,16 @@ class TestFanoutCap:
         assert BACKEND_ARCHITECTURE not in infer_specialists(["src/App.tsx"])
 
     def test_cap_binds_at_the_limit(self):
-        """A PR that wakes everything still yields exactly `limit` reviewers."""
-        files = ["app/crud/play.py", "src/App.tsx", "db/migrations/1.sql", "app/api/handlers.py"]
-        assert len(infer_specialists(files)) == 5
+        """A PR that wakes everything (now six) still yields exactly `limit` reviewers."""
+        files = ["app/crud/play.py", "src/App.tsx", "db/migrations/1.sql", "app/api/handlers.py", "src/hal.c"]
+        assert len(infer_specialists(files)) == 6
         assert len(self._cap(files)) == 2
+
+    def test_firmware_outranks_everything_but_the_anchor(self):
+        """Highest-priority conditional: no other check runs on this code."""
+        files = ["app/crud/play.py", "src/App.tsx", "db/migrations/1.sql", "app/api/handlers.py", "src/hal.c"]
+        kept = self._cap(files)
+        assert kept == [BACKEND_ARCHITECTURE, FIRMWARE]
 
     @pytest.mark.parametrize("limit", [0, -1])
     def test_non_positive_limit_means_uncapped(self, limit):
