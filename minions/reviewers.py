@@ -1,15 +1,30 @@
 """Which expert reviewers a PR wakes.
 
-Ported from the swarm orchestrator's pre-scan. Two reviewers always run; three
-fire only on signals in the diff, so a Python-only test PR wakes three
-specialists rather than five. That conditionality is the cost control — each
-reviewer is a full agent run.
+Ported from the swarm orchestrator's pre-scan. Every specialist is now
+signal-gated, including `api` and `backend-architecture` — conditionality is
+the cost control, and it used to stop at three of five. `backend-architecture`
+is still the broad default (it fires on almost anything that isn't purely
+frontend/UI), but it is no longer unconditional, and neither is `api`.
+
+That changed after job 3945783f (2026-08-31): on a pure-C firmware diff,
+`api` correctly self-abstained ("no public-surface changes") but still cost a
+full agent run to say so, and `backend-architecture` had no abstention path
+at all — it approved on "no architectural footprint, no loops, no scaling
+implications", which is true and also not a review of anything. Neither
+persona's checklist covers embedded C, so neither could have caught the
+actual bug in that diff (`#ifdef DEV_PRINT` vs `#if DEV_PRINT` — the engineer
+found it, not a reviewer). Gating `api` on real API/contract signals stops
+the wasted run; broadening `backend-architecture`'s content to cover
+embedded/systems C (see prompts/reviewers/backend-architecture.md) plus
+giving it an N/A path stops the rubber stamp.
 
 Note the DBA trigger is deliberately CONTENT-based as well as path-based. A
 migration is obvious from its path, but a lock-taking `ALTER TABLE` or an N+1
 `session.query` inside ordinary application code is not, and those are the
 findings a DBA is actually there to catch. `project_registry.infer_profile`
-matches on paths alone and would miss every one of them.
+matches on paths alone and would miss every one of them. `api`'s trigger is
+built the same way for the same reason: a FastAPI route defined in `main.py`
+has no tell-tale path either.
 """
 
 import logging
@@ -24,8 +39,7 @@ DBA = "dba"
 PYTHONISTA = "pythonista"
 FRONTEND = "frontend"
 
-# Fire on every PR: API surface and architecture are always in scope.
-ALWAYS_RUN = (API, BACKEND_ARCHITECTURE)
+_ALL_SPECIALTIES = (API, BACKEND_ARCHITECTURE, PYTHONISTA, DBA, FRONTEND)
 
 _DB_PATH = re.compile(r"(\.sql$|/migrations?/|^migrations?/|/migrate/|/alembic/|/versions/)", re.IGNORECASE)
 
@@ -49,6 +63,40 @@ _DB_ORM_SIGNALS = (
 
 _FRONTEND_EXT = (".tsx", ".jsx", ".ts", ".js")
 
+# Path segments that are almost never anything but a REST/RPC contract
+# surface, plus schema/IDL file types that ARE the contract.
+_API_PATH = re.compile(
+    r"(^|/)(api|routes?|endpoints?|controllers?)(/|$)|\.proto$|openapi\.(ya?ml|json)$|swagger\.(ya?ml|json)$",
+    re.IGNORECASE,
+)
+
+# Content signals for contract surface that doesn't live under a tell-tale
+# path — a FastAPI route defined in main.py, e.g. Deliberately framework-name
+# specific rather than a generic "def handler" heuristic: the false-positive
+# cost (api fires on something that isn't a contract) is a wasted agent run,
+# same as the api-always-on baseline this replaces, so it's fine to extend
+# this list as new frameworks show up in the fleet rather than guess broadly
+# up front.
+_API_SIGNALS = (
+    "apirouter(",
+    "include_router(",
+    "@app.get(",
+    "@app.post(",
+    "@app.put(",
+    "@app.delete(",
+    "@app.patch(",
+    "@router.get(",
+    "@router.post(",
+    "@router.put(",
+    "@router.delete(",
+    "@router.patch(",
+    "@app.route(",  # flask
+    "response_model=",
+    "from fastapi import",
+    "graphene.objecttype",
+    "strawberry.type",
+)
+
 
 def _is_frontend(path: str) -> bool:
     lowered = path.lower()
@@ -56,6 +104,17 @@ def _is_frontend(path: str) -> bool:
     if lowered.endswith(".d.ts"):
         return False
     return lowered.endswith(_FRONTEND_EXT)
+
+
+def _is_pure_frontend(changed_files: list[str]) -> bool:
+    """True only if every changed file is frontend/UI — and there's at least one.
+
+    This is `backend-architecture`'s negative gate: it fires on anything that
+    ISN'T this. A single non-frontend file alongside ten frontend ones is
+    enough to wake it — "almost everything" means the bar for exclusion is
+    100% frontend, not majority frontend.
+    """
+    return bool(changed_files) and all(_is_frontend(path) for path in changed_files)
 
 
 def _touches_database(changed_files: list[str], diff: str) -> bool:
@@ -77,13 +136,39 @@ def _touches_database(changed_files: list[str], diff: str) -> bool:
     return bool(_DB_SQL_TOKENS.search(added))
 
 
+def _is_api_surface(changed_files: list[str], diff: str) -> bool:
+    if any(_API_PATH.search(path) for path in changed_files):
+        return True
+
+    if not diff:
+        return False
+
+    added = "\n".join(line[1:] for line in diff.splitlines() if line.startswith("+") and not line.startswith("+++"))
+    if not added:
+        return False
+
+    lowered = added.lower()
+    return any(signal in lowered for signal in _API_SIGNALS)
+
+
 def infer_specialists(changed_files: list[str], diff: str = "") -> list[str]:
     """Reviewer specialties this PR should wake, in a stable order.
 
-    `diff` is optional: without it the DBA falls back to path signals only, which
-    is a weaker but never-wrong subset.
+    `diff` is optional: without it, `api` and the DBA fall back to path
+    signals only — a weaker but never-wrong subset.
+
+    Every specialist here is conditional. `backend-architecture` is the
+    broadest gate (fires unless the diff is purely frontend/UI) but it is a
+    gate, not a default — a diff with zero changed files wakes nobody, which
+    is correct: there's nothing to review.
     """
-    selected = list(ALWAYS_RUN)
+    selected: list[str] = []
+
+    if _is_api_surface(changed_files, diff):
+        selected.append(API)
+
+    if changed_files and not _is_pure_frontend(changed_files):
+        selected.append(BACKEND_ARCHITECTURE)
 
     if any(path.lower().endswith(".py") for path in changed_files):
         selected.append(PYTHONISTA)
@@ -98,9 +183,8 @@ def infer_specialists(changed_files: list[str], diff: str = "") -> list[str]:
 
 
 def skipped_specialists(selected: list[str]) -> list[str]:
-    """The conditional reviewers that did not fire — for the audit line."""
-    conditional = (PYTHONISTA, DBA, FRONTEND)
-    return [s for s in conditional if s not in selected]
+    """The specialists that did not fire — for the audit line."""
+    return [s for s in _ALL_SPECIALTIES if s not in selected]
 
 
 # --- Fan-out cap ------------------------------------------------------------
@@ -113,16 +197,19 @@ def skipped_specialists(selected: list[str]) -> list[str]:
 # in infer_specialists: a narrower gate is invisible until something bad merges.
 # The saving shows up immediately; the miss does not show up at all.
 #
-# Priority is "signal wins": a specialist fired because the diff contained
-# evidence for it, which makes it more informative than a generalist that runs
-# unconditionally. So `api` -- which fires on every PR regardless of content --
-# is the one that yields. `backend-architecture` is the anchor because it is the
-# only broad correctness lens left once `api` can drop.
+# `backend-architecture` is the anchor: it's still the single broadest
+# correctness lens, now covering everything except pure-frontend diffs rather
+# than everything unconditionally. The other four are ranked by how likely
+# their signal is to matter when several fire together — a DBA or frontend
+# finding usually has a bigger blast radius (data integrity, a broken UI)
+# than an idiom nit, and `api` ranks last: even when it fires on a genuine
+# signal, a contract nit is the easiest of the four to live without for one
+# review round if something else is competing for the slot.
 
 FANOUT_ANCHOR = BACKEND_ARCHITECTURE
 
 # Order in which a fired conditional claims the remaining slot(s).
-_CONDITIONAL_PRIORITY = (PYTHONISTA, DBA, FRONTEND)
+_CONDITIONAL_PRIORITY = (PYTHONISTA, DBA, FRONTEND, API)
 
 
 def cap_specialists(selected: list[str], limit: int) -> list[str]:
@@ -138,7 +225,6 @@ def cap_specialists(selected: list[str], limit: int) -> list[str]:
 
     priority = [FANOUT_ANCHOR]
     priority += [s for s in _CONDITIONAL_PRIORITY if s in selected]
-    priority.append(API)
 
     keep: list[str] = []
     for specialty in priority:
