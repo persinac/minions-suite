@@ -4,9 +4,17 @@ Conditionality is the cost control: each reviewer is a full agent run, so a
 Python-only test PR should wake three, not five. Over-firing costs money;
 under-firing loses the lens that would have caught the bug.
 
-The DBA trigger is the interesting one — content-based, because a lock-taking
-ALTER TABLE or an N+1 session.query inside ordinary application code has no
-tell-tale path.
+Every specialist is gated now, `api` and `backend-architecture` included.
+That's the fix for job 3945783f (2026-08-31): on a pure-C firmware diff, `api`
+correctly self-abstained but still cost a full run, and `backend-architecture`
+had no abstention path and rubber-stamped a diff its checklist didn't apply to.
+`backend-architecture` stays the broad default — it fires on everything except
+a diff that's 100% frontend/UI files — but it's a gate, not a given.
+
+The DBA and API triggers are both content-based as well as path-based. A
+migration is obvious from its path; a lock-taking ALTER TABLE inside ordinary
+application code, or a FastAPI route defined in main.py, is not — and those
+are exactly the cases each specialist exists to catch.
 """
 
 import pytest
@@ -22,16 +30,68 @@ from minions.reviewers import (
 )
 
 
-class TestAlwaysOn:
-    def test_api_and_architecture_always_fire(self):
-        for files in ([], ["README.md"], ["app/main.py"], ["src/App.tsx"]):
-            selected = infer_specialists(files)
+class TestApiGating:
+    def test_fires_on_api_path(self):
+        assert API in infer_specialists(["app/api/routes/users.py"])
 
-            assert API in selected, files
-            assert BACKEND_ARCHITECTURE in selected, files
+    def test_fires_on_proto_files(self):
+        assert API in infer_specialists(["proto/user.proto"])
 
-    def test_a_docs_only_pr_wakes_only_the_two(self):
-        assert infer_specialists(["README.md", "docs/guide.md"]) == [API, BACKEND_ARCHITECTURE]
+    def test_fires_on_openapi_spec(self):
+        assert API in infer_specialists(["docs/openapi.yaml"])
+
+    def test_fires_on_fastapi_decorator_outside_an_api_path(self):
+        diff = "+@app.get('/health')\n+def health():\n+    return 'ok'\n"
+        assert API in infer_specialists(["app/main.py"], diff)
+
+    def test_fires_on_router_include(self):
+        diff = "+app.include_router(users_router)\n"
+        assert API in infer_specialists(["app/main.py"], diff)
+
+    def test_silent_without_signal(self):
+        diff = "+def helper():\n+    return 1\n"
+        assert API not in infer_specialists(["app/service.py"], diff)
+
+    def test_silent_on_docs_only(self):
+        assert API not in infer_specialists(["README.md", "docs/guide.md"])
+
+    def test_silent_on_firmware_c(self):
+        """Job 3945783f: api ran on an ESP-IDF C diff and correctly returned
+        N/A, but that was still a wasted agent run — it should never have
+        been invoked at all."""
+        assert API not in infer_specialists(["src/atecc_hex_utils.c"])
+
+    def test_no_diff_falls_back_to_path(self):
+        assert API not in infer_specialists(["app/main.py"])
+        assert API in infer_specialists(["app/api/main.py"])
+
+
+class TestBackendGating:
+    """The broad default: fires on anything that isn't 100% frontend/UI."""
+
+    @pytest.mark.parametrize(
+        "files",
+        [
+            ["app/main.py"],
+            ["README.md"],
+            ["src/atecc_hex_utils.c"],
+            ["Makefile"],
+            ["db/migrations/1.sql"],
+        ],
+    )
+    def test_fires_on_non_frontend(self, files):
+        assert BACKEND_ARCHITECTURE in infer_specialists(files)
+
+    def test_silent_on_pure_frontend(self):
+        assert BACKEND_ARCHITECTURE not in infer_specialists(["src/App.tsx"])
+
+    def test_one_non_frontend_file_is_enough_to_wake_it(self):
+        """'Almost everything' means the bar for exclusion is 100% frontend,
+        not majority frontend."""
+        assert BACKEND_ARCHITECTURE in infer_specialists(["src/App.tsx", "app/api.py"])
+
+    def test_empty_diff_wakes_nobody(self):
+        assert infer_specialists([]) == []
 
 
 class TestPythonista:
@@ -119,7 +179,9 @@ class TestDbaContentSignals:
 
 class TestRealPrs:
     def test_the_wallet_api_pr(self):
-        """4 Python test files, no migrations, no frontend."""
+        """4 Python test files, no migrations, no frontend, no API surface —
+        despite the project being called 'wallet-api', nothing in this diff
+        is a route or contract."""
         files = [
             "tests/conftest.py",
             "tests/test_play_transaction_crud.py",
@@ -130,15 +192,25 @@ class TestRealPrs:
 
         selected = infer_specialists(files, diff)
 
-        assert set(selected) == {API, BACKEND_ARCHITECTURE, PYTHONISTA, DBA}
+        assert set(selected) == {BACKEND_ARCHITECTURE, PYTHONISTA, DBA}
+        assert API not in selected
         assert FRONTEND not in selected
-        assert skipped_specialists(selected) == [FRONTEND]
+        assert sorted(skipped_specialists(selected)) == sorted([API, FRONTEND])
 
-    def test_a_frontend_only_pr_does_not_wake_python_or_db(self):
+    def test_a_frontend_only_pr_wakes_only_the_frontend_reviewer(self):
         selected = infer_specialists(["src/components/Cart.tsx"], diff="+const [x, setX] = useState(0)\n")
 
-        assert set(selected) == {API, BACKEND_ARCHITECTURE, FRONTEND}
-        assert sorted(skipped_specialists(selected)) == sorted([PYTHONISTA, DBA])
+        assert selected == [FRONTEND]
+        assert sorted(skipped_specialists(selected)) == sorted([API, BACKEND_ARCHITECTURE, PYTHONISTA, DBA])
+
+    def test_the_esp_common_pr(self):
+        """Job 3945783f, for real: pure C, no API surface, not frontend."""
+        files = ["src/atecc_hex_utils.c", "src/atecc_utils_crypto.c"]
+        diff = "+#define DEV_PRINT 0\n"
+
+        selected = infer_specialists(files, diff)
+
+        assert selected == [BACKEND_ARCHITECTURE]
 
 
 class TestPrompts:
@@ -159,6 +231,14 @@ class TestPrompts:
             text = path.read_text(encoding="utf-8")
             assert "Verdict[" in text, f"{path.name} has no verdict line"
             assert "REQUEST_CHANGES" in text, f"{path.name} cannot request changes"
+
+    def test_backend_architecture_has_an_na_path(self):
+        """It rubber-stamped job 3945783f precisely because it had no way to
+        say 'nothing in my domain changed' — api already had this."""
+        from pathlib import Path
+
+        path = Path(__file__).resolve().parents[1] / "prompts" / "reviewers" / "backend-architecture.md"
+        assert "N/A" in path.read_text(encoding="utf-8")
 
 
 class TestAggregation:
@@ -238,9 +318,12 @@ class TestAggregation:
 class TestFanoutCap:
     """Narrowing the panel — `cap_specialists`, set to 2 on 2026-08-20.
 
-    The priority rule is "signal wins": a conditional specialist fired because
-    the diff contained evidence for it, so it outranks `api`, which fires on
-    every PR regardless of content. `backend-architecture` is the anchor.
+    The priority rule is "signal wins, blast radius breaks ties": every
+    specialist here fires on a real signal now, so the ranking among
+    conditionals reflects how costly missing that lens tends to be — a DBA or
+    frontend finding usually outweighs an idiom nit or a contract nit if only
+    one slot is left. `backend-architecture` is the anchor: the one lens broad
+    enough to never be worth dropping.
 
     These tests pin the *consequences* of that choice, not just the arithmetic.
     A cap that quietly kept two generalists would satisfy `len(kept) == 2` while
@@ -252,20 +335,20 @@ class TestFanoutCap:
 
         return cap_specialists(infer_specialists(files, diff), limit)
 
-    def test_python_pr_keeps_the_pythonista_over_api(self):
+    def test_python_pr_keeps_the_pythonista(self):
         assert self._cap(["app/crud/play.py"]) == [BACKEND_ARCHITECTURE, PYTHONISTA]
 
-    def test_frontend_pr_keeps_the_frontend_reviewer_over_api(self):
-        assert self._cap(["src/App.tsx"]) == [BACKEND_ARCHITECTURE, FRONTEND]
+    def test_pure_frontend_pr_wakes_only_frontend_nothing_to_cap(self):
+        assert self._cap(["src/App.tsx"]) == [FRONTEND]
 
-    def test_sql_only_pr_keeps_the_dba_over_api(self):
+    def test_sql_only_pr_keeps_the_dba(self):
         assert self._cap(["db/migrations/001_add_index.sql"]) == [BACKEND_ARCHITECTURE, DBA]
 
     def test_content_triggered_dba_survives_the_cap(self):
         """The DBA's content trigger is why `reviewers.py` exists at all.
 
         A lock-taking ALTER TABLE inside ordinary application code has no
-        tell-tale path. If the cap dropped the dba here, the module's stated
+        tell-tale path. If the cap dropped it here, the module's stated
         reason for being would be dead code at the default width.
         """
         diff = "+    db.execute('ALTER TABLE plays ADD COLUMN note text')\n"
@@ -273,22 +356,38 @@ class TestFanoutCap:
         assert DBA in kept or PYTHONISTA in kept
         assert API not in kept
 
-    def test_api_survives_when_no_specialist_fired(self):
-        """With nothing to displace it, `api` keeps its slot."""
-        assert self._cap(["README.md", "docs/guide.md"]) == [API, BACKEND_ARCHITECTURE]
+    def test_api_yields_to_a_signal_specialist_when_both_fire(self):
+        """Even when api genuinely fires (real contract signal), it's still
+        the lowest priority among conditionals — a contract nit is the
+        easiest of the four to live without for one round.
 
-    def test_anchor_is_never_dropped(self):
+        Non-.py file on purpose: a .py file would also wake pythonista and
+        muddy the api-vs-dba comparison this test is isolating.
+        """
+        diff = '+    db.Exec("ALTER TABLE plays ADD COLUMN y int")\n'
+        wanted = infer_specialists(["app/api/routes.go"], diff)
+        assert API in wanted and DBA in wanted and PYTHONISTA not in wanted
+
+        kept = self._cap(["app/api/routes.go"], diff)
+        assert DBA in kept
+        assert API not in kept
+
+    def test_anchor_is_never_dropped_when_it_fires(self):
         for files, diff in (
             (["app/crud/play.py"], ""),
-            (["src/App.tsx"], ""),
             (["db/migrations/1.sql"], ""),
             (["README.md"], ""),
         ):
             assert BACKEND_ARCHITECTURE in self._cap(files, diff)
 
+    def test_pure_frontend_correctly_excludes_the_anchor(self):
+        """Not a cap drop — backend-architecture never fires on a 100%
+        frontend diff, so there's nothing for the cap to preserve."""
+        assert BACKEND_ARCHITECTURE not in infer_specialists(["src/App.tsx"])
+
     def test_cap_binds_at_the_limit(self):
         """A PR that wakes everything still yields exactly `limit` reviewers."""
-        files = ["app/crud/play.py", "src/App.tsx", "db/migrations/1.sql"]
+        files = ["app/crud/play.py", "src/App.tsx", "db/migrations/1.sql", "app/api/handlers.py"]
         assert len(infer_specialists(files)) == 5
         assert len(self._cap(files)) == 2
 
@@ -315,8 +414,9 @@ class TestFanoutCap:
         """
         from minions.reviewers import capped_specialists
 
-        wanted = infer_specialists(["app/crud/play.py", "src/App.tsx"])
-        kept = self._cap(["app/crud/play.py", "src/App.tsx"])
+        files = ["app/crud/play.py", "src/App.tsx", "app/api/handlers.py"]
+        wanted = infer_specialists(files)
+        kept = self._cap(files)
         dropped = capped_specialists(wanted, kept)
 
         assert API in dropped
