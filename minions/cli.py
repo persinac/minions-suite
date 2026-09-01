@@ -22,8 +22,10 @@ import os
 import re
 import signal
 import sys
+import time
 import traceback
 from pathlib import Path
+from typing import NamedTuple
 
 from .config import Config
 from .core.models import Job, JobStatus, TaskStatus
@@ -607,6 +609,94 @@ def _supervise(task: asyncio.Task, shutdown: asyncio.Event) -> asyncio.Task:
     return task
 
 
+# How often the watchdog wakes to re-check every poller's liveness stamp.
+# Deliberately a short fixed cadence rather than something derived from a
+# poller's own interval: it only bounds how late the alarm is, and deriving it
+# from one poller would make detection worse for every other one.
+POLLER_WATCHDOG_INTERVAL = 5.0
+
+# How many of its own poll intervals a poller may go without completing a cycle
+# before it is presumed hung. Three tolerates one slow cycle plus a retry
+# without tolerating a poller that has stopped for good.
+POLLER_STALE_INTERVALS = 3
+
+
+class StalePoller(NamedTuple):
+    """A poller that has missed its deadline, and the numbers that say so."""
+
+    name: str
+    elapsed: float
+    deadline: float
+    interval: int
+
+
+def _find_stale_poller(pollers, now: float, stale_intervals: int = POLLER_STALE_INTERVALS) -> StalePoller | None:
+    """Return the first poller whose last successful poll is too old, if any.
+
+    Pure and separate from the loop that calls it so the staleness rule can be
+    tested directly, without waiting on a clock.
+    """
+    for name, poller in pollers:
+        interval = getattr(poller, "poll_interval", 0)
+        if interval <= 0:
+            # Nothing sensible to measure against; a poller with no interval
+            # is not on a schedule this watchdog can judge.
+            continue
+        deadline = interval * stale_intervals
+        elapsed = now - poller.last_poll_at
+        if elapsed > deadline:
+            return StalePoller(name=name, elapsed=elapsed, deadline=deadline, interval=interval)
+    return None
+
+
+async def _watch_pollers(
+    pollers,
+    shutdown: asyncio.Event,
+    check_interval: float = POLLER_WATCHDOG_INTERVAL,
+    stale_intervals: int = POLLER_STALE_INTERVALS,
+) -> None:
+    """Stop the process when a poller stops polling without dying.
+
+    _supervise covers the case where a poller task raises or returns. It cannot
+    see the other failure: a task that is still alive and awaiting something
+    that will never arrive. The event it waits on is never set, no exception is
+    ever raised, and the pod goes on reporting 1/1 Running while no card is ever
+    picked up again. Silence from a hung poller is byte-identical to silence
+    from an empty queue.
+
+    So each poller stamps `last_poll_at` after every cycle it actually finishes,
+    and this task checks those stamps. A poller that has not completed a cycle in
+    `stale_intervals` of its own poll intervals is presumed hung, and gets the
+    same treatment a dead one already gets: set `shutdown`, which takes the
+    process down the existing non-zero exit path so the orchestrator restarts it.
+    A CrashLoopBackOff is visible; a healthy-looking idle pod is not.
+
+    The log line names the poller and how long it has been quiet, so an operator
+    reading logs after a restart can tell a hang from a crash.
+    """
+    while True:
+        await asyncio.sleep(check_interval)
+
+        stale = _find_stale_poller(pollers, time.monotonic(), stale_intervals)
+        if stale is None:
+            continue
+
+        logger.error(
+            "Poller %s is hung: no completed poll in %.0fs, limit %.0fs (%d x %ds). It is still alive, so nothing else would notice -- shutting down so the failure is visible",
+            stale.name,
+            stale.elapsed,
+            stale.deadline,
+            stale_intervals,
+            stale.interval,
+        )
+        shutdown.set()
+
+        # Block until the shutdown path cancels this task. Returning instead
+        # would reach _supervise's done-callback, which would log a second,
+        # misleading "exited on its own" error on top of the real reason.
+        await asyncio.Event().wait()
+
+
 async def _run_pollers(config: Config) -> int:
     """Run all configured input source pollers + job engine.
 
@@ -689,6 +779,13 @@ async def _run_pollers(config: Config) -> int:
         sources_started.append("trello")
     else:
         trello_poller = None
+
+    # Watch the pollers that actually started. _supervise already covers a poller
+    # that dies; this covers one that hangs, which looks healthy from outside.
+    watched = [(name, poller) for name, poller in (("gitlab-issues-poller", gitlab_poller), ("trello-poller", trello_poller)) if poller]
+    if watched:
+        watchdog = _watch_pollers(watched, shutdown, POLLER_WATCHDOG_INTERVAL, POLLER_STALE_INTERVALS)
+        tasks.append(_supervise(asyncio.create_task(watchdog, name="poller-watchdog"), shutdown))
 
     if sources_started:
         logger.info("Input sources started: %s", ", ".join(sources_started))
