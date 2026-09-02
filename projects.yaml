@@ -457,6 +457,7 @@ projects:
         clone_url: https://github.com/flippin-balls/hermes-bridge.git
         repo_path: /repos/hermes-bridge
         language: shell
+        test_command: task test:vectors
         default_branch: main
         deploy_target: none
 
@@ -781,6 +782,7 @@ projects:
         clone_url: https://github.com/flippin-balls/playfield-relay.git
         repo_path: /repos/playfield-relay
         language: shell
+        test_command: task test:vectors
         default_branch: main
         deploy_target: none
 
