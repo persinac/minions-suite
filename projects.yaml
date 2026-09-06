@@ -250,34 +250,10 @@ projects:
         default_branch: main
         deploy_target: none
 
-  directory-ui:
-    description: "All the machines and logs"
-    project_id: flippin-balls/directory-ui
-    repo_path: /repos/directory-ui
-    auto_merge: true
-    review_profile:
-      roles: [frontend]
-      languages: [typescript]
-    engineer_profile:
-      roles: [frontend]
-      languages: [typescript]
-      timeout: 1800
-    services:
-      directory-ui:
-        project_id: flippin-balls/directory-ui
-        git_provider: github
-        clone_url: https://github.com/flippin-balls/directory-ui.git
-        repo_path: /repos/directory-ui
-        language: typescript
-        # Verified against the repo's package.json on 2026-07-29: there is no
-        # `test` script, so the previous `npm test` could only ever fail with
-        # "Missing script: test". `build` is the real gate -- it type-checks the
-        # whole project, which is the failure mode a frontend edit actually has.
-        install_command: npm ci
-        test_command: npm run build
-        lint_command: npm run lint
-        default_branch: main
-        deploy_target: none
+  # directory-ui: RETIRED 2026-06-27 -- deliberately NOT registered.
+  # A minion dispatched here would open PRs against a dead app (last commit
+  # 2026-04-20). Removed 2026-09-06 after the card-decomposition sweep found it
+  # still live in this registry. Do not re-add without confirming the app is back.
 
   esp-cryptoauthlib:
     description: "Fork of https://github.com/MicrochipTech/cryptoauthlib"
