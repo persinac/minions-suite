@@ -451,7 +451,7 @@ async def _run_server(config: Config) -> None:
         try:
             _prev_handlers[_sig] = signal.getsignal(_sig)
             signal.signal(_sig, _log_signal)
-        except (ValueError, OSError):
+        except ValueError, OSError:
             logger.debug("Could not install handler for %s", _sig)
 
     try:

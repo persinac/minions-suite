@@ -33,9 +33,7 @@ async def _task_in_state(db, status: TaskStatus, review_status: str | None):
     job = await db.create_job("spec")
     for s in (JobStatus.SPEC_READY, JobStatus.TASKS_CREATED, JobStatus.DEV_IN_PROGRESS):
         await db.update_job_status(job.id, s)
-    task = await db.create_task(
-        Task(job_id=job.id, title="t", description="d", service="api", agent_role=AgentRole.BACKEND_ENGINEER)
-    )
+    task = await db.create_task(Task(job_id=job.id, title="t", description="d", service="api", agent_role=AgentRole.BACKEND_ENGINEER))
     await db.update_task(task.id, status=TaskStatus.IN_PROGRESS)
     await db.update_task(task.id, pr_url="https://github.com/o/r/pull/1", pr_number=1, branch_name="feat/x")
     await db.update_task(task.id, status=TaskStatus.PR_OPEN)

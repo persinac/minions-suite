@@ -13,7 +13,6 @@ max_concurrent_jobs did not throttle it either: the slot count is derived from
 active jobs, and no job ever got created, so there were always free slots.
 """
 
-
 from minions.config import Config
 
 
@@ -46,9 +45,7 @@ class TestLaunchOrder:
 
         root = Path(__file__).resolve().parents[2] / "minions"
         offenders = [
-            str(path.relative_to(root))
-            for path in root.rglob("*.py")
-            if "create_job(job)" in path.read_text(encoding="utf-8", errors="replace")
+            str(path.relative_to(root)) for path in root.rglob("*.py") if "create_job(job)" in path.read_text(encoding="utf-8", errors="replace")
         ]
 
         assert not offenders, f"create_job takes a spec string, not a Job: {offenders}"

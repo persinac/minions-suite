@@ -1,0 +1,23 @@
+# gitleaks baseline — synthetic test fixtures, 2026-09-07.
+#
+# All entries are token-SHAPED strings inside test files. tests/test_redaction.py
+# is the redaction suite itself (121 lines, 33 redaction assertions): it cannot
+# test that a token gets masked without containing something token-shaped.
+# tests/providers/test_github_self_review.py is the same pattern for App auth.
+#
+# A fingerprint is commit:file:rule:line. No secret value is stored here, and
+# these pin the exact known occurrences only — a NEW secret anywhere, including
+# a real one added to these same files, still fails the scan. Verified by
+# negative control, not assumed.
+#
+# 6 findings: github-app-token=2, private-key=2, github-pat=1, gitlab-pat=1
+#
+# ⚠️ If any of these is in fact a REAL credential rather than a fixture, it must
+# be rotated -- baselining hides it from the scanner, not from an attacker.
+
+bab3ca2a93c0d70ad161db7652a2b6f517160011:tests/providers/test_github_self_review.py:private-key:137
+e3b56e458de57c2c7b89816bd59f5268f0d9550d:tests/test_redaction.py:github-app-token:59
+e3b56e458de57c2c7b89816bd59f5268f0d9550d:tests/test_redaction.py:github-app-token:76
+e3b56e458de57c2c7b89816bd59f5268f0d9550d:tests/test_redaction.py:github-pat:60
+e3b56e458de57c2c7b89816bd59f5268f0d9550d:tests/test_redaction.py:gitlab-pat:62
+f2289e5a36b097961970f5350ee51b986e7185a2:tests/providers/test_github_self_review.py:private-key:195

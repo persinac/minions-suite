@@ -610,9 +610,7 @@ class PostgresDatabase:
             # was arbitrary (physical order, i.e. usually the OLD one), which
             # would tell _reconcile_stranded_cards that a live card's job is
             # already terminal and file it to Done underneath the running job.
-            cur = await conn.execute(
-                f"SELECT * FROM {JOB_SCHEMA}.jobs WHERE external_id = %s ORDER BY created_at DESC LIMIT 1", (external_id,)
-            )
+            cur = await conn.execute(f"SELECT * FROM {JOB_SCHEMA}.jobs WHERE external_id = %s ORDER BY created_at DESC LIMIT 1", (external_id,))
             row = await cur.fetchone()
             if not row:
                 return None

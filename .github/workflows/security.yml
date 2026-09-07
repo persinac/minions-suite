@@ -1,0 +1,32 @@
+name: security
+# Universal secret-scan gate. Posts a `secret-scan` check-run that GitHub branch
+# protection (and the minions merge gate) can require -- agents now auto-merge PRs,
+# so the merge-blocking signal has to come from a check GitHub can see.
+# Validated invocation: `gitleaks git` (not `dir`) -- scans committed content +
+# full history, so gitignored dirs (node_modules) are excluded and secrets that
+# were committed-then-removed are still caught.
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+permissions:
+  contents: read
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so `gitleaks git` scans every commit
+      - name: gitleaks
+        run: |
+          set -euo pipefail
+          VER=8.30.1
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${VER}/gitleaks_${VER}_linux_x64.tar.gz" \
+            | tar -xz gitleaks
+          # --redact keeps any hit out of the public log; --exit-code 1 fails the
+          # check-run so the PR cannot merge.
+          ./gitleaks git . --redact --no-banner --exit-code 1

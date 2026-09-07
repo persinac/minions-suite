@@ -44,7 +44,7 @@ def gh_json(*args: str):
         return None
     try:
         return json.loads(out)
-    except (json.JSONDecodeError, ValueError):
+    except json.JSONDecodeError, ValueError:
         return None
 
 
@@ -150,8 +150,7 @@ def _report_repo(repo: str):
             else:
                 ok("squash-only")
         else:
-            bad("squash merging DISABLED — every minions auto-merge will fail",
-                "./scripts/gh-fleet.py squash-only --apply")
+            bad("squash merging DISABLED — every minions auto-merge will fail", "./scripts/gh-fleet.py squash-only --apply")
 
 
 def cmd_ruleset_show(args):
@@ -178,7 +177,9 @@ def cmd_checks(args):
 
 
 def cmd_ruleset_apply(args):
-    payload = json.load(open(args.file))
+    with open(args.file) as fh:
+        payload = json.load(fh)
+
     # Strip commentary: GitHub 422s on unexpected parameters.
     def strip(node):
         if isinstance(node, dict):
@@ -238,10 +239,16 @@ def cmd_squash_only(args):
             print(f"    {repo}")
             continue
         code, out = gh(
-            "api", "--method", "PATCH", f"/repos/{ORG}/{repo}",
-            "-F", "allow_squash_merge=true",
-            "-F", "allow_merge_commit=false",
-            "-F", "allow_rebase_merge=false",
+            "api",
+            "--method",
+            "PATCH",
+            f"/repos/{ORG}/{repo}",
+            "-F",
+            "allow_squash_merge=true",
+            "-F",
+            "allow_merge_commit=false",
+            "-F",
+            "allow_rebase_merge=false",
         )
         print(f"    {repo}: {'squash-only' if code == 0 else 'FAILED ' + out[:80]}")
 
