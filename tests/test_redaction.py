@@ -132,7 +132,7 @@ class TestFilterIntegration:
     def test_exception_text_is_scrubbed(self):
         """A connection error renders the DSN into the traceback."""
         record = logging.LogRecord("t", logging.ERROR, __file__, 1, "boom", None, None)
-        record.exc_text = 'OperationalError: could not connect to postgresql://u:pw123456@h:5432/db'
+        record.exc_text = "OperationalError: could not connect to postgresql://u:pw123456@h:5432/db"
 
         RedactingFilter().filter(record)
 

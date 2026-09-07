@@ -13,7 +13,6 @@ prior approval would turn every revision into an automatic request_changes —
 spending MORE, not less, and looking like the reviewers had objected.
 """
 
-
 from minions.reviewers import APPROVE, DISCUSS, NOT_APPLICABLE, REQUEST_CHANGES, aggregate_verdicts
 
 

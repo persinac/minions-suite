@@ -44,9 +44,7 @@ def client():
 
     # Patch _MINION_TABLES to use test schema
     original_tables = dash._PgConnectionWrapper._MINION_TABLES
-    dash._PgConnectionWrapper._MINION_TABLES = tuple(
-        list(original_tables) + [TEST_SCHEMA.replace("_", "")]
-    )
+    dash._PgConnectionWrapper._MINION_TABLES = tuple(list(original_tables) + [TEST_SCHEMA.replace("_", "")])
 
     # Override schema qualification to use test schema
     original_execute = dash._PgConnectionWrapper.execute

@@ -6,7 +6,6 @@ for the same task. ENGINE_ENABLED is the primary defence (one engine per
 deployment); `expected_status` is the backstop when that is broken by hand.
 """
 
-
 from minions.core.models import Job, JobStatus
 
 # The state machine only permits single steps (JOB_TRANSITIONS), so a fixture
@@ -44,9 +43,7 @@ class TestUpdateJobStatusCas:
     async def test_cas_succeeds_when_status_matches(self, db):
         job = await _make_job(db, JobStatus.TASKS_CREATED)
 
-        won = await db.update_job_status(
-            job.id, JobStatus.DEV_IN_PROGRESS, expected_status=JobStatus.TASKS_CREATED
-        )
+        won = await db.update_job_status(job.id, JobStatus.DEV_IN_PROGRESS, expected_status=JobStatus.TASKS_CREATED)
 
         assert won is True
         assert (await db.get_job(job.id)).status == JobStatus.DEV_IN_PROGRESS
@@ -56,13 +53,9 @@ class TestUpdateJobStatusCas:
         job = await _make_job(db, JobStatus.TASKS_CREATED)
 
         # Engine A wins.
-        first = await db.update_job_status(
-            job.id, JobStatus.DEV_IN_PROGRESS, expected_status=JobStatus.TASKS_CREATED
-        )
+        first = await db.update_job_status(job.id, JobStatus.DEV_IN_PROGRESS, expected_status=JobStatus.TASKS_CREATED)
         # Engine B, still holding a stale read of TASKS_CREATED, loses.
-        second = await db.update_job_status(
-            job.id, JobStatus.DEV_IN_PROGRESS, expected_status=JobStatus.TASKS_CREATED
-        )
+        second = await db.update_job_status(job.id, JobStatus.DEV_IN_PROGRESS, expected_status=JobStatus.TASKS_CREATED)
 
         assert first is True
         assert second is False
@@ -71,14 +64,10 @@ class TestUpdateJobStatusCas:
     async def test_lost_cas_does_not_clobber_a_later_status(self, db):
         """A slow loser must not drag the job back to an earlier state."""
         job = await _make_job(db, JobStatus.TASKS_CREATED)
-        await db.update_job_status(
-            job.id, JobStatus.DEV_IN_PROGRESS, expected_status=JobStatus.TASKS_CREATED
-        )
+        await db.update_job_status(job.id, JobStatus.DEV_IN_PROGRESS, expected_status=JobStatus.TASKS_CREATED)
         await db.update_job_status(job.id, JobStatus.PR_OPEN)
 
-        won = await db.update_job_status(
-            job.id, JobStatus.DEV_IN_PROGRESS, expected_status=JobStatus.TASKS_CREATED
-        )
+        won = await db.update_job_status(job.id, JobStatus.DEV_IN_PROGRESS, expected_status=JobStatus.TASKS_CREATED)
 
         assert won is False
         assert (await db.get_job(job.id)).status == JobStatus.PR_OPEN
