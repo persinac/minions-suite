@@ -226,29 +226,13 @@ projects:
         default_branch: main
         deploy_target: none
 
-  directory-api:
-    description: "Backend API for directory UI"
-    project_id: flippin-balls/directory-api
-    repo_path: /repos/directory-api
-    auto_merge: true
-    review_profile:
-      roles: [backend]
-      languages: [python]
-    engineer_profile:
-      roles: [backend]
-      languages: [python]
-      timeout: 1800
-    services:
-      directory-api:
-        project_id: flippin-balls/directory-api
-        git_provider: github
-        clone_url: https://github.com/flippin-balls/directory-api.git
-        repo_path: /repos/directory-api
-        language: python
-        test_command: pytest
-        lint_command: ruff check .
-        default_branch: main
-        deploy_target: none
+  # directory-api: RETIRED 2026-06-27 -- deliberately NOT registered.
+  # Retired alongside directory-ui, the frontend it served. Its final commit is
+  # literally the teardown (6f3665d, "chore(phase3c): retire service -- remove
+  # CI, finalize teardown doc"), and the repo is ARCHIVED on GitHub, so it
+  # rejects pushes and pull requests outright -- a dispatched minion could not
+  # fail earlier or more expensively. Removed 2026-09-07.
+  # Do not re-add without confirming the repo has been un-archived.
 
   # directory-ui: RETIRED 2026-06-27 -- deliberately NOT registered.
   # A minion dispatched here would open PRs against a dead app (last commit
