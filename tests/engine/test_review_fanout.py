@@ -90,7 +90,7 @@ class TestFanOut:
 
         with (
             patch("minions.engine.dev.run_agent", new=run),
-            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/service.py"])),
+            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/api/service.py"])),
         ):
             from minions.engine.dev import run_task_review
 
@@ -112,7 +112,7 @@ class TestFanOut:
 
         with (
             patch("minions.engine.dev.run_agent", new=run),
-            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/service.py"], diff)),
+            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/api/service.py"], diff)),
         ):
             from minions.engine.dev import run_task_review
 
@@ -128,7 +128,7 @@ class TestFanOut:
 
         with (
             patch("minions.engine.dev.run_agent", new=run),
-            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/service.py"])),
+            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/api/service.py"])),
         ):
             from minions.engine.dev import run_task_review
 
@@ -147,7 +147,7 @@ class TestVerdictDrivesOutcome:
 
         with (
             patch("minions.engine.dev.run_agent", new=run),
-            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/service.py"])),
+            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/api/service.py"])),
         ):
             from minions.engine.dev import run_task_review
 
@@ -163,7 +163,7 @@ class TestVerdictDrivesOutcome:
 
         with (
             patch("minions.engine.dev.run_agent", new=run),
-            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/service.py"])),
+            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/api/service.py"])),
         ):
             from minions.engine.dev import run_task_review
 
@@ -181,7 +181,7 @@ class TestVerdictDrivesOutcome:
 
         with (
             patch("minions.engine.dev.run_agent", new=run),
-            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/service.py"])),
+            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/api/service.py"])),
         ):
             from minions.engine.dev import run_task_review
 
@@ -207,7 +207,7 @@ class TestVerdictDrivesOutcome:
 
         with (
             patch("minions.engine.dev.run_agent", new=_run),
-            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/service.py"])),
+            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/api/service.py"])),
         ):
             from minions.engine.dev import run_task_review
 
@@ -236,7 +236,7 @@ class TestSpendCeiling:
         run, calls = _verdicts({})
         with (
             patch("minions.engine.dev.run_agent", new=run),
-            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/service.py"])),
+            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/api/service.py"])),
         ):
             from minions.engine.dev import run_task_review
 
@@ -264,7 +264,7 @@ class TestFanoutCap:
 
         with (
             patch("minions.engine.dev.run_agent", new=run),
-            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/service.py"])),
+            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/api/service.py"])),
         ):
             from minions.engine.dev import run_task_review
 
@@ -300,7 +300,7 @@ class TestFanoutCap:
 
         with (
             patch("minions.engine.dev.run_agent", new=run),
-            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/service.py"])),
+            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/api/service.py"])),
         ):
             from minions.engine.dev import run_task_review
 
@@ -321,7 +321,7 @@ class TestFanoutCap:
 
         with (
             patch("minions.engine.dev.run_agent", new=run),
-            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/service.py"])),
+            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/api/service.py"])),
         ):
             from minions.engine.dev import run_task_review
 
@@ -367,7 +367,7 @@ class TestSilenceIsRerunNotRevised:
         engine = _engine(db)
         with (
             patch("minions.engine.dev.run_agent", new=run),
-            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/service.py"])),
+            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/api/service.py"])),
         ):
             from minions.engine.dev import run_task_review
 
@@ -451,7 +451,7 @@ class TestSilenceIsRerunNotRevised:
         engine = None
         with (
             patch("minions.engine.dev.run_agent", new=_run),
-            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/service.py"])),
+            patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/api/service.py"])),
         ):
             from minions.engine.dev import run_task_review
 
