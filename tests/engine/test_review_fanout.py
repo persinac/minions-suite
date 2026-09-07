@@ -100,7 +100,7 @@ class TestFanOut:
         specialties = {t.specialty for t in reviewer_tasks}
 
         # .py wakes pythonista on top of the two always-on reviewers.
-        assert specialties == {"api", "backend-architecture", "pythonista"}
+        assert specialties == {"api", "backend-architecture", "pythonista", "NEGATIVE_CONTROL_SENTINEL"}
         assert len(calls) == 3, "every specialist must actually run"
 
     async def test_dba_wakes_on_diff_content_not_paths(self, db, sample_job):
