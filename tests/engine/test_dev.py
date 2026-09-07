@@ -1000,6 +1000,11 @@ class TestReviewAgentCreation:
         task = await db.create_task(task)
         await db.update_task(task.id, status=TaskStatus.IN_PROGRESS)
         await db.update_task(task.id, pr_url="https://gitlab.com/mr/1", mr_id="1")
+        # Re-read: run_task_review reads task.mr_id off the object it is handed,
+        # and update_task only touches the row. Before every specialist became
+        # signal-gated, an empty mr_id still produced reviewers, so the stale
+        # object never showed.
+        task = await db.get_task(task.id)
 
         engine = _mock_engine(db)
         mock_project = MagicMock()
@@ -1019,7 +1024,8 @@ class TestReviewAgentCreation:
             patch("minions.engine.review._create_provider_for_project") as mock_provider_factory,
         ):
             mock_provider = AsyncMock()
-            mock_provider.get_changed_files.return_value = ["file.py"]
+            mock_provider.get_changed_files.return_value = ["app/api/file.py"]
+            mock_provider.get_diff.return_value = "+def handler():\n+    return 200\n"
             mock_provider_factory.return_value = mock_provider
 
             await run_task_review(engine, job, task)
@@ -1049,6 +1055,11 @@ class TestReviewAgentCreation:
         task = await db.create_task(task)
         await db.update_task(task.id, status=TaskStatus.IN_PROGRESS)
         await db.update_task(task.id, pr_url="https://gitlab.com/mr/1", mr_id="1")
+        # Re-read: run_task_review reads task.mr_id off the object it is handed,
+        # and update_task only touches the row. Before every specialist became
+        # signal-gated, an empty mr_id still produced reviewers, so the stale
+        # object never showed.
+        task = await db.get_task(task.id)
 
         engine = _mock_engine(db)
         engine.config.model = "claude-opus-4-6"
@@ -1068,7 +1079,8 @@ class TestReviewAgentCreation:
             patch("minions.engine.review._create_provider_for_project") as mock_provider_factory,
         ):
             mock_provider = AsyncMock()
-            mock_provider.get_changed_files.return_value = []
+            mock_provider.get_changed_files.return_value = ["app/api/file.py"]
+            mock_provider.get_diff.return_value = "+def handler():\n+    return 200\n"
             mock_provider_factory.return_value = mock_provider
 
             await run_task_review(engine, job, task)
