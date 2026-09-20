@@ -40,6 +40,100 @@ _service_mismatch_warned: set[tuple[str, str]] = set()
 
 ENGINEER_ROLES = {AgentRole.BACKEND_ENGINEER, AgentRole.FRONTEND_ENGINEER, AgentRole.DATABASE_ENGINEER}
 
+# Reviewers are claimable too, but only when reviewer_dispatch says so. Held in
+# its own set rather than folded into ENGINEER_ROLES because the two are gated
+# by different config knobs and fail differently — see _claimable_roles.
+REVIEWER_ROLES = {AgentRole.CODE_REVIEWER}
+
+# Handed to a herder that claims a reviewer item, because the failure this
+# guards against is silent. A reviewer whose file tools point at a directory
+# that does not exist gets "no such file" from read_file, an error from
+# search_code and [] from list_files -- indistinguishable from an empty repo --
+# and returns a confident verdict on a diff it never read. That shipped once
+# (job 7ba724fd) and was fixed in-process by checking out the PR branch before
+# the panel ran; an external worker has its own filesystem, so the same
+# obligation has to travel with the work item.
+_REVIEW_INSTRUCTIONS = (
+    "Read the code before you judge it. `engine_repo_path` is the ENGINE's checkout "
+    "and almost certainly does not exist on your machine.\n"
+    "1. Get the diff: `gh pr diff <mr_id>` (GitHub) or the merge_requests/<mr_id>/changes "
+    "API (GitLab). `mr_url` opens the same thing in a browser.\n"
+    "2. Get the tree, because a diff alone hides the callers: `gh pr checkout <mr_id>` in a "
+    "fresh clone of `clone_url`, or clone and check out `branch_name`.\n"
+    "3. Review through the lens in `persona` (specialty `specialty`). Post findings on the "
+    "PR yourself if you have write access to comments.\n"
+    "4. Close out with complete_engineer_work(agent_id, verdict=..., feedback=...). The "
+    "verdict is REQUIRED for a reviewer and must be 'approve' or 'request_changes'. "
+    "If you could not read the code, call release_engineer_work instead -- a verdict from "
+    "a reviewer that never saw the diff is worse than no reviewer at all."
+)
+
+
+def _claimable_roles(config: Config | None) -> set[AgentRole]:
+    """Which roles external workers may take, given the dispatch config.
+
+    Engineers are unconditional: `engineer_dispatch` decides whether the engine
+    PUBLISHES them, and a task that was never published is already excluded by
+    the "no live agent row" test below, so gating the scan on it too would be
+    redundant and would hide work that an operator published before flipping
+    the knob back.
+
+    Reviewers are conditional, and deliberately so. A reviewer task always
+    exists with an agent row under in_process dispatch, so in principle the same
+    argument applies — but `reviewer_dispatch` is new, and a config-free default
+    that silently started handing reviewer tasks to herders would be exactly the
+    kind of behaviour change the opt-in exists to prevent. With no config at all
+    (config=None) only engineers are claimable, which is the pre-existing
+    behaviour.
+    """
+    roles = set(ENGINEER_ROLES)
+    if config is not None and config.reviewer_dispatch == "external":
+        roles |= REVIEWER_ROLES
+    return roles
+
+
+def _resolve_claim_target(registry: dict, task: Any) -> tuple[Any, str]:
+    """The ServiceTarget and project name a claimable task belongs to.
+
+    Two shapes of task arrive here and they name different things in the same
+    column. A dev job's task names a SERVICE (`projects.yaml` services key); a
+    review-type job's task names a PROJECT — `create_review_job` writes
+    `service=project` and `run_review_in_process` reads it back with
+    `registry.get(task.service)`.
+
+    Scanning only the services map therefore dropped every standalone review
+    job on the floor with a "no service in registry" warning, which reads as a
+    projects.yaml drift rather than as a shape mismatch. The project fallback is
+    limited to reviewers so an engineer task naming a service that does not
+    exist is still skipped rather than silently resolved to a project.
+
+    Returns (None, "") when nothing matches.
+    """
+    for proj in registry.values():
+        if proj.services and task.service in proj.services:
+            return proj.services[task.service], proj.name
+
+    if task.agent_role not in REVIEWER_ROLES:
+        return None, ""
+
+    project = registry.get(task.service)
+    if not project:
+        return None, ""
+
+    # A ProjectConfig has no clone_url or default_branch. That is honest rather
+    # than lossy: a review-type job is reached from an MR/PR url, and the work
+    # item carries that url, so a herder clones (or `gh pr checkout`s) from it.
+    from ..project_registry import ServiceTarget
+
+    synthetic = ServiceTarget(
+        name=project.name,
+        project_id=project.project_id,
+        git_provider=project.git_provider,
+        gitlab_url=project.gitlab_url,
+        repo_path=project.repo_path,
+    )
+    return synthetic, project.name
+
 
 class ClaimableItem(NamedTuple):
     """One task published for external claim and not yet owned by any agent."""
@@ -51,7 +145,7 @@ class ClaimableItem(NamedTuple):
 
 
 async def find_claimable_work(db: AbstractDatabase, config: Config | None) -> list[ClaimableItem]:
-    """Every engineer task currently waiting for an external worker.
+    """Every task currently waiting for an external worker.
 
     One definition, used by both `claim_engineer_work` (which takes the first
     and creates its agent row) and `peek_engineer_work` (which takes nothing).
@@ -63,6 +157,11 @@ async def find_claimable_work(db: AbstractDatabase, config: Config | None) -> li
     one -- an agent row is what ownership means here, so a task with none is
     unowned no matter how it got that way. `run_engineer` publishes by leaving
     the task IN_PROGRESS with no agent precisely so this reads as claimable.
+
+    Reviewers ride the same definition rather than a parallel one. _claimable_roles
+    widens the role set when reviewer_dispatch="external"; everything below is
+    role-agnostic. A second scanner for reviewers would reintroduce exactly the
+    drift this docstring exists to forbid, one role later.
     """
     # Imported here, not at module scope, so tests can substitute a known
     # registry via `monkeypatch.setattr("minions.project_registry.build_registry", …)`.
@@ -75,11 +174,12 @@ async def find_claimable_work(db: AbstractDatabase, config: Config | None) -> li
 
     items: list[ClaimableItem] = []
     registry = build_registry(config.projects_file if config else "projects.yaml")
+    roles = _claimable_roles(config)
 
     for job in await db.get_active_jobs():
         agents = await db.get_agents_for_job(job.id)
         for task in await db.get_tasks(job.id):
-            if task.agent_role not in ENGINEER_ROLES or task.status != TaskStatus.IN_PROGRESS:
+            if task.agent_role not in roles or task.status != TaskStatus.IN_PROGRESS:
                 continue
 
             # An agent row means somebody already owns this task -- either a
@@ -92,12 +192,7 @@ async def find_claimable_work(db: AbstractDatabase, config: Config | None) -> li
             if any(a.status in ("starting", "running") for a in agents if a.task_id == task.id):
                 continue
 
-            service = None
-            project_name = ""
-            for proj in registry.values():
-                if proj.services and task.service in proj.services:
-                    service, project_name = proj.services[task.service], proj.name
-                    break
+            service, project_name = _resolve_claim_target(registry, task)
             if not service:
                 logger.warning("claimable scan: no service %s in registry for task %s", task.service, task.id)
                 continue
@@ -460,16 +555,31 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
 
     @mcp.tool()
     async def claim_engineer_work(worker: str = "herder") -> str:
-        """Claim one engineering work item, or report that none is waiting.
+        """Claim one work item, or report that none is waiting.
+
+        Named for engineers because that is who it shipped for, and kept that
+        way on purpose: renaming an MCP tool is a breaking change. Tool lists
+        are read at session start, so a rename strands every herder pane already
+        running — and a herder that cannot call `complete_engineer_work` leaves
+        its claim open for the full herder_claim_timeout_seconds. It now also
+        serves CODE_REVIEWER items when reviewer_dispatch="external".
 
         For an external worker running on a subscription rather than the API
-        key. When engineer_dispatch="external" the engine publishes tasks and
-        launches nothing, so the work sits here until something claims it.
+        key. When dispatch is "external" the engine publishes tasks and launches
+        nothing, so the work sits here until something claims it.
 
-        Returns everything needed to do the job without further lookups: the
-        repo and branch, the spec, and — on a revision — the reviewers' findings
-        already formatted as the same numbered checklist an in-process agent
-        would receive. Returns {"work": null} when the queue is empty.
+        Returns everything needed to do the job without further lookups.
+        Check `role` first — the payload means different things by role:
+
+        * engineer — `spec`, `clone_url`, `branch_name`, and on a revision the
+          reviewers' findings as the same numbered checklist an in-process agent
+          would receive. Finish with `report_pr`, then `complete_engineer_work`.
+        * code_reviewer — `mr_url` / `pr_url`, `mr_id`, `project_id`, the
+          `specialty` lens and its `persona`. READ THE CODE before judging it:
+          `review_instructions` says how. Finish with `complete_engineer_work`
+          carrying a `verdict`, which is required for this role.
+
+        Returns {"work": null} when the queue is empty.
 
         Claiming CREATES the agent row, so cost, turns and attribution land in
         the same tables as an in-process run and the dashboard does not care
@@ -487,7 +597,12 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
 
         is_revision = (task.revision_count or 0) > 0 and bool(task.pr_url)
         feedback = ""
-        if is_revision:
+        # Engineers only. get_review_feedback renders the findings as "you MUST
+        # account for EVERY one", which is an instruction to the author. Handing
+        # it to a reviewer would tell it to go fix the code it was asked to
+        # judge — and on a re-review round the condition above is true, so this
+        # would fire.
+        if is_revision and task.agent_role in ENGINEER_ROLES:
             feedback = await get_review_feedback(SimpleNamespace(db=db), job.id, task)
 
         try:
@@ -503,6 +618,14 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
 
         await db.record_event(job.id, "work_item_claimed", worker, f"task={task.id} agent={agent.id} revision={task.revision_count}")
         logger.info("Work item %s claimed by %s (agent=%s)", task.id, worker, agent.id)
+
+        persona = ""
+        instructions = ""
+        if task.agent_role in REVIEWER_ROLES:
+            from ..reviewers import load_persona
+
+            persona = load_persona(task.specialty or "")
+            instructions = _REVIEW_INSTRUCTIONS
 
         return json.dumps(
             {
@@ -529,6 +652,14 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
                     "is_revision": is_revision,
                     "revision_count": task.revision_count,
                     "review_feedback": feedback,
+                    # -- reviewer fields; empty for engineers ------------------
+                    "mr_url": task.mr_url or task.pr_url or "",
+                    "mr_id": task.mr_id or "",
+                    "project_id": getattr(service, "project_id", "") or "",
+                    "git_provider": getattr(service, "git_provider", "") or "",
+                    "specialty": task.specialty or "",
+                    "persona": persona,
+                    "review_instructions": instructions,
                 }
             }
         )
@@ -536,6 +667,10 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
     @mcp.tool()
     async def peek_engineer_work() -> str:
         """Report what is waiting for an external worker, claiming nothing.
+
+        Covers reviewer items too when reviewer_dispatch="external"; `role` and
+        `specialty` on each entry say which kind. See claim_engineer_work for
+        why the tool keeps its engineer-shaped name.
 
         For a trigger deciding whether to start a herder. `claim_engineer_work`
         takes ownership as a side effect of asking, so a poller that used it to
@@ -560,6 +695,7 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
                         "service": task.service,
                         "clone_url": service.clone_url,
                         "is_revision": (task.revision_count or 0) > 0 and bool(task.pr_url),
+                        "specialty": task.specialty or "",
                     }
                     for job, task, service, project_name in items
                 ],
@@ -567,8 +703,22 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
         )
 
     @mcp.tool()
-    async def complete_engineer_work(agent_id: str, summary: str = "", cost_usd: float = 0.0) -> str:
-        """Mark a claimed item finished. Call this after report_pr.
+    async def complete_engineer_work(agent_id: str, summary: str = "", cost_usd: float = 0.0, verdict: str = "", feedback: str = "") -> str:
+        """Mark a claimed item finished. Engineers: call this after report_pr.
+
+        Reviewers: `verdict` is REQUIRED and must be 'approve' or
+        'request_changes' (the usual spellings are accepted). It is refused
+        rather than defaulted, because the in-process fan-out treats an absent
+        verdict as a SILENT reviewer -- which buys one re-run and then fails
+        closed into a revision nobody asked for. A tool that let a herder
+        produce that state by forgetting an argument would launder "I finished"
+        into "I objected". If you cannot produce a verdict, call
+        release_engineer_work; that is the honest exit and it hands the work
+        back rather than answering for it.
+
+        A reviewer verdict also closes the reviewer TASK (done, verdict
+        recorded), which is what the engine polls for. Engineers' tasks are
+        untouched here -- report_pr already moved them.
 
         Without it the claim never closes. The first real herder run left its
         agent row "running" forever, and that is not cosmetic: get_running_agents
@@ -583,14 +733,48 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
         "free by design" and can be told apart from a metered agent that failed
         to report.
         """
+        from ..reviewers import APPROVE, REQUEST_CHANGES, normalise_verdict
+
         agent = await db.get_agent(agent_id)
         if not agent:
             return json.dumps({"error": f"Agent {agent_id} not found"})
+
+        canonical = ""
+        if agent.role in REVIEWER_ROLES:
+            canonical = normalise_verdict(verdict) or ""
+            if canonical not in (APPROVE, REQUEST_CHANGES):
+                # Deliberately BEFORE the agent is closed. Refusing while
+                # leaving the claim open lets the herder call again with a
+                # verdict; closing first would strand the reviewer task
+                # IN_PROGRESS with a finished agent, which no recovery path
+                # reads as either owned or free.
+                return json.dumps(
+                    {
+                        "error": f"verdict is required for a code reviewer and {verdict!r} is not usable. Use 'approve' or 'request_changes'.",
+                        "retryable": True,
+                    }
+                )
+
         await db.update_agent(agent_id, status="done", finished_at=_now(), cost_usd=cost_usd)
+
+        if canonical and agent.task_id:
+            # agent_role="" marks this an engine/system write so the role
+            # restriction on (in_progress -> done) is skipped -- the same call
+            # _run_one_specialist makes when an in-process reviewer finishes.
+            try:
+                await db.update_task(agent.task_id, status=TaskStatus.DONE, agent_role="", verdict=canonical)
+            except (InvalidTransitionError, PreconditionError) as e:
+                logger.warning("Could not close reviewer task %s after herder verdict: %s", agent.task_id, e)
+            if feedback and agent.job_id:
+                await db.send_message(Message(job_id=agent.job_id, from_role=AgentRole.CODE_REVIEWER, to_role=None, content=feedback))
+
         if agent.job_id:
-            await db.record_event(agent.job_id, "work_item_completed", "herder", f"agent={agent_id} {summary[:120]}")
-        logger.info("Work item completed by herder (agent=%s, $%.4f)", agent_id, cost_usd)
-        return json.dumps({"completed": True, "agent_id": agent_id, "cost_usd": cost_usd})
+            detail = f"agent={agent_id} {summary[:120]}"
+            if canonical:
+                detail = f"agent={agent_id} verdict={canonical} {summary[:100]}"
+            await db.record_event(agent.job_id, "work_item_completed", "herder", detail)
+        logger.info("Work item completed by herder (agent=%s, verdict=%s, $%.4f)", agent_id, canonical or "n/a", cost_usd)
+        return json.dumps({"completed": True, "agent_id": agent_id, "cost_usd": cost_usd, "verdict": canonical})
 
     @mcp.tool()
     async def release_engineer_work(agent_id: str, reason: str = "released") -> str:
@@ -600,6 +784,10 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
         depth — must say so rather than going quiet. Marking the agent failed
         releases the task: with no live agent it becomes claimable again, and
         the engine's own timeout fallback can pick it up in-process.
+
+        For a reviewer this is the RIGHT call whenever the diff could not be
+        read. complete_engineer_work refuses a reviewer close without a verdict
+        precisely so the choice is between a real verdict and this.
 
         Not calling this is the bad path, which is why the engine also has
         herder_claim_timeout_seconds. This just makes the fast, honest exit

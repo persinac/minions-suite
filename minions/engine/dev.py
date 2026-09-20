@@ -1323,6 +1323,132 @@ def _as_checklist(bodies: list[str]) -> str:
     )
 
 
+# How often the fan-out asks the database whether a published reviewer item has
+# come back. Seconds of latency on a job that already takes minutes; the cost of
+# polling faster is a query per specialist per tick for the whole review.
+_EXTERNAL_REVIEW_POLL_SECONDS = 10.0
+
+_REVIEW_TERMINAL = {TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.MERGED, TaskStatus.NO_WORK_NEEDED}
+
+
+async def _await_external_review(engine: JobEngine, job: Job, reviewer_task: Task, specialty: str) -> tuple[bool, str | None]:
+    """Publish a reviewer item and wait for a herder to return a verdict.
+
+    Returns (True, verdict) when an external worker finished it — verdict may be
+    None when the task ended FAILED or carried nothing usable, which
+    aggregate_verdicts fails closed on, so silence still cannot approve a PR.
+    Returns (False, None) when the wait ran out and the caller must run the
+    review in-process instead.
+
+    Waiting inline rather than returning and re-entering later is deliberate.
+    Everything downstream of the fan-out — the silent-reviewer re-run, the
+    discuss re-ask, aggregate_verdicts, the CI gate and the auto-merge — is
+    written against a dict of verdicts that `_collect_verdicts` returns. Making
+    the fan-out asynchronous would mean re-deriving all of that from task rows
+    on a later poll, and every one of those branches exists because a specific
+    job wedged without it. Holding a coroutine is the cheaper risk.
+
+    It is not a free one: an engine restart mid-wait leaves the reviewer tasks
+    IN_PROGRESS and the parent IN_REVIEW with nothing re-entering, because the
+    fan-out guard in run_task_review refuses a second panel for the same
+    (pr_url, revision_count). That exposure is shared with the in-process
+    fan-out, which has the same shape and a shorter window.
+
+    Two clocks, because the two failure modes need opposite treatment:
+
+    * nobody claims it — bounded by herder_claim_timeout_seconds, then the
+      caller falls back to the metered in-process reviewer. Falling back costs
+      API tokens; not falling back costs the job.
+    * somebody claims it and vanishes — a killed pane leaves the agent row
+      reading "running" forever, which is neither unclaimed nor finished.
+      Bounded by herder_work_timeout_seconds, after which the claim is marked
+      failed and the item returns to the unclaimed clock above.
+    """
+    import asyncio
+    import time
+
+    from ..reviewers import normalise_verdict
+
+    claim_budget = engine.config.herder_claim_timeout_seconds
+    work_budget = engine.config.herder_work_timeout_seconds
+
+    if claim_budget <= 0:
+        # 0 disables the fallback for engineers, where the task simply sits and
+        # a later poll can still rescue it. Here the waiter IS the only rescuer,
+        # so "disabled" would mean a coroutine spinning forever on a PR nobody
+        # is coming for. Refuse to publish instead of inventing a deadline.
+        logger.warning(
+            "reviewer_dispatch=external but herder_claim_timeout_seconds is %d — running %s in-process, "
+            "because an inline wait with no deadline cannot be rescued",
+            claim_budget,
+            specialty,
+        )
+        return False, None
+
+    await engine.db.record_event(
+        job.id,
+        "work_item_published",
+        "engine",
+        f"task={reviewer_task.id} role=code_reviewer specialty={specialty} pr={reviewer_task.pr_url or ''} revision={reviewer_task.revision_count}",
+    )
+    logger.info("Reviewer item %s (%s) published for external claim — no in-process agent launched", reviewer_task.id, specialty)
+
+    unclaimed_since = time.monotonic()
+
+    while True:
+        await asyncio.sleep(_EXTERNAL_REVIEW_POLL_SECONDS)
+
+        current = await engine.db.get_task(reviewer_task.id)
+        if current is None:
+            # Deleted or cancelled underneath us. Running it in-process would
+            # resurrect work somebody deliberately removed.
+            logger.warning("Reviewer item %s disappeared while awaiting an external worker", reviewer_task.id)
+            return True, None
+
+        if current.status in _REVIEW_TERMINAL:
+            verdict = normalise_verdict(current.verdict)
+            logger.info("External reviewer returned %s for %s (%s)", verdict, reviewer_task.id, specialty)
+            return True, verdict
+
+        agent = await engine.db.get_agent_for_task(reviewer_task.id)
+        live = agent is not None and agent.status in ("starting", "running")
+
+        if live:
+            unclaimed_since = None
+            if work_budget > 0 and _seconds_since(agent.started_at) >= work_budget:
+                message = (
+                    f"Herder claim on reviewer item {reviewer_task.id} has been running {int(_seconds_since(agent.started_at))}s "
+                    f"with no verdict (limit {work_budget}s) — treating the worker as gone and releasing the claim"
+                )
+                logger.warning(message)
+                await engine.db.update_agent(agent.id, status="failed", finished_at=datetime.now(UTC).isoformat(), error=message[:200])
+                await engine.db.record_event(
+                    job.id, "herder_claim_abandoned", "engine", f"task={reviewer_task.id} agent={agent.id} role=code_reviewer"
+                )
+                unclaimed_since = time.monotonic()
+            continue
+
+        if unclaimed_since is None:
+            # The claim just went away (released, or reaped above). Restart the
+            # unclaimed clock rather than charging the herder's runtime against
+            # the next worker's chance to pick it up.
+            unclaimed_since = time.monotonic()
+            continue
+
+        waited = time.monotonic() - unclaimed_since
+        if waited >= claim_budget:
+            logger.warning(
+                "Reviewer item %s (%s) went unclaimed for %ds — falling back to in-process dispatch",
+                reviewer_task.id,
+                specialty,
+                int(waited),
+            )
+            await engine.db.record_event(
+                job.id, "herder_claim_timeout", "engine", f"task={reviewer_task.id} waited={int(waited)}s role=code_reviewer"
+            )
+            return False, None
+
+
 async def _run_one_specialist(
     engine: JobEngine,
     job: Job,
@@ -1361,6 +1487,18 @@ async def _run_one_specialist(
             pr_number=task.pr_number,
         )
     )
+
+    # External dispatch: publish the item and run nothing here.
+    #
+    # Before the agent row, which is the whole mechanism — an agent row is what
+    # ownership means to find_claimable_work, so creating one first is exactly
+    # what made reviewer tasks unclaimable. If no worker takes it in time the
+    # waiter returns False and control falls through to the in-process path
+    # below, which creates the agent as it always did.
+    if engine.config.reviewer_dispatch == "external":
+        handled, external_verdict = await _await_external_review(engine, job, reviewer_task, specialty)
+        if handled:
+            return specialty, external_verdict
 
     # Reviewers fan out, so they get their own model tier — see resolve_model.
     model = resolve_model(engine.config, job.difficulty, project.model if project else "", is_reviewer=True)
