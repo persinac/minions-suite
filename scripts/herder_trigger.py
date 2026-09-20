@@ -24,7 +24,7 @@ not something a work laptop should inherit from a git pull.
     MINIONS_HERDER_MODE   off (default) | dry | live
     MINIONS_HERDER_MAX    concurrent herders (default 2)
     MINIONS_HERDER_PANE_TTL  seconds before a stuck pane is reaped (default 2700)
-    MINIONS_MCP_URL       default http://127.0.0.1:8321/sse
+    MINIONS_MCP_URL       default http://127.0.0.1:8321/mcp
 """
 
 import argparse
@@ -37,7 +37,7 @@ import sys
 import time
 from pathlib import Path
 
-MCP_URL = os.environ.get("MINIONS_MCP_URL", "http://127.0.0.1:8321/sse")
+MCP_URL = os.environ.get("MINIONS_MCP_URL", "http://127.0.0.1:8321/mcp")
 MODE = os.environ.get("MINIONS_HERDER_MODE", "off").strip().lower()
 MAX_HERDERS = int(os.environ.get("MINIONS_HERDER_MAX", "2"))
 POLL_SECONDS = int(os.environ.get("MINIONS_HERDER_POLL_SECONDS", "30"))

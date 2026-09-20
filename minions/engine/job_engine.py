@@ -240,7 +240,7 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
             prompt=prompt,
             working_dir=working_dir,
             allowed_tools=tool_names,
-            mcp_url=f"http://{self.config.mcp_connect_host}:{self.config.mcp_port}/sse",
+            mcp_url=f"http://{self.config.mcp_connect_host}:{self.config.mcp_port}/mcp",
             timeout=timeout,
             model=resolved_model,
             dry_run=self.config.dry_run,
