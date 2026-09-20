@@ -1,6 +1,6 @@
 ---
 name: herd
-description: Claim one engineering work item from the minions queue, implement it, and report back over MCP. The subscription-billed alternative to an in-process LiteLLM engineer. Invoke when the user wants to run a minions ticket as the herder.
+description: Claim one work item from the minions queue — an engineering ticket or a code review — do it, and report back over MCP. The subscription-billed alternative to an in-process LiteLLM agent. Invoke when the user wants to run a minions item as the herder.
 user-invocable: true
 disable-model-invocation: true
 argument-hint: "(no args — claims the next waiting item)"
@@ -8,8 +8,17 @@ argument-hint: "(no args — claims the next waiting item)"
 
 # Herd
 
-You are the **herder**: the engineer role for a minions job, running on a Claude
-Code subscription instead of a metered API key.
+You are the **herder**: a minions agent running on a Claude Code subscription
+instead of a metered API key.
+
+You may be handed either kind of work. **Check `role` on the claimed item.**
+
+- `backend_engineer` / `frontend_engineer` / `database_engineer` — write the
+  code, open a PR. Sections 1-3 below.
+- `code_reviewer` — review somebody else's PR and return a verdict. Section 4.
+
+Engineers are ~46% of spend against the API key and reviewers ~40%. Both are
+work a subscription already pays for.
 
 Job `793821e8` spent **$10.66** on a ten-line security fix and merged nothing.
 Orchestration — spec analyst and arbiter, the part minions does well — was
@@ -18,16 +27,17 @@ effectively nothing, and to do it better.
 
 ## Preconditions
 
-The engine must be publishing rather than running its own engineers:
+The engine must be publishing rather than running the work itself. The two
+roles have separate knobs:
 
 ```bash
 kubectl exec -n minion-suite deploy/minion-suite -c minion-suite -- \
-  /app/.venv/bin/python -c "from minions.config import Config; print(Config.from_env().engineer_dispatch)"
+  /app/.venv/bin/python -c "from minions.config import Config; c=Config.from_env(); print(c.engineer_dispatch, c.reviewer_dispatch)"
 ```
 
-`external` means work is waiting to be claimed. `in_process` means the engine is
-handling engineers itself and there will never be anything to claim — stop and
-tell the user.
+`external` means that role's work is waiting to be claimed. `in_process` means
+the engine handles it itself and there will never be anything of that kind to
+claim. If **both** say `in_process`, stop and tell the user.
 
 ## 1. Claim
 
@@ -36,10 +46,16 @@ identifying this session.
 
 `{"work": null}` means the queue is empty. Say so and stop — do not invent work.
 
-The item contains everything needed: `task_id`, `job_id`, `agent_id`, `spec`,
-`service`, `clone_url`, `default_branch`, `branch_name`, `pr_url`,
-`is_revision`, and — on a revision — `review_feedback` already formatted as a
-numbered findings checklist.
+**Read `role` first** — the rest of the payload means different things.
+
+An **engineer** item carries `task_id`, `job_id`, `agent_id`, `spec`, `service`,
+`clone_url`, `default_branch`, `branch_name`, `pr_url`, `is_revision`, and — on
+a revision — `review_feedback` already formatted as a numbered findings
+checklist. Continue to section 2.
+
+A **code_reviewer** item carries `mr_url` / `pr_url`, `mr_id`, `project_id`,
+`specialty`, the `persona` for that lens, and `review_instructions`. Skip to
+section 4.
 
 `engine_repo_path` is the **engine's** checkout inside its own container. Unless
 you share that filesystem it does not exist for you — work from `clone_url`.
@@ -102,6 +118,39 @@ voted. That happened on the first real run and had to be cleared by hand.
 Reporting the PR without closing the claim is the single easiest way to wedge a
 job. Do both.
 
+## 4. If you claimed a review
+
+Different job, same claim. You are one specialist on a panel; `specialty` says
+which lens and `persona` is that lens's brief. Read it before you read the diff.
+
+**Read the code. This is the whole risk.** A reviewer whose file tools point at
+a directory that does not exist gets "no such file" from one, an error from the
+next, and `[]` from a third — which looks exactly like an empty repo — and then
+returns a confident verdict on a diff it never opened. That shipped once.
+
+- Diff: `gh pr diff <mr_id>` (GitHub), or the `merge_requests/<mr_id>/changes`
+  API (GitLab). `mr_url` opens the same thing in a browser.
+- Tree: `gh pr checkout <mr_id>` in a fresh clone of `clone_url`, or clone and
+  check out `branch_name`. A diff alone hides the callers.
+
+Post findings on the PR yourself if you can comment. Then close out:
+
+```
+complete_engineer_work(agent_id, verdict="approve" | "request_changes", feedback="...")
+```
+
+**The verdict is required for a reviewer and the tool will refuse without one.**
+That is deliberate. A reviewer that finishes with no verdict reads to the engine
+as a *silent* reviewer, which buys one re-run and then fails closed into a
+revision nobody asked for — so a forgotten argument would turn "I finished" into
+"I objected".
+
+**If you could not read the code, do not guess.** Call
+`release_engineer_work(agent_id, reason)`. A verdict from a reviewer that never
+saw the diff is worse than no reviewer at all.
+
+Do **not** call `report_pr` — you did not open one.
+
 ## If you cannot finish
 
 Call `release_engineer_work(agent_id, reason)`. Rate-limited, blocked, out of
@@ -130,5 +179,6 @@ than reaped promptly.
   checks and reviewer verdicts, and it is the thing that stopped a bad PR
   landing. You are the author, not the gate.
 - **Do not review your own work.** Reviewers run separately and independently
-  on purpose. Your opinion of your own diff is worth less than theirs.
+  on purpose. Your opinion of your own diff is worth less than theirs. If you
+  claim a review for a PR you wrote in an earlier invocation, release it.
 - **One item per invocation.** Claim, finish, report, stop.

@@ -222,9 +222,16 @@ mcp_host = "0.0.0.0"
 # on the metered API key. The engine publishes the work item and launches
 # nothing; claim_engineer_work hands it to whoever asks.
 #
-# Reviewers are deliberately NOT moved. On job 793821e8 they were right in all
-# four rounds and caught a coverage regression that CI passed — that is the part
-# worth paying for, and it stays in_process until a fan-out is proven.
+# Reviewers CAN now be moved the same way — set reviewer_dispatch = "external"
+# — and are deliberately still not. On job 793821e8 they were right in all four
+# rounds and caught a coverage regression that CI passed; that is the part worth
+# paying for. The mechanism existing and the decision to use it are separate
+# questions, and only the first has been settled.
+#
+# Turning it on is one line here plus a herder willing to take review items.
+# Turning it back off is the same line. Reviewers are ~40% of spend, so the
+# saving is real — but so is the thing being risked, which is why the default
+# stays put.
 #
 # If no herder claims within herder_claim_timeout_seconds the engine runs the
 # item in-process anyway, so this degrades to today's behaviour rather than
