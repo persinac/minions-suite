@@ -1632,6 +1632,128 @@ async def _ensure_reviewer_checkout(engine: JobEngine, job: Job, task: Task, ser
         )
 
 
+def _panel_task_name(task: Task) -> str:
+    """The name `engine._spawn` gives a review panel coroutine.
+
+    Defined once because two places depend on it agreeing: the spawn site and
+    `_panel_is_live`. If they drift, the reconciler either never resumes
+    anything or resumes a panel that is still running.
+    """
+    return f"review-{task.id[:8]}"
+
+
+def _panel_is_live(engine: JobEngine, task: Task) -> bool:
+    """Is a review panel for this task running IN THIS PROCESS right now?
+
+    `manage_dev_tasks` re-enters every poll interval (seconds), so the
+    reconciler has to tell "a panel is collecting verdicts" from "the coroutine
+    that owned this panel is gone". Re-spawning the first is how you get
+    duplicate reviewers -- the $4.87 mistake the fan-out guard exists to
+    prevent. Never re-entering the second is the wedge this path fixes.
+
+    `engine._background_tasks` answers it exactly: `_spawn` puts the coroutine
+    there under `_panel_task_name` and a done-callback discards it. Nothing in
+    that set survives the process, so after a restart it is empty -- which is
+    precisely the signal wanted, with no stale-liveness case to reason about.
+    """
+    tracked = getattr(engine, "_background_tasks", None)
+    name = _panel_task_name(task)
+    try:
+        return any(t.get_name() == name and not t.done() for t in tracked or ())
+    except TypeError, AttributeError:
+        # An unreadable registry (a MagicMock engine in the tests, say) reads as
+        # "not live". The reconciler's other precondition is that reviewer rows
+        # already exist, and a spurious resume is recoverable where a permanent
+        # wedge is not.
+        return False
+
+
+def _reconstruct_verdicts(task: Task, existing: list[Task]) -> dict[str, str | None]:
+    """Rebuild a round's {specialty: verdict} from the reviewer task rows.
+
+    This is what makes resuming cheap. Everything downstream of the fan-out --
+    the silent re-run, the discuss re-ask, aggregation, the CI gate, the merge
+    -- is written against this dict, and the functions that consume it in
+    `minions.reviewers` are PURE. Rebuild the dict and none of those branches
+    has to be re-derived.
+
+    Two details that are easy to get wrong:
+
+    * every row must be PRESENT, including the ones with nothing usable on
+      them. `aggregate_verdicts` ignores keys that are absent rather than
+      failing closed on them, so dropping a crashed or unanswered specialist
+      does not block the merge -- it silently shrinks the panel, and a reviewer
+      that never answered becomes indistinguishable from one that was never
+      needed. FAILED rows are included for exactly that reason: the live path
+      carries a crashed specialist as None and chases it.
+      (`_run_one_specialist` writes `verdict or ""`, so those rows hold an
+      empty string. Normalising it to None here is defensive rather than
+      load-bearing -- `normalise_verdict("")` is already None, so every
+      consumer treats them alike. Checked, not assumed: a mutation removing
+      the normalisation left the suite green.)
+    * carried approvals have NO row at the current revision. Omitting them does
+      not flip the verdict -- they are all APPROVE, and `aggregate_verdicts`
+      ignores absent keys rather than failing closed on them -- but it makes the
+      record claim a smaller panel than actually approved and hides that a
+      specialist was deliberately skipped to save a re-run. Recomputed here from
+      the previous round, the same way the fan-out does it.
+    """
+    from ..reviewers import APPROVE
+
+    round_number = task.revision_count or 0
+    pr = task.pr_url or ""
+    verdicts: dict[str, str | None] = {}
+
+    if round_number > 0:
+        for prior in existing:
+            if (
+                prior.agent_role == AgentRole.CODE_REVIEWER
+                and (prior.pr_url or "") == pr
+                and (prior.revision_count or 0) == round_number - 1
+                and (prior.verdict or "").strip().lower() == APPROVE
+                and prior.specialty
+            ):
+                verdicts[prior.specialty] = APPROVE
+
+    for row in existing:
+        if row.agent_role == AgentRole.CODE_REVIEWER and (row.pr_url or "") == pr and (row.revision_count or 0) == round_number and row.specialty:
+            verdicts[row.specialty] = (row.verdict or "").strip() or None
+
+    return verdicts
+
+
+async def _step_already_spent(engine: JobEngine, job: Job, task: Task, event_type: str) -> bool:
+    """Has this one-shot step already fired for this task and revision?
+
+    The silent re-run and the discuss re-ask are once per round, and a restart
+    must not hand the round a fresh allowance. Both events are recorded BEFORE
+    the work they describe, so presence means "already started", not "already
+    finished" -- and reading it as spent is the conservative call. Declining
+    costs nothing, because whatever is still missing reaches
+    `aggregate_verdicts`, which fails closed; re-spending pays twice for the
+    same answer after every rollout.
+
+    Scoped to the revision as well as the task: the same parent task id runs a
+    fresh panel on each revision, and matching on the id alone would let round
+    0's re-run suppress round 1's.
+    """
+    try:
+        events = await engine.db.get_events(job.id)
+    except Exception as e:  # pragma: no cover - a read failure must not block the round
+        logger.warning("Could not read events to check whether %s was already spent: %s", event_type, e)
+        return False
+
+    task_marker = f"task={task.id}"
+    revision_marker = f"revision={task.revision_count or 0}"
+    for event in events:
+        if event.get("event_type") != event_type:
+            continue
+        detail = event.get("detail") or ""
+        if task_marker in detail and revision_marker in detail:
+            return True
+    return False
+
+
 async def run_task_review(engine: JobEngine, job: Job, task: Task):
     """Fan out expert reviewers across a task's PR, then act on their verdict.
 
@@ -1680,14 +1802,36 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
         and (t.pr_url or "") == (task.pr_url or "")
         and (t.revision_count or 0) == (task.revision_count or 0)
     ]
+    # Three outcomes, not two. "Reviewer rows exist" used to mean "refuse", and
+    # that is correct only while something is still driving them. A restart
+    # leaves rows with no owner, and refusing THAT is what wedged the parent at
+    # IN_REVIEW forever: nothing else looks at reviewer children (manage_dev_tasks
+    # walks engineer roles only) and the parent's own recovery reads the
+    # engineer's agent row, which is a healthy `done`.
+    resuming = False
     if already:
-        logger.info(
-            "Review already ran for task %s (PR %s): %d reviewer task(s) — not fanning out again",
+        if _panel_is_live(engine, task):
+            logger.info(
+                "Review already ran for task %s (PR %s): %d reviewer task(s) — not fanning out again",
+                task.id,
+                task.pr_url or "pending",
+                len(already),
+            )
+            return
+
+        resuming = True
+        logger.warning(
+            "Review panel for task %s (PR %s) has %d reviewer task(s) and no owning coroutine — resuming it from the rows",
             task.id,
             task.pr_url or "pending",
             len(already),
         )
-        return
+        await engine.db.record_event(
+            job.id,
+            "review_panel_resumed",
+            "engine",
+            f"task={task.id} revision={task.revision_count or 0} rows={len(already)}",
+        )
 
     review_context = json.dumps(
         {
@@ -1753,17 +1897,26 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
         f" (skipped: {', '.join(skipped)})" if skipped else "",
         f" (capped at {engine.config.review_fanout_max}, dropped: {', '.join(capped)})" if capped else "",
     )
-    await engine.db.record_event(
-        job.id,
-        "review_fanout",
-        "engine",
-        f"task={task.id} ran={','.join(specialists)} skipped={','.join(skipped)} capped={','.join(capped)}",
-    )
+    if not resuming:
+        # Only a real fan-out records one. A resumed round runs nobody, and an
+        # event claiming `ran=api,dba` when nothing ran would make the audit
+        # trail count the same panel twice.
+        await engine.db.record_event(
+            job.id,
+            "review_fanout",
+            "engine",
+            f"task={task.id} ran={','.join(specialists)} skipped={','.join(skipped)} capped={','.join(capped)}",
+        )
 
     # Per-job spend ceiling. Reviewers call run_agent directly rather than going
     # through _run_in_process, so the job ceiling never applied to them. With one
     # reviewer that was survivable; fanning out four makes it the dominant cost.
-    if engine.config.job_cost_limit_usd > 0:
+    # Skipped when resuming: this ceiling guards the cost of LAUNCHING a panel,
+    # and a resumed round launches nobody. Applying it here would mean a job
+    # that went over budget could never finish reviewing the work it already
+    # paid for -- the verdicts are on disk, aggregating them is free. The
+    # re-runs further down, which do spend, keep their own checks.
+    if not resuming and engine.config.job_cost_limit_usd > 0:
         usage = await engine.db.get_job_usage(job.id)
         spent = float(usage.get("total_cost_usd") or 0.0)
         if spent >= engine.config.job_cost_limit_usd:
@@ -1810,7 +1963,17 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
         logger.warning("Every specialist for task %s approved previously — re-running the full panel rather than trusting stale verdicts", task.id)
         carried, to_run = {}, specialists
 
-    if carried:
+    if resuming:
+        # The panel already answered; only the coroutine holding the answers
+        # died. Seed the round from the rows and run nobody -- an empty
+        # `to_run` makes the `_collect_verdicts` call below a no-op, so the
+        # whole tail of this function stays on its normal path with no second
+        # copy of the aggregation, CI gate and merge logic to keep in step.
+        carried = _reconstruct_verdicts(task, existing)
+        to_run = []
+        logger.info("Resumed review panel for task %s with %d verdict(s) from rows: %s", task.id, len(carried), sorted(carried))
+
+    if carried and not resuming:
         logger.info("Carrying forward %s approval(s) for task %s; re-running %s", ", ".join(sorted(carried)), task.id, ", ".join(to_run))
         await engine.db.record_event(
             job.id, "review_approvals_carried", "engine", f"task={task.id} carried={','.join(sorted(carried))} rerun={','.join(to_run)}"
@@ -1841,6 +2004,13 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
     # byte-identical code, and 2b63f1b6 revised a PR nobody had objected to. If
     # the re-run is silent too, aggregation below still fails closed.
     silent = missing_verdicts(verdicts)
+    if silent and resuming and await _step_already_spent(engine, job, task, "review_silent_rerun"):
+        # This round already bought its one re-run before the restart. Handing
+        # a resumed round a fresh allowance would pay again for the same
+        # answer on every rollout; whatever is still missing falls through to
+        # aggregate_verdicts, which fails closed.
+        logger.info("Silent-reviewer re-run for task %s was already spent before the resume — not buying a second one", task.id)
+        silent = []
     if silent and engine.config.job_cost_limit_usd > 0:
         usage = await engine.db.get_job_usage(job.id)
         spent = float(usage.get("total_cost_usd") or 0.0)
@@ -1855,7 +2025,9 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
             silent = []
     if silent:
         logger.info("No objection, but no verdict from %s for task %s — re-running them once", ", ".join(silent), task.id)
-        await engine.db.record_event(job.id, "review_silent_rerun", "engine", f"task={task.id} rerun={','.join(silent)}")
+        await engine.db.record_event(
+            job.id, "review_silent_rerun", "engine", f"task={task.id} revision={task.revision_count or 0} rerun={','.join(silent)}"
+        )
         verdicts.update(await _collect_verdicts(engine, job, task, silent, project, service, mr_id, mr_info, provider, review_context))
 
         # Same staleness window as above — the re-run took real time.
@@ -1879,6 +2051,11 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
     # objected or went silent, so this can only fire when indecision is the
     # sole thing standing between the PR and a verdict.
     discussing = discussing_specialists(verdicts)
+    if discussing and resuming and await _step_already_spent(engine, job, task, "review_discuss_rerun"):
+        # Same one-per-round rule as the silent re-run above, for the same
+        # reason: a restart must not reset the allowance.
+        logger.info("Discuss re-ask for task %s was already spent before the resume — not buying a second one", task.id)
+        discussing = []
     if discussing and engine.config.job_cost_limit_usd > 0:
         usage = await engine.db.get_job_usage(job.id)
         spent = float(usage.get("total_cost_usd") or 0.0)
@@ -1889,7 +2066,9 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
             discussing = []
     if discussing:
         logger.info("Discussion requested by %s for task %s -- re-asking them to commit", ", ".join(discussing), task.id)
-        await engine.db.record_event(job.id, "review_discuss_rerun", "engine", f"task={task.id} rerun={','.join(discussing)}")
+        await engine.db.record_event(
+            job.id, "review_discuss_rerun", "engine", f"task={task.id} revision={task.revision_count or 0} rerun={','.join(discussing)}"
+        )
         decide_context = review_context + (
             "\n\nNOTE: a previous pass answered 'discuss'. There is no discussion forum in this "
             "pipeline. Re-review and commit to a verdict: approve, or request_changes with "
@@ -2050,7 +2229,7 @@ async def manage_dev_tasks(engine: JobEngine, job: Job):
             except InvalidTransitionError as e:
                 logger.warning("Could not transition task %s to in_review: %s", task.id, e)
                 continue
-            engine._spawn(run_task_review(engine, job, task), name=f"review-{task.id[:8]}")
+            engine._spawn(run_task_review(engine, job, task), name=_panel_task_name(task))
 
         elif task.status == TaskStatus.PENDING:
             # Only launch if no other task for this service is running
@@ -2134,6 +2313,37 @@ async def manage_dev_tasks(engine: JobEngine, job: Job):
                 except InvalidTransitionError as e:
                     logger.warning("Could not complete interrupted review transition for %s: %s", task.id, e)
                 continue
+
+            # A review panel with no owning coroutine.
+            #
+            # `run_task_review` is spawned fire-and-forget and holds the whole
+            # round in memory, so a restart, an eviction or an OOM leaves the
+            # reviewer rows behind with nothing driving them. Nothing else here
+            # notices: `dev_tasks` is filtered to engineer roles, so the
+            # CODE_REVIEWER children are never examined, and the recovery below
+            # reads `get_agent_for_task(parent)` — which returns the ENGINEER's
+            # agent, a healthy `done`. So the parent sat IN_REVIEW forever.
+            #
+            # Re-enter it. The guard inside rebuilds the round from the rows
+            # rather than starting a second panel, and `_panel_is_live` is what
+            # stops this firing every poll while a panel is legitimately running.
+            if not _panel_is_live(engine, task):
+                orphaned_panel = [
+                    t
+                    for t in tasks
+                    if t.agent_role == AgentRole.CODE_REVIEWER
+                    and t.status != TaskStatus.FAILED
+                    and (t.pr_url or "") == (task.pr_url or "")
+                    and (t.revision_count or 0) == (task.revision_count or 0)
+                ]
+                if orphaned_panel:
+                    logger.warning(
+                        "Task %s is IN_REVIEW with %d reviewer row(s) and no owning coroutine — re-entering the panel",
+                        task.id,
+                        len(orphaned_panel),
+                    )
+                    engine._spawn(run_task_review(engine, job, task), name=_panel_task_name(task))
+                    continue
 
             # IN_REVIEW tasks are handled by a spawned reviewer coroutine.
             # But detect stuck reviewers — if the latest agent is starting/failed, recover.
