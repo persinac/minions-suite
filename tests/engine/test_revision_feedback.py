@@ -80,7 +80,7 @@ class TestReviewFetching:
     def test_a_non_github_url_yields_nothing_rather_than_raising(self):
         source = inspect.getsource(_fetch_pr_review_bodies)
 
-        assert 'github\\.com' in source or "github" in source
+        assert "github\\.com" in source or "github" in source
         assert 'return ""' in source
 
     def test_provider_failure_is_not_mistaken_for_no_comments(self):

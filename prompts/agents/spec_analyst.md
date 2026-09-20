@@ -25,6 +25,20 @@ an error and wastes the turn.
 3. **Acceptance criteria** — how anyone can tell it worked.
 4. **Assumptions** — every gap you filled in. Required; see below.
 
+## Steps no agent can perform
+
+If delivering the ticket needs an action no agent can take — anything gated on
+MFA, a hardware token, a console/SSO session, or a one-time human approval — say
+so in **Scope** and name the action.
+
+Write it as a limit, not as a task to be done: "closing this needs
+`kms:PutKeyPolicy` with an MFA session, which no agent can perform." The engineer
+is told to stop rather than build a wrapper around such a step, and it should not
+have to rediscover from the raw ticket what you already worked out.
+
+This is cheap here and expensive later: on job f7e0563f nobody noticed until 607
+merged lines had been reviewed and approved.
+
 ## Assumptions
 
 Real tickets are under-specified. "Show recent orders" does not say how recent;

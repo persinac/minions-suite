@@ -269,6 +269,7 @@ async def _run_server(config: Config) -> None:
     from .preflight import print_preflight, run_preflight
     from .project_registry import build_registry
     from .server.mcp import create_server
+    from .server.transport import serve_dual_transport
 
     # Run preflight checks before anything else
     checks = run_preflight(config)
@@ -453,12 +454,12 @@ async def _run_server(config: Config) -> None:
         try:
             _prev_handlers[_sig] = signal.getsignal(_sig)
             signal.signal(_sig, _log_signal)
-        except (ValueError, OSError):
+        except ValueError, OSError:
             logger.debug("Could not install handler for %s", _sig)
 
     try:
-        await mcp.run_async(transport="sse", host=config.mcp_host, port=config.mcp_port)
-        logger.error("mcp.run_async() RETURNED WITHOUT A SIGNAL -- the server stopped on its own")
+        await serve_dual_transport(mcp, host=config.mcp_host, port=config.mcp_port, log_level=config.log_level)
+        logger.error("serve_dual_transport() RETURNED WITHOUT A SIGNAL -- the server stopped on its own")
     finally:
         logger.warning("Engine shutdown beginning -- in-process agents will be marked failed")
         await job_engine.stop()
@@ -967,13 +968,19 @@ async def _show_costs(config: Config, project: str | None = None) -> None:
 
 
 def _eff_table(rows: list[dict], key_fields: tuple[str, ...], label_width: int = 34) -> None:
-    """Print one effectiveness rollup. Dollars and failure rate side by side."""
-    print(f"  {'':{label_width}}  {'runs':>5} {'spend':>9} {'$/run':>8} {'turns':>6} {'fail':>10} {'ceil':>5}")
+    """Print one effectiveness rollup. Dollars and failure rate side by side.
+
+    Two failure columns, deliberately. `fail` is every failed row; `REAL` is the
+    subset that did work first. A run killed at turn 0 by an engine restart made
+    no model call, so it belongs in the first and not the second -- and reading
+    the first as a model verdict is how "haiku fails 3x as often" got published.
+    """
+    print(f"  {'':{label_width}}  {'runs':>5} {'spend':>9} {'$/run':>8} {'turns':>6} {'fail':>5} {'REAL':>12} {'ceil':>5}")
     for r in rows:
         label = " / ".join(str(r[f]) for f in key_fields)
         print(
             f"  {label:{label_width}.{label_width}}  {r['runs']:>5} {r['spend_usd']:>8.2f}$ {r['cost_per_run_usd']:>7.3f}$ "
-            f"{r['avg_turns']:>6.1f} {r['failed']:>4} ({r['failure_rate'] * 100:>4.1f}%) {r['ceiling_hits']:>5}"
+            f"{r['avg_turns']:>6.1f} {r['failed']:>5} {r['real_failed']:>5} ({r['real_failure_rate'] * 100:>4.1f}%) {r['ceiling_hits']:>5}"
         )
 
 
@@ -992,10 +999,15 @@ async def _show_effectiveness(config: Config, project: str | None = None, days: 
         print("\n-- Headline --")
         print(f"  Total spend:            ${out['total_spend_usd']:.2f} over {out['total_jobs']} jobs")
         if out["cost_per_success_usd"] is None:
-            print("  Cost per success:       n/a (no job reached done in this window)")
+            print("  Cost per success:       n/a (no job succeeded in this window)")
         else:
-            print(f"  Cost per SUCCESS:       ${out['cost_per_success_usd']:.2f}  ({out['successful_jobs']} done)")
-            print("                          ^ all spend / finished jobs — failed work is a cost of the successes")
+            made_up = f"{out['completed_jobs']} done"
+            if out["delivered_jobs"]:
+                made_up += f" + {out['delivered_jobs']} delivered-then-killed"
+            print(f"  Cost per SUCCESS:       ${out['cost_per_success_usd']:.2f}  ({out['successful_jobs']} successful = {made_up})")
+            print("                          ^ all spend / successful jobs — failed work is a cost of the successes")
+        if out["cancelled_jobs"]:
+            print(f"  Cancelled:              {out['cancelled_jobs']} (superseded or called off — counted as neither)")
 
         print("\n-- Where the money went --")
         for r in out["by_status"]:
@@ -1005,6 +1017,8 @@ async def _show_effectiveness(config: Config, project: str | None = None, days: 
             print(f"  {r['status']:18s} {r['jobs']:>3} jobs  ${r['spend_usd']:>8.2f}  ({share:4.1f}%)")
 
         print(f"\n-- By model (ceiling = runs at >= {eff['turn_ceiling']} turns, today's AGENT_MAX_TURNS) --")
+        print("   REAL = failed AFTER doing work (turns > 0). Judge a model on that, not on `fail`:")
+        print("   a run killed at turn 0 by an engine restart never reached the model.")
         _eff_table(eff["by_model"], ("model",))
         if eff["external_runs"]:
             print(f"  (+ {eff['external_runs']} external herder runs, {eff['external_failed']} failed — unmetered, excluded above)")

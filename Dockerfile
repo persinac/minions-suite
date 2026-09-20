@@ -48,7 +48,7 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 
 # Node.js — so the TypeScript/JavaScript repos are actually workable.
 #
-# Without it every frontend service in projects.yaml (directory-ui, store-front,
+# Without it every frontend service in projects.yaml (store-front,
 # management-dashboard, flashback-heatmap, ui-integration-tests) was dead on
 # arrival: an agent would clone, edit, then fail at `npm ci` with "command not
 # found" and burn a whole attempt discovering the image could not build its

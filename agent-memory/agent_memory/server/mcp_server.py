@@ -30,10 +30,7 @@ _store = None
 def _db_url() -> str:
     url = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or ""
     if not url:
-        raise RuntimeError(
-            "DATABASE_URL environment variable is required. "
-            "Set it in the project .env or export it before starting the server."
-        )
+        raise RuntimeError("DATABASE_URL environment variable is required. Set it in the project .env or export it before starting the server.")
     # Ensure SSL for hosted Postgres (Digital Ocean, etc.) unless already specified
     if "sslmode" not in url:
         sep = "&" if "?" in url else "?"
@@ -282,6 +279,7 @@ def main():
     if _env_path.exists():
         try:
             from dotenv import load_dotenv
+
             load_dotenv(_env_path)
         except ImportError:
             pass  # python-dotenv optional — fall back to env vars already set

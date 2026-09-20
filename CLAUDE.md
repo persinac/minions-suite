@@ -216,21 +216,44 @@ task docker:down
 `minion --effectiveness` (also the `get_model_effectiveness` MCP tool) joins cost to
 quality so a cheaper model cannot look good on the spend line while costing more overall.
 
-The headline is **cost per success** — *all* spend divided by jobs that reached `done`, so
-failed work is charged to the successes it did not produce. On the data as of 2026-08-26
-that was $5.46, against the $3.14 you get by looking only at successful jobs.
+The headline is **cost per success** — *all* spend divided by jobs that succeeded, so
+failed work is charged to the successes it did not produce. On the data as of 2026-08-29
+that was $3.94.
 
-Three things the raw tables will mislead you about, all handled in
-`get_model_effectiveness` (`db/postgres.py`):
+⚠️ **An earlier version of this file claimed "haiku fails 3x as often (11.7% vs 3.3%)".
+That was wrong — do not repeat it.** The number was real and the reading was not: on
+2026-08-29 *every* failure in the table, all 23 across four models, had `num_turns = 0`,
+meaning it died before making a single model call. Nineteen came from one engine-restart
+incident on 2026-07-25/26, concentrated in `backend_engineer` only because at ~32 turns it
+is the role most likely to be mid-flight during a rollout. That is a duration effect
+wearing a model effect's clothes. **There has never been a recorded failure by any model
+after it started work.**
+
+Four things the raw tables will mislead you about, all handled in
+`get_model_effectiveness` / `get_outcome_breakdown` (`db/postgres.py`):
 
 - **`herder:` rows are not a model.** They are external subscription-backed workers
   recording $0.00 by design. Averaged in they invent a flawless free model; they are
   excluded and reported as `external_runs`.
 - **Turn-ceiling exhaustion is silent.** Hitting `AGENT_MAX_TURNS` leaves the agent row
   `status=done, error=NULL`. `ceiling_hits` is the only place that failure is visible.
-- **Compare within a difficulty.** The classifier already routes easy tickets to the cheap
-  tier, so un-stratified per-model numbers partly measure ticket mix. Use
-  `by_model_difficulty`.
+- **Read `real_failed`, never `failed`.** `real_failed` requires `num_turns > 0`, so an
+  agent killed at turn 0 by a restart or a transport error cannot be charged to the model.
+  The `REAL` column in the CLI and `minion_agent_real_failures` in `/metrics` are the ones
+  to alert on; `failed` is kept only so the gap between them stays visible.
+- **Compare within a difficulty — and check the cell is not degenerate.** The classifier
+  routes easy tickets to the cheap tier, so un-stratified numbers partly measure ticket
+  mix. But routing is deterministic, so a cell can have exactly one model: as of
+  2026-08-29 *every* `easy` job was engineered by haiku, which means the engineer role
+  cannot be A/B'd from production data at all. Use `task e2e:matrix` for that.
+
+`status = failed` is also not the same question as "did this job fail". An operator who
+kills a job whose PR already merged leaves a row indistinguishable from a crash, because
+`jobs.error` is the only record of why. `get_outcome_breakdown` splits those out into
+`delivered` (killed after shipping — counted as a success) and `cancelled` (superseded —
+counted as neither). That moved 6 of 24 `failed` jobs and took cost-per-success from
+$4.52 to $3.94. The match is on free text, so a differently-worded kill will be missed —
+if failure counts jump, read the actual `jobs.error` values before believing them.
 
 `/metrics` on the dashboard (`:8322`) exposes the same aggregates as Prometheus gauges,
 read from the DB on scrape and cached for `metrics_window_days`-wide queries. They are
@@ -245,7 +268,16 @@ reason worse about an ambiguous ticket", not "does it write worse code".
 
 ## Tests
 
-~1217 tests via `pytest` + `pytest-asyncio`, split across two suites (1152 root, 65 agent-memory). Run both with `task test` — it invokes pytest twice (root `tests/`, then `agent-memory/tests`) because both directories are named `tests` and their conftests collide in a single run. A bare `uv run pytest` runs only the root suite.
+~1591 tests via `pytest` + `pytest-asyncio`, split across two suites (1523 root, 68 agent-memory). Run both with `task test` — it invokes pytest twice (root `tests/`, then `agent-memory/tests`) because both directories are named `tests` and their conftests collide in a single run. A bare `uv run pytest` runs only the root suite.
+
+**CI runs them now.** `.github/workflows/ci.yml` has a `lint` job (`ruff check` + `ruff format --check`) and a `test` job that stands up `pgvector/pgvector:pg17` as a service on 5434 — the port `tests/conftest.py` already defaults to — and runs both suites. `.github/workflows/security.yml` is the fleet-standard gitleaks `secret-scan`, with `.gitleaksignore` baselining six token-*shaped* fixtures in the redaction tests.
+
+All three are **required** by the `protect-main` ruleset, with 0 approvals and squash-only merges. Two things follow:
+
+- Query `repos/{slug}/rules/branches/{branch}` to see them. The classic `branches/{b}/protection` endpoint is blind to rulesets and returns `404 "Branch not protected"`, which reads as *unprotected* and is not.
+- Before this existed, `mergeStateStatus: CLEAN` on a PR here meant *"nothing was ever asked"*, not *"checks passed"*. #72 changed reviewer selection and left 13 tests red on `main` for days because nothing ran them.
+
+The `test` job asserts a collection floor (root ≥ 1400, agent-memory ≥ 60) before running anything: without a reachable Postgres every DB-backed test *errors* at fixture setup rather than failing, and a collection failure exits 0 having run nothing — from outside, both are indistinguishable from success. If you add or remove a large block of tests, move the floor with it.
 
 **Tests need a real PostgreSQL with pgvector — not SQLite.** `tests/conftest.py` connects to `postgresql://minion:minion@localhost:5434/minion` (override with `TEST_POSTGRES_URL`) and creates a `minions_test` schema per session. Without it, every DB-backed test *errors* at fixture setup rather than failing — easy to misread as "my change broke the suite".
 

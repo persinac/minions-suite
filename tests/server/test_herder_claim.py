@@ -184,6 +184,87 @@ class TestClaiming:
         assert payload["work"] is None
 
 
+class TestLosingTheClaimRace:
+    """The window `test_a_claimed_task_is_not_offered_twice` cannot reach.
+
+    That test claims twice in sequence, so the first claim's agent row already
+    exists when the second one scans. The real collision is finer: two workers
+    scan before either inserts, both see an unowned task, and both proceed. No
+    tighter check inside `find_claimable_work` closes it — the check and the
+    insert are separate round trips, and the gap between them is the bug.
+
+    `idx_agents_one_live_per_task` closes it in the database instead, and these
+    tests are about what the LOSER does with the refusal. Injecting a competitor
+    inside `create_agent` reproduces the interleaving exactly, rather than
+    gathering coroutines and hoping the scheduler cooperates. (The genuinely
+    concurrent version lives in `tests/db/test_one_live_agent_per_task.py`,
+    where there is no MCP layer in the way.)
+    """
+
+    @pytest.fixture
+    def competitor(self, db, monkeypatch):
+        """Let somebody else win the task, once, between the scan and the insert."""
+        original = db.create_agent
+        state = {"fired": False}
+
+        async def racing_create(agent):
+            if not state["fired"] and agent.task_id is not None:
+                state["fired"] = True
+                await original(Agent(job_id=agent.job_id, role=agent.role, task_id=agent.task_id, model="claude-opus-5", status="running"))
+            return await original(agent)
+
+        monkeypatch.setattr(db, "create_agent", racing_create)
+        return state
+
+    async def test_the_loser_is_told_nothing_is_waiting(self, mcp_client, db, competitor):
+        """ "Nothing waiting" is the honest answer and the one a herder handles.
+
+        An error here would make an ordinary collision look like an outage, and
+        a polling trigger that treats a failed claim as a fault would stop.
+        """
+        await _job_with_engineer_task(db)
+
+        payload = await _call(mcp_client, "claim_engineer_work", {"worker": "loser"})
+
+        assert competitor["fired"] is True
+        assert payload["work"] is None
+
+    async def test_the_loser_leaves_no_second_agent_row(self, mcp_client, db, competitor):
+        """The property the index exists for: one live worker on one task."""
+        job_id, task_id = await _job_with_engineer_task(db)
+
+        await _call(mcp_client, "claim_engineer_work", {"worker": "loser"})
+
+        agents = [a for a in await db.get_agents_for_job(job_id) if a.task_id == task_id]
+        assert len(agents) == 1
+        assert agents[0].model == "claude-opus-5"
+
+    async def test_the_loss_is_recorded_rather_than_silent(self, mcp_client, db, competitor):
+        """A claim that returns None for two different reasons is unreadable.
+
+        Without this event, "queue empty" and "I lost a race" look identical in
+        the audit trail — which is exactly how the duplicate spawn stayed
+        mysterious for as long as it did.
+        """
+        job_id, task_id = await _job_with_engineer_task(db)
+
+        await _call(mcp_client, "claim_engineer_work", {"worker": "loser"})
+
+        events = [e for e in await db.get_events(job_id) if e["event_type"] == "work_item_claim_lost"]
+        assert len(events) == 1
+        assert events[0]["source"] == "loser"
+        assert task_id in events[0]["detail"]
+
+    async def test_the_work_is_still_claimable_by_nobody_afterwards(self, mcp_client, db, competitor):
+        """The winner owns it, so a later poll must stay quiet rather than retry."""
+        await _job_with_engineer_task(db)
+
+        await _call(mcp_client, "claim_engineer_work", {"worker": "loser"})
+        again = await _call(mcp_client, "claim_engineer_work", {"worker": "someone-else"})
+
+        assert again["work"] is None
+
+
 class TestPeeking:
     """Deciding whether to start a herder must not take the work.
 

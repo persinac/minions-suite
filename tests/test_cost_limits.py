@@ -65,10 +65,14 @@ class TestPerJobCeiling:
         job = await db.create_job("spend a lot")
         task = await db.create_task(Task(job_id=job.id, title="t", service="svc", agent_role=AgentRole.BACKEND_ENGINEER))
 
-        # Two agents already billed past the ceiling.
+        # Two agents already billed past the ceiling. They are marked `done`
+        # because an agent that has been billed is an agent that finished —
+        # `run_agent` writes a terminal status before returning. Left `starting`
+        # they are two simultaneously-live agents on one task, which production
+        # cannot produce and `idx_agents_one_live_per_task` now refuses.
         for cost in (3.0, 2.5):
             agent = await db.create_agent(Agent(job_id=job.id, role=AgentRole.BACKEND_ENGINEER, task_id=task.id, model="m"))
-            await db.update_agent(agent.id, cost_usd=cost)
+            await db.update_agent(agent.id, status="done", cost_usd=cost)
 
         engine = JobEngine(db, config)
 

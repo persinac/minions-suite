@@ -14,6 +14,25 @@ from ..core.models import (
 )
 
 
+class AgentClaimConflictError(Exception):
+    """Another agent is already live on this task, so this one lost the race.
+
+    Raised by `create_agent` when the database refuses a second live agent row
+    for one task (`idx_agents_one_live_per_task`). It is an ordinary outcome of
+    two workers claiming at once, not a fault: the loser should stand down,
+    because the winner is already doing the work.
+
+    Typed here rather than letting psycopg's `UniqueViolation` escape. Nothing
+    above this layer imports psycopg, and a driver exception surfacing in the
+    MCP server or the engine would make this Protocol a description of only one
+    implementation.
+    """
+
+    def __init__(self, task_id: str | None = None):
+        self.task_id = task_id
+        super().__init__(f"another agent is already live on task {task_id}")
+
+
 @runtime_checkable
 class AbstractDatabase(Protocol):
     """Database interface for job orchestration."""

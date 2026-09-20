@@ -9,7 +9,6 @@ first, with no error: the job reports a clean review, having actually run one of
 five. That is the failure this file pins down.
 """
 
-
 from minions.core.models import AgentRole, Task, TaskStatus
 
 
@@ -39,9 +38,7 @@ class TestSpecialtyRoundTrip:
     async def test_specialty_defaults_to_none(self, db):
         """Pre-fan-out reviewers carry no specialty and must still work."""
         job = await db.create_job("spec")
-        task = await db.create_task(
-            Task(job_id=job.id, title="Review", service="svc", agent_role=AgentRole.CODE_REVIEWER)
-        )
+        task = await db.create_task(Task(job_id=job.id, title="Review", service="svc", agent_role=AgentRole.CODE_REVIEWER))
 
         assert (await db.get_task(task.id)).specialty is None
 

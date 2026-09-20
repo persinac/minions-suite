@@ -42,10 +42,25 @@ _server_answers() {
     # 900s herder timeout and fell back to the metered API while `--check` kept
     # passing.
     #
-    # Piped through `head -1` on purpose: /sse holds the response open, so
-    # waiting for the body would always time out. The status line arrives
-    # immediately and head closing the pipe ends the request.
-    [ "$(curl -s -i -N -m 5 "http://127.0.0.1:$PORT/sse" 2>/dev/null | head -1 | grep -c ' 200 ')" = "1" ]
+    # A JSON-RPC `initialize` POST to /mcp, asserting 200. Streamable HTTP
+    # answers and closes, so the status line is the whole response -- no need
+    # for the `head -1` trick the /sse probe needed to avoid hanging on a
+    # stream that never ends. The -m 5 is a backstop, not the mechanism.
+    #
+    # Checking the STATUS is the point, not merely that something answered.
+    # Verified 2026-09-20 that this can fail: 200 against the live tunnel, but
+    # non-200 with nothing listening (curl reports 000) and non-200 against a
+    # plain HTTP server that 404s. A probe that only proved reachability would
+    # pass in exactly the pod-replaced case this function exists to catch.
+    #
+    # Path-sensitive on purpose: POST /sse returns 405, so pointing this at the
+    # legacy path fails loudly instead of quietly degrading.
+    http_code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:$PORT/mcp \
+      -H 'Content-Type: application/json' \
+      -H 'Accept: application/json, text/event-stream' \
+      -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}' \
+      -m 5 2>/dev/null)
+    [ "$http_code" = "200" ]
 }
 
 if [ "${1:-}" = "--check" ]; then

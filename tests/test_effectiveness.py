@@ -43,6 +43,7 @@ class TestRollUp:
             "turns_total": 10,
             "max_turns": 10,
             "failed": 0,
+            "real_failed": 0,
             "ceiling_hits": 0,
         }
         base.update(kw)
@@ -86,7 +87,22 @@ class TestRollUp:
         assert merged["ceiling_rate"] == pytest.approx(0.10)
 
     def test_zero_runs_does_not_divide_by_zero(self):
-        assert _derive({"runs": 0, "spend_usd": 0.0, "turns_total": 0, "failed": 0, "ceiling_hits": 0})["avg_turns"] == 0.0
+        empty = _derive({"runs": 0, "spend_usd": 0.0, "turns_total": 0, "failed": 0, "real_failed": 0, "ceiling_hits": 0})
+        assert empty["avg_turns"] == 0.0
+        assert empty["real_failure_rate"] == 0.0
+
+    def test_real_failures_roll_up_and_rate_is_recomputed(self):
+        # A turn-0 kill inflates `failed` without touching `real_failed`; the two
+        # rates must diverge, or the distinction buys nothing after a merge.
+        rows = [
+            self._row(role="a", runs=10, failed=4, real_failed=0),
+            self._row(role="b", runs=10, failed=2, real_failed=2),
+        ]
+        [merged] = _roll_up(rows, ("model",))
+        assert merged["failed"] == 6
+        assert merged["real_failed"] == 2
+        assert merged["failure_rate"] == 0.3
+        assert merged["real_failure_rate"] == 0.1
 
     def test_groups_stay_separate_on_a_composite_key(self):
         rows = [self._row(model="a", difficulty="easy"), self._row(model="a", difficulty="hard")]
@@ -149,6 +165,41 @@ class TestModelEffectiveness:
         assert row["failed"] == 0, "the run looks successful, which is exactly the problem"
         assert row["ceiling_hits"] == 1
         assert result["turn_ceiling"] == 100
+
+    async def test_turn_zero_kills_do_not_count_as_real_failures(self, db, sample_job):
+        """The distinction the whole 'haiku fails 3x as often' error turned on.
+
+        An agent killed by an engine restart dies at turn 0 having made no model
+        call, so it cannot be evidence about the model — but it lands in `failed`
+        identically to one that reasoned its way into a wall.
+        """
+        await _agent(db, sample_job.id, model="m", turns=0, status="failed", cost=0.0)
+        await _agent(db, sample_job.id, model="m", turns=0, status="failed", cost=0.0)
+        await _agent(db, sample_job.id, model="m", turns=7, status="failed")
+        await _agent(db, sample_job.id, model="m", turns=9, status="done")
+
+        row = (await db.get_model_effectiveness(days=30, turn_ceiling=100))["by_model"][0]
+
+        assert row["runs"] == 4
+        assert row["failed"] == 3
+        assert row["real_failed"] == 1, "only the run that did work indicts the model"
+        assert row["failure_rate"] == 0.75
+        assert row["real_failure_rate"] == 0.25
+
+    async def test_a_model_killed_at_turn_zero_scores_a_clean_sheet(self, db, sample_job):
+        """The real 2026-07-26 shape: every failure infrastructural, none the model's.
+
+        `failed` says 100% here. If `real_failed` ever agrees with it, the column
+        has stopped measuring anything and the incident reads as a regression.
+        """
+        for _ in range(3):
+            await _agent(db, sample_job.id, model="m", turns=0, status="failed", cost=0.0)
+
+        row = (await db.get_model_effectiveness(days=30, turn_ceiling=100))["by_model"][0]
+
+        assert row["failure_rate"] == 1.0
+        assert row["real_failed"] == 0
+        assert row["real_failure_rate"] == 0.0
 
     async def test_difficulty_stratification_separates_ticket_mix(self, db):
         """Comparing models across difficulties measures the classifier, not the model."""
@@ -221,6 +272,82 @@ class TestOutcomeBreakdown:
 
         assert by_status["failed"]["spend_usd"] == pytest.approx(7.0)
         assert by_status["done"]["spend_usd"] == pytest.approx(2.0)
+
+    async def test_operator_kill_after_delivery_counts_as_a_success(self, db):
+        """The job shipped its work and was then stopped by hand.
+
+        Charging its cost to other jobs as if it produced nothing is what took
+        cost-per-success from $3.94 to $4.52 on the real data.
+        """
+        won = await db.create_job("won")
+        shipped = await db.create_job("shipped")
+        await _agent(db, won.id, model="m", cost=1.0)
+        await _agent(db, shipped.id, model="m", cost=3.0)
+        await db.update_job_status(won.id, JobStatus.DONE)
+        await db.update_job_status(shipped.id, JobStatus.FAILED, error="Killed by operator. Work is complete and delivered as api PR #7")
+
+        out = await db.get_outcome_breakdown(days=30)
+        by_status = {r["status"]: r for r in out["by_status"]}
+
+        assert "delivered" in by_status, "an operator kill after delivery must not be filed as failed"
+        assert "failed" not in by_status
+        assert out["completed_jobs"] == 1
+        assert out["delivered_jobs"] == 1
+        assert out["successful_jobs"] == 2
+        assert out["cost_per_success_usd"] == pytest.approx(2.0)
+
+    async def test_superseded_job_is_neither_success_nor_failure(self, db):
+        """Cancelled work still costs money — the spend stays, the credit does not."""
+        won = await db.create_job("won")
+        dropped = await db.create_job("dropped")
+        await _agent(db, won.id, model="m", cost=1.0)
+        await _agent(db, dropped.id, model="m", cost=5.0)
+        await db.update_job_status(won.id, JobStatus.DONE)
+        await db.update_job_status(dropped.id, JobStatus.FAILED, error="superseded")
+
+        out = await db.get_outcome_breakdown(days=30)
+
+        assert out["cancelled_jobs"] == 1
+        assert out["successful_jobs"] == 1, "cancelled work is not a success"
+        # ...but its $5 is still amortised over the one real success.
+        assert out["cost_per_success_usd"] == pytest.approx(6.0)
+
+    async def test_a_genuine_failure_is_still_a_failure(self, db, sample_job):
+        """Negative control. Without this the reclassification could swallow everything."""
+        await _agent(db, sample_job.id, model="m", cost=2.0)
+        await db.update_job_status(sample_job.id, JobStatus.FAILED, error="All dev tasks failed")
+
+        out = await db.get_outcome_breakdown(days=30)
+        by_status = {r["status"]: r for r in out["by_status"]}
+
+        assert by_status["failed"]["jobs"] == 1
+        assert out["delivered_jobs"] == 0
+        assert out["cancelled_jobs"] == 0
+        assert out["cost_per_success_usd"] is None
+
+    async def test_failure_with_no_error_text_stays_failed(self, db, sample_job):
+        """A NULL error must not fall through the ILIKE chain into a success."""
+        await _agent(db, sample_job.id, model="m", cost=2.0)
+        await db.update_job_status(sample_job.id, JobStatus.FAILED)
+
+        out = await db.get_outcome_breakdown(days=30)
+
+        assert {r["status"] for r in out["by_status"]} == {"failed"}
+        assert out["successful_jobs"] == 0
+
+    async def test_delivery_wins_when_the_error_says_both(self, db, sample_job):
+        """Real kills say 'Killed by operator. Work is complete...' — both patterns match.
+
+        Cancelled is checked second on purpose; if that order flips, a delivered
+        job silently stops counting as a success.
+        """
+        await _agent(db, sample_job.id, model="m", cost=1.0)
+        await db.update_job_status(sample_job.id, JobStatus.FAILED, error="Killed by operator. Work is complete and delivered")
+
+        out = await db.get_outcome_breakdown(days=30)
+
+        assert out["delivered_jobs"] == 1
+        assert out["cancelled_jobs"] == 0
 
     async def test_counts_rework_and_verdicts(self, db, sample_job, make_task):
         revised = make_task(sample_job.id, title="revised")

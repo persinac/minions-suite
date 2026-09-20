@@ -135,7 +135,7 @@ def _elapsed(start_str, end_str=None) -> str:
         elif secs < 3600:
             return f"{secs // 60}m {secs % 60}s"
         return f"{secs // 3600}h {(secs % 3600) // 60}m"
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return "?"
 
 
@@ -376,7 +376,7 @@ async def _build_review_rounds(db, job_id: str) -> list[dict]:
                     if tc.get("params"):
                         try:
                             params = json.loads(tc["params"]) if isinstance(tc["params"], str) else tc["params"]
-                        except (json.JSONDecodeError, TypeError):
+                        except json.JSONDecodeError, TypeError:
                             pass
                     if tc["tool_name"] == "post_inline_comment":
                         threads.append(
@@ -860,7 +860,7 @@ async def job_detail(job_id: str):
                         if len(ps) > 120:
                             ps = ps[:120] + "..."
                         detail_parts.append(ps)
-                    except (json.JSONDecodeError, TypeError):
+                    except json.JSONDecodeError, TypeError:
                         pass
                 if tc.get("duration_ms") is not None:
                     detail_parts.append(f"{tc['duration_ms']:.0f}ms")
@@ -1026,7 +1026,7 @@ async def api_job_detail_html(job_id: str):
                         if len(ps) > 120:
                             ps = ps[:120] + "..."
                         detail_parts.append(ps)
-                    except (json.JSONDecodeError, TypeError):
+                    except json.JSONDecodeError, TypeError:
                         pass
                 if tc.get("duration_ms") is not None:
                     detail_parts.append(f"{tc['duration_ms']:.0f}ms")
@@ -1548,8 +1548,16 @@ async def _render_metrics() -> str:
     )
     lines += _metric_lines(
         "minion_agent_failures",
-        "Agent invocations that ended status=failed",
+        "Agent invocations that ended status=failed (INCLUDES turn-0 kills — see minion_agent_real_failures)",
         [({"model": r["model"], "role": r["role"], "difficulty": r["difficulty"]}, r["failed"]) for r in detail],
+    )
+    lines += _metric_lines(
+        "minion_agent_real_failures",
+        # Alert on this one. minion_agent_failures counts agents killed before
+        # they made a single model call -- an engine restart shows up there as a
+        # model regression, and one such incident spread across 19 rows once.
+        "Agent invocations that failed AFTER doing work (turns > 0) — the only failure count that indicts the model",
+        [({"model": r["model"], "role": r["role"], "difficulty": r["difficulty"]}, r["real_failed"]) for r in detail],
     )
     lines += _metric_lines(
         "minion_agent_turn_ceiling_hits",
@@ -1573,13 +1581,16 @@ async def _render_metrics() -> str:
         "Spend in USD by job status — spend against failed is spend that bought nothing",
         [({"status": r["status"]}, r["spend_usd"]) for r in out["by_status"]],
     )
-    # The headline. All spend over finished jobs, so failed work is charged to
+    # The headline. All spend over successful jobs, so failed work is charged to
     # the successes it did not produce. Absent (not zero) when nothing finished:
     # a zero here would read as "free" on a graph.
+    #
+    # `minion_jobs` gains `delivered` and `cancelled` statuses from the same
+    # split; neither is a real Job state, so do not match this on the enum.
     if out["cost_per_success_usd"] is not None:
         lines += _metric_lines(
             "minion_cost_per_success_usd",
-            "Total spend divided by jobs reaching done — the fully-loaded cost of one finished job",
+            "Total spend divided by successful jobs (done + delivered) — the fully-loaded cost of one finished job",
             [({}, out["cost_per_success_usd"])],
         )
     q = out["quality"]

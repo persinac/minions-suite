@@ -19,7 +19,12 @@ class AgentWorkItem:
     prompt: str  # Full assembled prompt text
     working_dir: str  # e.g. /repos/management-api
     allowed_tools: list[str]
-    mcp_url: str  # e.g. http://mcp-server:8321/sse
+    # Set by job_engine and read by NOTHING -- verified by grepping `mcp_url`
+    # across the tree. A K8s worker would need it; the in-process executor holds
+    # the server object, and a herder uses its own MINIONS_MCP_URL. Kept current
+    # (`/mcp`, not the legacy `/sse`) so a future consumer inherits the live
+    # transport rather than a dead one.
+    mcp_url: str  # e.g. http://mcp-server:8321/mcp
     timeout: int  # seconds
     model: str  # LiteLLM model string
     dry_run: bool

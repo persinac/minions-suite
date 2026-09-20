@@ -16,6 +16,12 @@ from .args import coerce_line_number
 
 logger = logging.getLogger(__name__)
 
+# Combined ceiling for the PR description + diff handed to a reviewer in one call.
+_MAX_DIFF_CHARS = 100_000
+# A PR body is prose; past ~8k it is padding, and every char spent here is a char
+# of diff the reviewer does not see.
+_MAX_PR_BODY_CHARS = 8_000
+
 
 # ---------------------------------------------------------------------------
 # Tool definitions (OpenAI function-calling format)
@@ -183,11 +189,35 @@ class ToolExecutor:
             return json.dumps({"error": str(e)})
 
     async def _get_diff(self) -> str:
+        # The PR description ships with the diff because the reviewer is asked to
+        # check the claims in it, and `get_diff` alone cannot supply them: GitLab
+        # returns only `/changes` hunks and GitHub shells out to `gh pr diff`.
+        # Without this the review prompt's "check the claim, not the conclusion"
+        # is an instruction with nothing to act on, and the PR body stays the one
+        # artifact in the pipeline that no other agent ever reads.
+        header = "### PR description unavailable — review the diff alone\n\n### Diff\n"
+        try:
+            pr = await self.provider.get_pr(self.project_id, self.mr_id)
+            body = (pr.description or "").strip()
+            if not body:
+                body = "(empty)"
+            if len(body) > _MAX_PR_BODY_CHARS:
+                body = body[:_MAX_PR_BODY_CHARS] + "\n... [description truncated]"
+            header = f"### PR title\n{pr.title}\n\n### PR description\n{body}\n\n### Diff\n"
+        except Exception as exc:
+            # A metadata failure must not cost us the review entirely — the diff
+            # is still worth reviewing, just without its claims.
+            logger.warning("could not fetch PR metadata for %s!%s: %s", self.project_id, self.mr_id, exc)
+
         diff = await self.provider.get_diff(self.project_id, self.mr_id)
-        # Truncate very large diffs to avoid blowing context
-        if len(diff) > 100_000:
-            return diff[:100_000] + "\n\n... [diff truncated at 100k chars — use read_file for full context]"
-        return diff
+        # Budget is shared, so a long description cannot silently evict the diff.
+        # The notice is counted against the budget too -- appending it after the
+        # slice is what pushed the old ceiling over by its own length.
+        notice = "\n\n... [diff truncated — use read_file for full context]"
+        budget = _MAX_DIFF_CHARS - len(header)
+        if len(diff) > budget:
+            diff = diff[: max(0, budget - len(notice))] + notice
+        return header + diff
 
     async def _get_changed_files(self) -> str:
         files = await self.provider.get_changed_files(self.project_id, self.mr_id)
@@ -509,15 +539,23 @@ ENGINEER_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     _fn(
         "report_no_work_needed",
         (
-            "Report that the change this task asks for is ALREADY PRESENT in the codebase. "
-            "Use it only after reading the code and confirming that — not when the task is hard, "
-            "blocked, or partly done. Closes the task with no PR. Prefer this over inventing a "
-            "docs-only change to justify the run."
+            "Close this task with no PR. Two cases only: (1) the change is ALREADY PRESENT in the "
+            "codebase, confirmed by reading it; or (2) no code change can deliver it, because it "
+            "requires an action you cannot perform — an operation gated on MFA, a hardware token, "
+            "a console session, or a one-time human approval. "
+            "NOT for a task that is merely hard, or blocked on something that will later clear: "
+            "case (2) is about a permanent limit on you, not a temporary one on the work. "
+            "Prefer this over inventing a docs-only change — or a script wrapping the action you "
+            "cannot take — to justify the run."
         ),
         {
             "reason": {
                 "type": "string",
-                "description": "Concrete evidence: the file, symbol or commit that already satisfies the task, so a human can check the claim.",
+                "description": (
+                    "Concrete evidence a human can check: for case (1) the file, symbol or commit that already "
+                    "satisfies the task; for case (2) the exact blocking action, e.g. 'needs kms:PutKeyPolicy "
+                    "with an MFA session'."
+                ),
             },
         },
     ),
