@@ -31,6 +31,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -249,24 +250,57 @@ def working_dir(item: dict) -> str:
     return str(Path(__file__).resolve().parents[1])
 
 
-def parse_pane_id(stdout: str) -> str:
-    """Pull the herdr pane id out of `substrate.sh spawn --print`.
+_HERDR_PANE_RE = re.compile(r"^w[0-9A-Za-z]+:p[0-9A-Za-z]+$")
+_TMUX_PANE_RE = re.compile(r"^%\d+$")
 
-    That prints herdr's whole JSON envelope, not a bare id:
-    {"id":"cli:agent:start","result":{"agent":{...,"pane_id":"w11:pA",...}}}
-    and `substrate.sh kill` wants the pane_id from inside it. Verified against a
-    real spawn; returns "" rather than raising, because an unparseable envelope
-    means "cannot reap this" and the caller says so out loud.
+
+def parse_pane_id(stdout: str) -> str:
+    """Pull the pane id out of `substrate.sh spawn --print`.
+
+    THREE shapes, because the output depends on the backend and has changed:
+
+    * herdr -- the current default -- echoes a BARE pane id: `w2W:p1`.
+      (`substrate.sh` extracts it from herdr's JSON itself, then `echo "$pid"`.)
+    * tmux prints `#{pane_id}<TAB>#{window_index}`: `%42\t3`. `kill` wants the
+      first field; `tmux kill-window -t %42` resolves a pane to its window.
+    * an older substrate.sh printed herdr's whole JSON envelope:
+      {"id":"cli:agent:start","result":{"agent":{...,"pane_id":"w11:pA",...}}}
+
+    Only the JSON form was ever handled, and neither backend emits it any more.
+    Measured 2026-09-20: a real herdr spawn returned `w2W:p1`, this returned "",
+    and the caller logged "could NOT parse a pane id -- it will not be reaped"
+    and dropped the pane from `spawned.json`. So EVERY trigger-spawned herder
+    leaked, and a Claude session never exits on its own. It stayed invisible
+    only because MINIONS_HERDER_MODE defaults to off -- the first `live` tick
+    would have leaked a pane per claim.
+
+    Scans lines in reverse so a banner or warning ahead of the id does not
+    defeat it. Still returns "" rather than raising on anything unrecognised:
+    the caller turns "" into a loud log line, whereas a raise would kill the
+    tick and a FABRICATED id would make the reaper close somebody else's pane.
     """
-    try:
-        payload = json.loads(stdout.strip())
-    except ValueError, TypeError:
+    text = stdout.strip()
+    if not text:
         return ""
-    agent = payload.get("result", {}).get("agent", {})
-    pane_id = agent.get("pane_id", "")
-    if not isinstance(pane_id, str):
-        return ""
-    return pane_id
+
+    if text.startswith("{"):
+        try:
+            payload = json.loads(text)
+        except ValueError, TypeError:
+            return ""
+        agent = payload.get("result", {}).get("agent", {})
+        pane_id = agent.get("pane_id", "")
+        if not isinstance(pane_id, str):
+            return ""
+        return pane_id
+
+    for line in reversed(text.splitlines()):
+        candidate = line.split("\t", 1)[0].strip()
+        if _HERDR_PANE_RE.match(candidate):
+            return candidate
+        if _TMUX_PANE_RE.match(candidate):
+            return candidate
+    return ""
 
 
 def spawn(item: dict, dry: bool) -> str | None:
