@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -52,6 +53,19 @@ class TrelloPoller:
         # Edge-triggered, so the "nothing is labelled" warning is logged on the
         # transition into that state rather than on every poll. See _get_cards.
         self._label_gate_warned = False
+        # Liveness stamp read by the poller watchdog in cli.py. Advanced only
+        # after a poll cycle returns without raising, so a poller that fails
+        # every cycle goes stale instead of looking busy. Seeded at construction
+        # so the first cycle gets a full window before the watchdog judges it.
+        self.last_poll_at = time.monotonic()
+
+    @property
+    def poll_interval(self) -> int:
+        """Seconds between poll cycles, under the name the watchdog reads.
+
+        Each poller names its own config key; the watchdog wants one name.
+        """
+        return self.config.trello_poll_interval
 
     async def start(self):
         """Main polling loop."""
@@ -70,6 +84,10 @@ class TrelloPoller:
             while self._running:
                 try:
                     await self._poll()
+                    # Reached only when the cycle actually completed. Stamping
+                    # before the call, or in a `finally`, would make a poller
+                    # that raises every cycle look identical to a healthy one.
+                    self.last_poll_at = time.monotonic()
                 except httpx.HTTPError as e:
                     logger.error("Trello API error during poll: %s", e)
                 except Exception:
