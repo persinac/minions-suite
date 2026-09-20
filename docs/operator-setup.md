@@ -111,7 +111,7 @@ Overridable: `MINIONS_MCP_SERVICE` (default `svc/minion-suite`),
 ### 4. Point Claude Code at it
 
 ```bash
-claude mcp add --scope user --transport sse minions http://localhost:8321/sse
+claude mcp add --scope user --transport http minions http://localhost:8321/mcp
 ```
 
 That writes the top-level `mcpServers` entry in `~/.claude.json`, equivalent to:
@@ -120,8 +120,8 @@ That writes the top-level `mcpServers` entry in `~/.claude.json`, equivalent to:
 {
   "mcpServers": {
     "minions": {
-      "type": "sse",
-      "url": "http://localhost:8321/sse"
+      "type": "http",
+      "url": "http://localhost:8321/mcp"
     }
   }
 }
@@ -131,12 +131,27 @@ Use `--scope user` rather than the default `local`: `local` scopes the server to
 the directory you happen to be in, and a herder pane spawned elsewhere will not
 see it.
 
-**On the transport:** the deployed server currently serves only `/sse`. Once a
-release carrying `minions/server/transport.py` is live, `/mcp` (streamable HTTP)
-is served alongside it and this entry can change to
-`{"type": "http", "url": "http://localhost:8321/mcp"}`. Both paths are served
-simultaneously by design, so the switch never has to be coordinated — see
+**On the transport:** since **0.8.66** the deployed server serves *both*
+streamable HTTP on `/mcp` and SSE on `/sse`, simultaneously and by design — see
 `minions/server/transport.py` for why the two apps must own disjoint paths.
+Prefer `/mcp` on a new machine; it is the transport newer clients expect, and it
+is what a client that has dropped SSE entirely (KiroCrew, for one) requires.
+
+The older entry still works unchanged:
+
+```json
+{ "type": "sse", "url": "http://localhost:8321/sse" }
+```
+
+Because both are served at once, nothing about the switch has to be
+coordinated — an existing pane on `/sse` and a new one on `/mcp` talk to the same
+server. That is the whole point of dual-serving: a flip would have stranded every
+herder pane already running, since `~/.claude.json` is read at session start.
+
+⚠️ **`POST /sse` returns 405, and that is correct, not a fault.** SSE opens its
+stream with `GET`; the 405 means the SSE app is mounted and answering. Do not read
+it as a broken transport. The measurement that distinguishes deployed-vs-not is
+`POST /mcp`: **404** before 0.8.66, **200** after.
 
 MCP config is read **at session start**, so an already-running Claude Code
 session keeps the old transport until it restarts.
@@ -294,7 +309,32 @@ Rollback is therefore a manifest edit, not a rebuild.
 
 Agents run **in the engine pod** (`k8s_dispatch=False`), so "no agent pods" proves
 nothing. A pod-template change rolls prod and can kill a running agent mid-job.
-Check for live agents before you push the manifest commit.
+Check for live agents before you push the manifest commit — and check *again after
+the build*, which takes long enough for work to arrive in the gap.
+
+`minion-suite` is `strategy: Recreate`, so the old pod is terminated before the new
+one starts. A snapshot taken during that window shows the new pod `Pending` with no
+old pod beside it. That is the strategy working, not a stuck rollout — read the
+events before concluding anything.
+
+### ⚠️ Rolling prod kills your own MCP session
+
+If you drive the release *from* a Claude Code session using the minions MCP tools,
+the rollout replaces the pod your client is connected to. Every subsequent tool call
+then fails — as `Invalid request parameters`, which looks like you called it wrong
+rather than like the session died. The tunnel is fine and the server is fine; only
+the client's session is stale. Restart the session to reconnect.
+
+Before believing a tool failure means a broken deploy, probe past your client:
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' -X POST http://localhost:8321/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}'
+```
+
+`200` means the server is healthy and the problem is your client.
 
 ### Applying a migration to the deployed database
 
