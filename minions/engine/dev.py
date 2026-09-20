@@ -439,7 +439,7 @@ BLOCKING_STATES = {
 }
 
 
-async def _ci_gate_passes(engine: JobEngine, project, provider, mr_id: str, target_branch: str) -> tuple[bool, str]:
+async def _ci_gate_passes(engine: JobEngine, project, provider, mr_id: str, target_branch: str, service=None) -> tuple[bool, str]:
     """Whether an agent PR may be merged.
 
     Two layers, and the second one is not ours:
@@ -480,6 +480,30 @@ async def _ci_gate_passes(engine: JobEngine, project, provider, mr_id: str, targ
 
     if not required:
         return False, (f"{project.project_id}@{target_branch} has no required status checks — blocking agent merge until the repo is gated")
+
+    # Layer 1b: the checks this repo's RELEASE depends on must be among them.
+    #
+    # Having some required checks is not the same as having the right ones. A
+    # repo can declare a release rule in CI and never make it required, and
+    # then it gates nobody -- agent or human. flashback-cns gates releases on
+    # `version-bump`, left it unrequired, and job fad112b7 merged straight past
+    # a red one; the code lands, the manifests do not move, and the CD that
+    # actually deploys ships nothing. Nothing looks wrong anywhere.
+    #
+    # Configuration, not results: this asks whether the gate is ARMED, which
+    # `get_required_checks` already tells us. Reading whether it is GREEN would
+    # need a Checks:read grant the App does not have, and would duplicate a
+    # judgement GitHub already makes -- see the note above. Fails closed, for
+    # the same reason the empty case does.
+    expected = list(getattr(service, "expected_required_checks", []) or [])
+    if expected:
+        unarmed = [c for c in expected if c not in set(required)]
+        if unarmed:
+            return False, (
+                f"{project.project_id}@{target_branch} does not require {', '.join(unarmed)} — "
+                f"the repo declares these as release gates but they are advisory, so a merge can pass them red. "
+                f"Add them to the branch ruleset; required today: {required}"
+            )
 
     try:
         state = await provider.get_merge_state(project.project_id, mr_id)
@@ -1632,6 +1656,42 @@ async def _ensure_reviewer_checkout(engine: JobEngine, job: Job, task: Task, ser
         )
 
 
+async def _hand_merge_to_github(engine: JobEngine, job: Job, task: Task, merge_provider, project, mr_id: str) -> bool:
+    """Give an approved-but-unmerged PR a merge owner. Returns True if handed off.
+
+    Native auto-merge completes server-side when required checks go green, and
+    stays visibly pending on the PR while they are not. That is the honest
+    outcome for a PR this engine approved and could not merge itself, because
+    the task advances to MERGED either way -- so without an owner the job reads
+    done over an OPEN PR and the repo's CD, which is what actually deploys,
+    never sees a merge to react to.
+
+    Called from BOTH unmerged paths, which is the fix: the CI-blocked path has
+    always done this, and the refused path never did. A refusal is usually the
+    same situation arriving by a different route -- the gate reads
+    mergeable_state, which cannot see a required check that has not reported
+    yet -- so the two deserve the same remedy.
+
+    `auto_merge_stranded` stays the loud, greppable trace for the one case
+    left: an open PR that outlived its job with nobody to merge it.
+    """
+    if hasattr(merge_provider, "enable_auto_merge"):
+        deferral = await merge_provider.enable_auto_merge(project.project_id, mr_id)
+    else:
+        deferral = {"enabled": False, "error": "provider has no enable_auto_merge"}
+
+    if deferral.get("enabled"):
+        await engine.db.record_event(job.id, "auto_merge_deferred", "engine", f"task={task.id} GitHub auto-merge enabled; merges on green")
+        logger.info("Auto-merge deferred to GitHub for task %s (PR %s)", task.id, mr_id)
+        return True
+
+    await engine.db.record_event(
+        job.id, "auto_merge_stranded", "engine", f"task={task.id} pr={task.pr_url or mr_id} {str(deferral.get('error', ''))[:150]}"
+    )
+    logger.error("Auto-merge STRANDED for task %s: approved PR %s left open with no merge owner", task.id, task.pr_url or mr_id)
+    return False
+
+
 def _panel_task_name(task: Task) -> str:
     """The name `engine._spawn` gives a review panel coroutine.
 
@@ -2118,7 +2178,7 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
             merge_provider = await create_engineer_provider(project, engine.config)
 
             target_branch = (service.default_branch if service else "") or "main"
-            ci_ok, ci_reason = await _ci_gate_passes(engine, project, merge_provider, mr_id, target_branch)
+            ci_ok, ci_reason = await _ci_gate_passes(engine, project, merge_provider, mr_id, target_branch, service)
 
             # Reviews got faster than CI. Job 1ddb3283's panel approved three
             # minutes after the PR opened, the gate saw mergeable_state=blocked
@@ -2136,7 +2196,7 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
             while not ci_ok and "mergeable_state=" in ci_reason and waited < engine.config.ci_merge_wait_seconds:
                 await asyncio.sleep(30)
                 waited += 30
-                ci_ok, ci_reason = await _ci_gate_passes(engine, project, merge_provider, mr_id, target_branch)
+                ci_ok, ci_reason = await _ci_gate_passes(engine, project, merge_provider, mr_id, target_branch, service)
 
             if not ci_ok:
                 logger.warning("Auto-merge BLOCKED for task %s: %s", task.id, ci_reason)
@@ -2149,20 +2209,7 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
                 # a pending auto-merge instead of nothing. If even the handoff
                 # fails, the task still advances below — but auto_merge_stranded
                 # is the loud, greppable trace that an OPEN PR outlived its job.
-                if hasattr(merge_provider, "enable_auto_merge"):
-                    deferral = await merge_provider.enable_auto_merge(project.project_id, mr_id)
-                else:
-                    deferral = {"enabled": False, "error": "provider has no enable_auto_merge"}
-                if deferral.get("enabled"):
-                    await engine.db.record_event(
-                        job.id, "auto_merge_deferred", "engine", f"task={task.id} GitHub auto-merge enabled; merges on green"
-                    )
-                    logger.info("Auto-merge deferred to GitHub for task %s (PR %s)", task.id, mr_id)
-                else:
-                    await engine.db.record_event(
-                        job.id, "auto_merge_stranded", "engine", f"task={task.id} pr={task.pr_url or mr_id} {str(deferral.get('error', ''))[:150]}"
-                    )
-                    logger.error("Auto-merge STRANDED for task %s: approved PR %s left open with no merge owner", task.id, task.pr_url or mr_id)
+                await _hand_merge_to_github(engine, job, task, merge_provider, project, mr_id)
             else:
                 logger.info("CI gate passed for task %s: %s", task.id, ci_reason)
                 merge_result = await merge_provider.merge_mr(project.project_id, mr_id)
@@ -2175,6 +2222,21 @@ async def run_task_review(engine: JobEngine, job: Job, task: Task):
                     detail = str(merge_result.get("error", "unknown"))
                     await engine.db.record_event(job.id, "auto_merge_refused", "engine", f"task={task.id} {detail[:200]}")
                     logger.warning("Merge refused for task %s (branch protection or conflict): %s", task.id, detail[:200])
+
+                    # ...and then hand it to GitHub, exactly as the blocked path
+                    # above does. This branch used to stop at the event, which
+                    # left the PR with no merge owner at all.
+                    #
+                    # The refusal is usually a RACE, not a red build: the gate
+                    # reads mergeable_state, which says nothing about a required
+                    # check that has not REPORTED yet. Job fad112b7 lost a real
+                    # merge to this -- `Required status check "secret-scan" is
+                    # expected`, green thirty seconds later -- and because the
+                    # task advances below regardless, the job read
+                    # merged -> deployed -> done over a PR that was still open,
+                    # so the repo's own CD never saw anything to react to.
+                    # Nothing retried, because nothing looked wrong.
+                    await _hand_merge_to_github(engine, job, task, merge_provider, project, mr_id)
 
             if merge_result.get("merged"):
                 logger.info("Auto-merged MR %s for task %s", mr_id, task.id)

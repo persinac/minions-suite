@@ -64,6 +64,22 @@ class ServiceTarget:
     test_command: str = ""
     lint_command: str = ""
     default_branch: str = "main"
+    # Checks this repo's release depends on that MUST be in the branch's
+    # required set before an agent may merge.
+    #
+    # A repo can declare a release rule in CI and never enforce it, and then
+    # the rule is advisory for everyone -- agent and human alike. flashback-cns
+    # gates releases on `version-bump` ("CI does not bump it for you"; pushing
+    # the bump to main is blocked) but never made it required, so job fad112b7
+    # opened a PR with no bump, the check went red, and the merge was allowed
+    # anyway. Merged like that the code lands and the manifests do not move, so
+    # the repo's CD -- which is what actually deploys -- ships nothing.
+    #
+    # Checked against `get_required_checks`, i.e. against CONFIGURATION, never
+    # against check RESULTS. Reading results would need a Checks:read grant the
+    # App does not have and would duplicate a judgement GitHub already makes;
+    # see the note in _ci_gate_passes. This asks only whether the gate is armed.
+    expected_required_checks: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -154,6 +170,7 @@ def _parse_services(raw: dict) -> dict[str, ServiceTarget]:
             test_command=svc.get("test_command", ""),
             lint_command=svc.get("lint_command", ""),
             default_branch=svc.get("default_branch", "main"),
+            expected_required_checks=list(svc.get("expected_required_checks") or []),
         )
     return services
 
