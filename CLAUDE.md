@@ -268,7 +268,16 @@ reason worse about an ambiguous ticket", not "does it write worse code".
 
 ## Tests
 
-~1217 tests via `pytest` + `pytest-asyncio`, split across two suites (1152 root, 65 agent-memory). Run both with `task test` — it invokes pytest twice (root `tests/`, then `agent-memory/tests`) because both directories are named `tests` and their conftests collide in a single run. A bare `uv run pytest` runs only the root suite.
+~1591 tests via `pytest` + `pytest-asyncio`, split across two suites (1523 root, 68 agent-memory). Run both with `task test` — it invokes pytest twice (root `tests/`, then `agent-memory/tests`) because both directories are named `tests` and their conftests collide in a single run. A bare `uv run pytest` runs only the root suite.
+
+**CI runs them now.** `.github/workflows/ci.yml` has a `lint` job (`ruff check` + `ruff format --check`) and a `test` job that stands up `pgvector/pgvector:pg17` as a service on 5434 — the port `tests/conftest.py` already defaults to — and runs both suites. `.github/workflows/security.yml` is the fleet-standard gitleaks `secret-scan`, with `.gitleaksignore` baselining six token-*shaped* fixtures in the redaction tests.
+
+All three are **required** by the `protect-main` ruleset, with 0 approvals and squash-only merges. Two things follow:
+
+- Query `repos/{slug}/rules/branches/{branch}` to see them. The classic `branches/{b}/protection` endpoint is blind to rulesets and returns `404 "Branch not protected"`, which reads as *unprotected* and is not.
+- Before this existed, `mergeStateStatus: CLEAN` on a PR here meant *"nothing was ever asked"*, not *"checks passed"*. #72 changed reviewer selection and left 13 tests red on `main` for days because nothing ran them.
+
+The `test` job asserts a collection floor (root ≥ 1400, agent-memory ≥ 60) before running anything: without a reachable Postgres every DB-backed test *errors* at fixture setup rather than failing, and a collection failure exits 0 having run nothing — from outside, both are indistinguishable from success. If you add or remove a large block of tests, move the floor with it.
 
 **Tests need a real PostgreSQL with pgvector — not SQLite.** `tests/conftest.py` connects to `postgresql://minion:minion@localhost:5434/minion` (override with `TEST_POSTGRES_URL`) and creates a `minions_test` schema per session. Without it, every DB-backed test *errors* at fixture setup rather than failing — easy to misread as "my change broke the suite".
 

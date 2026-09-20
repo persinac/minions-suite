@@ -267,6 +267,7 @@ async def _run_server(config: Config) -> None:
     from .preflight import print_preflight, run_preflight
     from .project_registry import build_registry
     from .server.mcp import create_server
+    from .server.transport import serve_dual_transport
 
     # Run preflight checks before anything else
     checks = run_preflight(config)
@@ -451,12 +452,12 @@ async def _run_server(config: Config) -> None:
         try:
             _prev_handlers[_sig] = signal.getsignal(_sig)
             signal.signal(_sig, _log_signal)
-        except (ValueError, OSError):
+        except ValueError, OSError:
             logger.debug("Could not install handler for %s", _sig)
 
     try:
-        await mcp.run_async(transport="sse", host=config.mcp_host, port=config.mcp_port)
-        logger.error("mcp.run_async() RETURNED WITHOUT A SIGNAL -- the server stopped on its own")
+        await serve_dual_transport(mcp, host=config.mcp_host, port=config.mcp_port, log_level=config.log_level)
+        logger.error("serve_dual_transport() RETURNED WITHOUT A SIGNAL -- the server stopped on its own")
     finally:
         logger.warning("Engine shutdown beginning -- in-process agents will be marked failed")
         await job_engine.stop()

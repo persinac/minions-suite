@@ -11,6 +11,7 @@ from ..agents.runner import run_agent
 from ..classifier import classify_difficulty, resolve_model
 from ..core.models import Agent, AgentRole, Job, JobStatus, Task, TaskStatus
 from ..core.state_transitions import InvalidTransitionError, PreconditionError
+from ..db import AgentClaimConflictError
 
 if TYPE_CHECKING:
     from .job_engine import JobEngine
@@ -1020,7 +1021,22 @@ async def run_engineer(
         return
 
     agent = Agent(job_id=job.id, role=task.agent_role, task_id=task.id, model=resolve_model(engine.config, job.difficulty, is_engineer=True))
-    agent = await engine.db.create_agent(agent)
+    try:
+        agent = await engine.db.create_agent(agent)
+    except AgentClaimConflictError:
+        # Somebody is already live on this task. The reachable case is the
+        # unclaimed-item fallback: it decides a task is unowned from the agent
+        # row of the CURRENT attempt, so a herder that claims in the same
+        # moment leaves both paths believing they should run. Yield to it --
+        # a second engineer on one task duplicates a PR rather than producing
+        # one, and that costs tokens to create work someone has to untangle.
+        #
+        # Caught rather than raised because `_spawn` has no exception
+        # isolation: an uncaught error here is a silent task death with
+        # nothing recorded against the job.
+        logger.warning("Task %s already has a live agent — skipping duplicate in-process launch", task.id)
+        await engine.db.record_event(job.id, "agent_launch_skipped", "engine", f"task={task.id} reason=already_claimed")
+        return
 
     action = "retry" if is_retry else ("revision" if is_revision else "development")
     event_detail = f"agent={agent.id} role={task.agent_role} task={task.id} action={action}"

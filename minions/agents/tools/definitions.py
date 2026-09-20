@@ -16,6 +16,12 @@ from .args import coerce_line_number
 
 logger = logging.getLogger(__name__)
 
+# Combined ceiling for the PR description + diff handed to a reviewer in one call.
+_MAX_DIFF_CHARS = 100_000
+# A PR body is prose; past ~8k it is padding, and every char spent here is a char
+# of diff the reviewer does not see.
+_MAX_PR_BODY_CHARS = 8_000
+
 
 # ---------------------------------------------------------------------------
 # Tool definitions (OpenAI function-calling format)
@@ -183,11 +189,35 @@ class ToolExecutor:
             return json.dumps({"error": str(e)})
 
     async def _get_diff(self) -> str:
+        # The PR description ships with the diff because the reviewer is asked to
+        # check the claims in it, and `get_diff` alone cannot supply them: GitLab
+        # returns only `/changes` hunks and GitHub shells out to `gh pr diff`.
+        # Without this the review prompt's "check the claim, not the conclusion"
+        # is an instruction with nothing to act on, and the PR body stays the one
+        # artifact in the pipeline that no other agent ever reads.
+        header = "### PR description unavailable — review the diff alone\n\n### Diff\n"
+        try:
+            pr = await self.provider.get_pr(self.project_id, self.mr_id)
+            body = (pr.description or "").strip()
+            if not body:
+                body = "(empty)"
+            if len(body) > _MAX_PR_BODY_CHARS:
+                body = body[:_MAX_PR_BODY_CHARS] + "\n... [description truncated]"
+            header = f"### PR title\n{pr.title}\n\n### PR description\n{body}\n\n### Diff\n"
+        except Exception as exc:
+            # A metadata failure must not cost us the review entirely — the diff
+            # is still worth reviewing, just without its claims.
+            logger.warning("could not fetch PR metadata for %s!%s: %s", self.project_id, self.mr_id, exc)
+
         diff = await self.provider.get_diff(self.project_id, self.mr_id)
-        # Truncate very large diffs to avoid blowing context
-        if len(diff) > 100_000:
-            return diff[:100_000] + "\n\n... [diff truncated at 100k chars — use read_file for full context]"
-        return diff
+        # Budget is shared, so a long description cannot silently evict the diff.
+        # The notice is counted against the budget too -- appending it after the
+        # slice is what pushed the old ceiling over by its own length.
+        notice = "\n\n... [diff truncated — use read_file for full context]"
+        budget = _MAX_DIFF_CHARS - len(header)
+        if len(diff) > budget:
+            diff = diff[: max(0, budget - len(notice))] + notice
+        return header + diff
 
     async def _get_changed_files(self) -> str:
         files = await self.provider.get_changed_files(self.project_id, self.mr_id)

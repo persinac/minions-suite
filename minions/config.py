@@ -608,4 +608,10 @@ class Config:
 
     @property
     def mcp_url(self) -> str:
-        return f"http://{self.mcp_host}:{self.mcp_port}/sse"
+        """Streamable-HTTP URL for this server. Currently referenced by nothing.
+
+        The engine's agents call tools in-process and the herder reads its own
+        MINIONS_MCP_URL, so this is kept accurate rather than load-bearing --
+        changing it moves no traffic.
+        """
+        return f"http://{self.mcp_host}:{self.mcp_port}/mcp"

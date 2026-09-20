@@ -8,6 +8,7 @@ import json
 import logging
 from datetime import datetime
 
+from psycopg.errors import UniqueViolation
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 from psycopg_pool import AsyncConnectionPool
@@ -31,10 +32,17 @@ from ..core.state_transitions import (
     validate_task_preconditions,
     validate_task_transition,
 )
+from .abstract import AgentClaimConflictError
 
 logger = logging.getLogger(__name__)
 
 JOB_SCHEMA = "minions"
+
+# The partial unique index that allows at most one live agent per task. Named
+# here so a claim race is told apart from any other unique violation on the
+# table -- a future constraint must not be silently reported as "someone else
+# won", which would make a genuine bug look like normal contention.
+LIVE_AGENT_INDEX = "idx_agents_one_live_per_task"
 
 
 def _ts(value) -> str | None:
@@ -191,6 +199,22 @@ class PostgresDatabase:
     # ===================================================================
 
     async def create_agent(self, agent: Agent) -> Agent:
+        """Insert an agent row.
+
+        Raises `AgentClaimConflictError` when the task already has a live
+        agent. That is the database closing the check-then-create window in
+        `find_claimable_work`, so callers should treat it as "someone else got
+        there first" rather than as a failure to launch.
+        """
+        try:
+            return await self._insert_agent(agent)
+        except UniqueViolation as exc:
+            if getattr(exc.diag, "constraint_name", None) != LIVE_AGENT_INDEX:
+                raise
+            logger.info("Agent insert for task %s lost the claim race", agent.task_id)
+            raise AgentClaimConflictError(agent.task_id) from exc
+
+    async def _insert_agent(self, agent: Agent) -> Agent:
         async with self._pool.connection() as conn:
             await conn.execute(
                 f"""INSERT INTO {JOB_SCHEMA}.agents
@@ -610,9 +634,7 @@ class PostgresDatabase:
             # was arbitrary (physical order, i.e. usually the OLD one), which
             # would tell _reconcile_stranded_cards that a live card's job is
             # already terminal and file it to Done underneath the running job.
-            cur = await conn.execute(
-                f"SELECT * FROM {JOB_SCHEMA}.jobs WHERE external_id = %s ORDER BY created_at DESC LIMIT 1", (external_id,)
-            )
+            cur = await conn.execute(f"SELECT * FROM {JOB_SCHEMA}.jobs WHERE external_id = %s ORDER BY created_at DESC LIMIT 1", (external_id,))
             row = await cur.fetchone()
             if not row:
                 return None

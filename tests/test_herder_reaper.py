@@ -135,3 +135,42 @@ class TestParsePaneId:
         tick, and a fabricated id would make the reaper close someone else's
         pane."""
         assert parse_pane_id(bad) == ""
+
+
+class TestParsePaneIdAcrossBackends:
+    """`spawn --print` does NOT emit the JSON envelope any more, on either backend.
+
+    Measured 2026-09-20 against a real herdr spawn: stdout was the bare string
+    `w2W:p1`. The JSON-only parser returned "", so `spawn()` logged "could NOT
+    parse a pane id -- it will not be reaped", returned None, and the pane never
+    entered `spawned.json` -- an unbounded leak of Claude sessions, which never
+    exit on their own.
+
+    Each case below fails against a JSON-only parser, which is the point: the
+    bug was invisible precisely because nothing exercised the real output.
+    """
+
+    def test_bare_herdr_pane_id(self):
+        """The exact stdout of the spawn that exposed this."""
+        assert parse_pane_id("w2W:p1") == "w2W:p1"
+
+    @pytest.mark.parametrize("raw", ["w11:pA", "w2M:p1", "w123:p12"])
+    def test_other_real_herdr_shapes(self, raw):
+        assert parse_pane_id(raw) == raw
+
+    def test_tmux_tab_separated_pair_yields_the_pane_not_the_window(self):
+        """tmux prints `#{pane_id}<TAB>#{window_index}`; kill wants field one.
+        Returning `3` here would ask tmux to kill window 3 -- somebody else's."""
+        assert parse_pane_id("%42\t3") == "%42"
+
+    def test_a_banner_before_the_id_does_not_defeat_it(self):
+        assert parse_pane_id("warning: reusing workspace\nw2W:p1") == "w2W:p1"
+
+    def test_trailing_newline(self):
+        assert parse_pane_id("w2W:p1\n") == "w2W:p1"
+
+    @pytest.mark.parametrize("bad", ["3", "w2W", ":p1", "wp1", "%", "%x", "some words here"])
+    def test_still_refuses_things_that_are_not_pane_ids(self, bad):
+        """The tolerance must not become "return the first token". A wrong id is
+        worse than none: the reaper would close a pane it does not own."""
+        assert parse_pane_id(bad) == ""

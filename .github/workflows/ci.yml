@@ -1,0 +1,89 @@
+name: ci
+# Lint and test gate for minions-suite.
+#
+# This repo had no CI at all until 2026-09-07, and it is the one that ships every
+# agent prompt and executor in the fleet. The cost of that was measurable: #72
+# changed reviewer selection and left 13 tests red on main for days, and nobody
+# saw it because nothing ran them. `mergeStateStatus: CLEAN` on a PR here meant
+# "nothing was ever asked", not "checks passed".
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv python install 3.14
+
+      # `dev` is a dependency-group, not an extra -- `--extra dev` resolves to
+      # nothing and ruff would then come from PATH, or not at all.
+      - name: ruff check
+        run: uv run --group dev ruff check .
+
+      - name: ruff format --check
+        run: uv run --group dev ruff format --check .
+
+  test:
+    runs-on: ubuntu-latest
+    services:
+      # pgvector, not plain postgres: the test schema declares
+      # `public.vector(1536)` and plain postgres:17 fails with
+      # `type "public.vector" does not exist`. Port 5434 matches
+      # tests/conftest.py's default so no override is needed.
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: minion
+          POSTGRES_PASSWORD: minion
+          POSTGRES_DB: minion
+        ports:
+          - 5434:5432
+        options: >-
+          --health-cmd "pg_isready -U minion -d minion"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv python install 3.14
+
+      - name: Enable pgvector
+        run: PGPASSWORD=minion psql -h localhost -p 5434 -U minion -d minion -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+      # Vacuity floor. Without a reachable Postgres every DB-backed test ERRORS
+      # at fixture setup rather than failing, and a collection failure exits 0
+      # having run nothing. Both look like success from the outside.
+      #
+      # The trailing `|| true` is required: under `set -euo pipefail` a `grep -c`
+      # matching nothing exits 1 and kills the step before the count prints, so
+      # the empty suite this guard exists to catch would report as a broken
+      # runner instead.
+      - name: Verify test collection
+        run: |
+          set -euo pipefail
+          root=$(uv run --extra test pytest tests/ --collect-only -q 2>/dev/null | grep -c '::' || true)
+          mem=$(uv run --extra test pytest agent-memory/tests --collect-only -q 2>/dev/null | grep -c '::' || true)
+          echo "collected: root=$root agent-memory=$mem"
+          if [ "$root" -lt 1400 ]; then echo "root suite collected $root, expected >= 1400"; exit 1; fi
+          if [ "$mem" -lt 60 ]; then echo "agent-memory collected $mem, expected >= 60"; exit 1; fi
+
+      # Two invocations, not one. Both directories are named `tests` and both
+      # have a conftest.py, which collides in pytest's plugin manager regardless
+      # of --import-mode. This mirrors `task test`.
+      - name: pytest (root)
+        run: uv run --extra test pytest tests/ -q
+
+      - name: pytest (agent-memory)
+        run: uv run --extra test pytest agent-memory/tests -q

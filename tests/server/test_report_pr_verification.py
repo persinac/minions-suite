@@ -140,6 +140,7 @@ class TestWiring:
         transition = body.index("_propose_transition")
         assert gate < transition, "verification must precede the PR_OPEN transition"
 
+
 class TestMalformedUrls:
     """The first version of this check required the url to contain `/pull/<n>`
     and treated anything else as "not a GitHub PR URL — nothing to verify". A

@@ -109,6 +109,35 @@ costs a revert.
 If the spec's assumptions section said `None — spec fully specified`, and you hit
 no gaps of your own, omit the section rather than writing an empty one.
 
+### End with a VERIFY: line
+
+Finish the PR body with one line that starts `VERIFY:`. Name something a person
+could measure that would come out **different** if your change did not work.
+
+- Good — `VERIFY: the test job prints "collected: 17". Before this PR it printed 0.`
+- Good — `VERIFY: GET /health returns a build_sha field. It returned 404 before.`
+- Bad — `VERIFY: CI is green.`
+- Bad — `VERIFY: all tests pass.`
+
+"CI is green", "tests pass" and "the build succeeds" are not measurements. They
+say the process ran, not that the change worked. A gate nobody wired up reports
+green exactly like one that works.
+
+If you cannot name such a measurement, write `VERIFY: none — <why>` and explain in
+one line. That is a real finding, not a failure. It usually means the change is not
+observable from outside, and people should learn that before it merges.
+
+### Label every claim
+
+Tag each factual claim in the PR body:
+
+- `VERIFIED` — you ran it or read it. Give the file:line, or the output.
+- `RELAYED` — someone else told you. Say who. The ticket counts. So does a reviewer.
+- `ASSUMED` — you think it is true but did not check.
+
+An untagged claim gets read as VERIFIED, so tag anything that is not. Passing on
+someone else's claim as your own is how one wrong fact reaches three agents.
+
 ## Implementation Guidelines
 
 - Follow existing code patterns and conventions in the repository

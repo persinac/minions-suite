@@ -285,6 +285,7 @@ ALTER TABLE ONLY tool_calls
     ADD CONSTRAINT tool_calls_pkey PRIMARY KEY (id);
 CREATE INDEX idx_agents_job ON agents USING btree (job_id, started_at);
 CREATE INDEX idx_agents_k8s_job ON agents USING btree (k8s_job_name) WHERE (k8s_job_name IS NOT NULL);
+CREATE UNIQUE INDEX idx_agents_one_live_per_task ON agents USING btree (task_id) WHERE (status = ANY (ARRAY['starting'::text, 'running'::text]));
 CREATE INDEX idx_agents_status ON agents USING btree (status);
 CREATE INDEX idx_events_created ON events USING btree (created_at);
 CREATE INDEX idx_events_job ON events USING btree (job_id);

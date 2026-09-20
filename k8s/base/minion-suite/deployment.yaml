@@ -34,7 +34,7 @@ spec:
         #
         # Kept in sync by scripts/sync-config-checksum.sh and enforced by
         # tests/test_projects_yaml.py::TestConfigChecksum.
-        minion-suite/projects-checksum: "1bb6f4b65e3508fa6e26810bbe2394a55408a5e4975025db02d96e6897284e03"
+        minion-suite/projects-checksum: "32d1486f33e3a596cddee2ee50c73fd3dc90e3e799581f37a6ede0dfb03a5e49"
     spec:
       # The engine drains in-flight in-process agents on SIGTERM
       # (shutdown_grace_seconds, default 300s) rather than failing them
@@ -193,8 +193,14 @@ spec:
             - name: TEST_POSTGRES_URL
               value: "postgresql://minion:minion@minion-test-pg:5432/minion"
           # There is no health endpoint anywhere in the codebase. `--server` serves
-          # only the MCP SSE surface, and probing GET /sse would open a long-lived
-          # event stream per probe that the kubelet then abandons. TCP instead.
+          # only MCP -- both transports since 0.8.66, but neither is probe-shaped,
+          # so TCP stays the right answer for a different reason than before:
+          #   GET /sse  -> 200, but opens a long-lived event stream per probe
+          #                that the kubelet then abandons
+          #   GET /mcp  -> 406; streamable HTTP wants a POST, and a kubelet
+          #                httpGet probe cannot send one
+          # So do NOT "modernise" this to httpGet on /mcp now that /mcp exists --
+          # every probe would fail. Measured against the live service 2026-09-20.
           startupProbe:
             tcpSocket: {port: 8321}
             periodSeconds: 5

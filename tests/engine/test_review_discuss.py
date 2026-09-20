@@ -69,7 +69,7 @@ async def _run_review(db, job, task, run):
     engine = _engine(db)
     with (
         patch("minions.engine.dev.run_agent", new=run),
-        patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/service.py"])),
+        patch("minions.engine.review._create_provider_for_project", return_value=_provider(["app/api/service.py"])),
         patch("minions.repos.ensure_checkout", return_value=True),
     ):
         from minions.engine.dev import run_task_review
