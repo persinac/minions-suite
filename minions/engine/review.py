@@ -15,7 +15,15 @@ logger = logging.getLogger(__name__)
 
 
 async def launch_review_tasks(engine: JobEngine, job: Job):
-    """Launch CODE_REVIEWER tasks for a review-type job."""
+    """Launch CODE_REVIEWER tasks for a review-type job.
+
+    Under reviewer_dispatch="external" this publishes instead of launching: the
+    task is still claimed as IN_PROGRESS, but no agent row is created and no
+    coroutine is spawned. An absent agent row is precisely what makes the task
+    visible to find_claimable_work, and it is also what keeps every recovery
+    path off it -- they all need an agent to reason about. check_review_tasks
+    owns the "nobody ever claimed it" case.
+    """
     pending_tasks = await engine.db.get_tasks_by_status(job.id, TaskStatus.PENDING)
     review_tasks = [t for t in pending_tasks if t.agent_role == AgentRole.CODE_REVIEWER]
 
@@ -26,6 +34,8 @@ async def launch_review_tasks(engine: JobEngine, job: Job):
 
     await engine.db.update_job_status(job.id, JobStatus.REVIEW_IN_PROGRESS)
 
+    external = engine.config.reviewer_dispatch == "external"
+
     for task in review_tasks:
         # Claim task before spawning to prevent duplicate agents on next poll
         try:
@@ -33,6 +43,17 @@ async def launch_review_tasks(engine: JobEngine, job: Job):
         except InvalidTransitionError as e:
             logger.warning("Could not claim review task %s: %s", task.id, e)
             continue
+
+        if external:
+            await engine.db.record_event(
+                job.id,
+                "work_item_published",
+                "engine",
+                f"task={task.id} role=code_reviewer service={task.service} mr={task.mr_id}",
+            )
+            logger.info("Review task %s published for external claim — no in-process agent launched", task.id)
+            continue
+
         engine._spawn(run_review_in_process(engine, job, task), name=f"review-{task.id[:8]}")
 
 
@@ -140,13 +161,96 @@ async def run_review_in_process(engine: JobEngine, job: Job, task: Task):
         await engine._nats_agent_status(job.id, agent.id, "code_reviewer", "failed")
 
 
+async def _recover_external_review_tasks(engine: JobEngine, job: Job, review_tasks: list[Task]) -> None:
+    """Keep a published review task from wedging the job forever.
+
+    Two ways an external reviewer stops existing, and they need opposite
+    treatment, so both are handled here rather than collapsed:
+
+    * NOBODY CLAIMED IT. The task is IN_PROGRESS with no agent row at all.
+      Every other recovery path in this engine needs an agent to reason about,
+      so this state is invisible to all of them — a job that looks healthy and
+      never moves, which is the worst failure mode this system has. After
+      herder_claim_timeout_seconds, run it in-process. That costs API tokens;
+      not doing it costs the job.
+
+    * SOMEBODY CLAIMED IT AND VANISHED. A killed pane or closed laptop leaves
+      the agent row reading "running" forever. That is not unclaimed, so the
+      branch above does not fire, and it is not finished, so no orphan check
+      does either. After herder_work_timeout_seconds, mark the claim failed —
+      which returns the task to the unclaimed case above and lets the next pass
+      rescue it for real.
+
+    Mirrors manage_dev_tasks' engineer handling deliberately; a reviewer that
+    stalled differently from an engineer would be a second thing to learn. 0 on
+    either timeout disables that half, exactly as it does for engineers.
+    """
+    from datetime import UTC, datetime
+
+    from .dev import _seconds_since
+
+    for task in review_tasks:
+        if task.status != TaskStatus.IN_PROGRESS:
+            continue
+
+        latest_agent = await engine.db.get_agent_for_task(task.id)
+
+        if (
+            latest_agent
+            and latest_agent.status in ("starting", "running")
+            and str(latest_agent.model or "").startswith("herder:")
+            and engine.config.herder_work_timeout_seconds > 0
+        ):
+            running_for = _seconds_since(latest_agent.started_at)
+            if running_for >= engine.config.herder_work_timeout_seconds:
+                message = (
+                    f"Herder claim on review task {task.id} has been running {int(running_for)}s with no verdict "
+                    f"(limit {engine.config.herder_work_timeout_seconds}s) — treating the worker as gone and releasing the claim"
+                )
+                logger.warning(message)
+                await engine.db.update_agent(latest_agent.id, status="failed", finished_at=datetime.now(UTC).isoformat(), error=message[:200])
+                await engine.db.record_event(
+                    job.id, "herder_claim_abandoned", "engine", f"task={task.id} agent={latest_agent.id} ran={int(running_for)}s"
+                )
+                latest_agent = await engine.db.get_agent_for_task(task.id)
+
+        if latest_agent and latest_agent.status in ("starting", "running"):
+            continue
+
+        # A finished agent means an in-process run already happened (or a
+        # released claim). Only an unowned task is the "nobody came" case, and
+        # a released claim leaves a FAILED row that must not block the rescue.
+        owned = latest_agent is not None and latest_agent.status not in ("failed",)
+        if owned:
+            continue
+
+        if engine.config.herder_claim_timeout_seconds <= 0:
+            continue
+
+        waited = _seconds_since(task.updated_at)
+        if waited < engine.config.herder_claim_timeout_seconds:
+            continue
+
+        logger.warning("Review task %s went unclaimed for %ds — falling back to in-process dispatch", task.id, int(waited))
+        await engine.db.record_event(job.id, "herder_claim_timeout", "engine", f"task={task.id} waited={int(waited)}s role=code_reviewer")
+        engine._spawn(run_review_in_process(engine, job, task), name=f"review-fallback-{task.id[:8]}")
+
+
 async def check_review_tasks(engine: JobEngine, job: Job):
-    """Check if all review tasks are terminal and advance the job."""
+    """Check if all review tasks are terminal and advance the job.
+
+    Also the only thing watching a PUBLISHED review task, so it carries the
+    external-dispatch rescue — see _recover_external_review_tasks.
+    """
     tasks = await engine.db.get_tasks(job.id)
     review_tasks = [t for t in tasks if t.agent_role == AgentRole.CODE_REVIEWER]
 
     if not review_tasks:
         return
+
+    if engine.config.reviewer_dispatch == "external":
+        await _recover_external_review_tasks(engine, job, review_tasks)
+        review_tasks = [t for t in await engine.db.get_tasks(job.id) if t.agent_role == AgentRole.CODE_REVIEWER]
 
     terminal = {TaskStatus.DONE, TaskStatus.FAILED}
     all_terminal = all(t.status in terminal for t in review_tasks)

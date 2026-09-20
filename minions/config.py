@@ -316,6 +316,21 @@ class Config:
     # herder's rate-limit budget is needed elsewhere.
     engineer_dispatch: str = "in_process"
 
+    # Who runs the CODE_REVIEWER role. Same two values, same mechanism, same
+    # default as engineer_dispatch — and a separate knob on purpose, because
+    # the two roles fail differently. An engineer that never gets claimed
+    # delays one PR; a reviewer that never gets claimed blocks a PR that is
+    # already written and passing CI.
+    #
+    # Reviewers are ~40% of spend against the API key, second only to engineers
+    # (~46%), so this is the other big lever — but it is opt-in for the same
+    # reason engineer_dispatch is: flipping it back to in_process restores
+    # today's behaviour with no other change.
+    #
+    # Applies to BOTH reviewer paths: the standalone review-type job (MR
+    # webhook / CLI) and the per-specialty fan-out on a dev job's PR.
+    reviewer_dispatch: str = "in_process"
+
     # How long a claimable work item may sit unclaimed before the engine gives up
     # waiting and runs it in-process itself. Without this a herder that is asleep,
     # rate-limited or crashed stalls every job silently — the failure mode is a
@@ -536,6 +551,7 @@ class Config:
             agent_log_dir=_env_or("AGENT_LOG_DIR", _get("engine", "agent_log_dir"), str(base / "logs" / "agents")),
             agent_dispatch_mode=_env_or("AGENT_DISPATCH_MODE", _get("engine", "agent_dispatch_mode"), "in_process"),
             engineer_dispatch=_env_or("ENGINEER_DISPATCH", _get("engine", "engineer_dispatch"), "in_process"),
+            reviewer_dispatch=_env_or("REVIEWER_DISPATCH", _get("engine", "reviewer_dispatch"), "in_process"),
             herder_claim_timeout_seconds=_env_or_int("HERDER_CLAIM_TIMEOUT_SECONDS", _get("engine", "herder_claim_timeout_seconds"), 900),
             herder_work_timeout_seconds=_env_or_int("HERDER_WORK_TIMEOUT_SECONDS", _get("engine", "herder_work_timeout_seconds"), 2700),
             orchestration_max_attempts=_env_or_int("ORCHESTRATION_MAX_ATTEMPTS", _get("engine", "orchestration_max_attempts"), 3),
