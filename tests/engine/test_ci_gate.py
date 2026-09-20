@@ -54,7 +54,90 @@ def _engine(require_ci_pass=True):
 
 async def _gate(**kwargs):
     require_ci_pass = kwargs.pop("require_ci_pass", True)
-    return await _ci_gate_passes(_engine(require_ci_pass), _Project(), _Provider(**kwargs), "23", "main")
+    service = kwargs.pop("service", None)
+    return await _ci_gate_passes(_engine(require_ci_pass), _Project(), _Provider(**kwargs), "23", "main", service)
+
+
+class _Service:
+    def __init__(self, expected_required_checks=()):
+        self.expected_required_checks = list(expected_required_checks)
+
+
+class TestADeclaredReleaseGateMustBeArmed:
+    """Having SOME required checks is not having the RIGHT ones.
+
+    flashback-cns gates releases on `version-bump` -- "CI does not bump it for
+    you", and pushing the bump straight to main is blocked -- but never added
+    it to the branch ruleset. So it is advisory for everyone, agent and human
+    alike. Job fad112b7 opened a PR with no bump, version-bump went red, and
+    the merge was permitted because only secret-scan/guard/lint are required.
+    Merged that way the code lands, the manifests never move, and the repo's
+    own CD -- the thing that actually deploys -- ships nothing, silently.
+
+    This checks CONFIGURATION, not results: whether the gate is ARMED, which
+    get_required_checks already answers. Whether it is GREEN stays GitHub's
+    call, for the reason in this module's docstring -- reading check-runs needs
+    a grant the App lacks and duplicates a judgement that can then drift.
+    """
+
+    async def test_an_unarmed_release_gate_blocks(self):
+        ok, reason = await _gate(required=["lint", "secret-scan"], service=_Service(["version-bump"]))
+        assert not ok
+        assert "version-bump" in reason, reason
+        assert "advisory" in reason, "the reason must say WHY an unarmed gate is not good enough"
+
+    async def test_an_armed_release_gate_passes(self):
+        ok, reason = await _gate(required=["lint", "secret-scan", "version-bump"], service=_Service(["version-bump"]))
+        assert ok, reason
+
+    async def test_only_the_missing_gate_is_named(self):
+        ok, reason = await _gate(required=["lint", "version-bump"], service=_Service(["version-bump", "manifest-images"]))
+        assert not ok
+        assert "manifest-images" in reason
+        assert "version-bump" not in reason.split("required today")[0], "an armed gate must not be reported as missing"
+
+    async def test_declaring_nothing_changes_nothing(self):
+        """Every service that declares no release gate must behave exactly as
+        before -- this is opt-in, and a default that blocked would wedge all 33."""
+        ok, _ = await _gate(required=["lint"], service=_Service())
+        assert ok
+        ok_none, _ = await _gate(required=["lint"], service=None)
+        assert ok_none
+
+    def test_the_declaration_survives_the_config_loader(self, tmp_path):
+        """The gate above is exercised with a hand-built service object, so it
+        passes whether or not projects.yaml is ever READ. Drop the loader line
+        and the field is always empty: the feature goes silently inert and every
+        test above still agrees. Found by mutation, not by reading.
+
+        yaml.safe_dump rather than an indented heredoc, per the note in
+        tests/providers/test_install_command.py -- the nesting is four levels
+        and a hand-indented fixture yields a config with no services at all.
+        """
+        import yaml
+
+        from minions.project_registry import build_registry
+
+        cfg = tmp_path / "projects.yaml"
+        cfg.write_text(
+            yaml.safe_dump(
+                {
+                    "projects": {
+                        "demo": {
+                            "project_id": "acme/demo",
+                            "services": {
+                                "gated": {"language": "python", "expected_required_checks": ["version-bump"]},
+                                "plain": {"language": "python"},
+                            },
+                        }
+                    }
+                }
+            )
+        )
+        reg = build_registry(str(cfg))
+
+        assert reg["demo"].services["gated"].expected_required_checks == ["version-bump"]
+        assert reg["demo"].services["plain"].expected_required_checks == [], "absence must stay opt-out, not inherit"
 
 
 class TestUngatedReposBlock:

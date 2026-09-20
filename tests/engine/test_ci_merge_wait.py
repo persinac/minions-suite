@@ -65,10 +65,13 @@ async def _engineer_task(db, job):
 class _MergeProvider:
     """Engineer-App fake: merge state follows a script, calls are recorded."""
 
-    def __init__(self, states, required=("lint",), enable_ok=True):
+    def __init__(self, states, required=("lint",), enable_ok=True, merge_ok=True):
         self._states = list(states)
         self._required = list(required)
         self._enable_ok = enable_ok
+        # merge_ok=False is GitHub refusing a merge the gate approved. Defaults
+        # to True so every pre-existing test keeps its old behaviour.
+        self._merge_ok = merge_ok
         self.merged = False
         self.auto_merge_enabled = False
         self.state_reads = 0
@@ -83,6 +86,10 @@ class _MergeProvider:
         return self._states[0]
 
     async def merge_mr(self, project_id, mr_id):
+        if not self._merge_ok:
+            # The real refusal from flashback-cns PR #261: a required check that
+            # has not REPORTED yet, which mergeable_state does not show.
+            return {"merged": False, "error": 'Required status check "secret-scan" is expected.'}
         self.merged = True
         return {"merged": True}
 
@@ -181,3 +188,68 @@ class TestDeferralToGitHub:
         assert len(stranded) == 1
         assert "pull/23" in stranded[0]["detail"], "the event must name the PR a human now owns"
         assert await _events(db, sample_job.id, "auto_merge_deferred") == []
+
+
+class TestARefusedMergeAlsoGetsAnOwner:
+    """A merge the gate APPROVED and GitHub then refused must not end ownerless.
+
+    Job fad112b7 / flashback-cns PR #261, 2026-09-20. The gate passed, so the
+    bounded wait above never engaged, and `gh pr merge` came back refused with
+    `Required status check "secret-scan" is expected` — the check had not
+    REPORTED yet, which is a race, not a red build. The refusal was recorded
+    and the code stopped there: the deferral that the BLOCKED path immediately
+    above performs was never reached from here.
+
+    Consequence: the PR stayed open, the repo's own CD never saw a merge to
+    react to, and the task still advanced to MERGED, so the job read
+    merged -> deployed -> done with nothing wrong anywhere. secret-scan went
+    green thirty seconds later; native auto-merge would have completed it.
+
+    The refusal is exactly what `enable_auto_merge` exists for — its docstring
+    says "red is visible on the PR instead of stranded behind a job that
+    already read as done". It simply was not wired to this branch.
+    """
+
+    async def test_a_refused_merge_is_handed_to_github(self, db, sample_job):
+        task = await _engineer_task(db, sample_job)
+        provider = _MergeProvider(states=["clean"], merge_ok=False)
+
+        await _review(db, sample_job, task, provider)
+
+        assert provider.auto_merge_enabled, "a refused merge must still end with a merge owner"
+        assert len(await _events(db, sample_job.id, "auto_merge_deferred")) == 1
+
+    async def test_the_refusal_is_still_recorded_distinctly(self, db, sample_job):
+        """The handoff must not swallow the signal. A refusal is not a clean
+        merge, and auto_merge_refused is the only thing that tells them apart."""
+        task = await _engineer_task(db, sample_job)
+        provider = _MergeProvider(states=["clean"], merge_ok=False)
+
+        await _review(db, sample_job, task, provider)
+
+        refused = await _events(db, sample_job.id, "auto_merge_refused")
+        assert len(refused) == 1
+        assert "secret-scan" in refused[0]["detail"], refused[0]["detail"]
+
+    async def test_a_refusal_whose_handoff_also_fails_is_stranded(self, db, sample_job):
+        task = await _engineer_task(db, sample_job)
+        provider = _MergeProvider(states=["clean"], merge_ok=False, enable_ok=False)
+
+        await _review(db, sample_job, task, provider)
+
+        stranded = await _events(db, sample_job.id, "auto_merge_stranded")
+        assert len(stranded) == 1
+        assert "pull/23" in stranded[0]["detail"], "the event must name the PR a human now owns"
+
+    async def test_a_clean_merge_never_reaches_the_fallback(self, db, sample_job):
+        """The happy path must be untouched: a merge that succeeded needs no
+        owner handed to anyone, and a spurious --auto would be a second one."""
+        task = await _engineer_task(db, sample_job)
+        provider = _MergeProvider(states=["clean"])
+
+        await _review(db, sample_job, task, provider)
+
+        assert provider.merged
+        assert not provider.auto_merge_enabled
+        assert await _events(db, sample_job.id, "auto_merge_deferred") == []
+        assert await _events(db, sample_job.id, "auto_merge_refused") == []

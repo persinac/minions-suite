@@ -61,3 +61,17 @@ projects:
         test_command: pytest
         lint_command: ruff check .
         default_branch: main
+        # Checks this repo's RELEASE depends on that must be in the branch's
+        # required set before an agent may merge. Opt-in; omit it and nothing
+        # changes.
+        #
+        # This catches a repo that declares a release rule in CI and never
+        # arms it -- advisory for agent and human alike. flashback-cns gates
+        # releases on `version-bump` but left it unrequired, so an agent PR
+        # with no bump merged past a red check; the code landed, the manifests
+        # did not move, and the CD that actually deploys shipped nothing.
+        #
+        # Fails CLOSED, so listing a check the ruleset does not require will
+        # block agent merges on that repo until someone arms it. That is the
+        # intent -- but arm the check first, or PRs will pile up.
+        expected_required_checks: [version-bump]
