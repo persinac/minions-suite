@@ -85,11 +85,18 @@ class TestTheIncidentItCatches:
     def test_0_8_31_would_have_been_blocked(self, gate):
         """Reconstruction. At the 0.8.31 release the checkout had
         20260816120000 and production's latest was 20260725220000.
+
+        Both lists are cut at the incident migration. The checkout of that day
+        held nothing newer, so replaying the incident against TODAY's directory
+        would add every migration written since to `missing` — the assertion
+        would then be measuring how much has shipped since August rather than
+        whether the gate catches the 0.8.31 shape.
         """
-        checkout = gate.versions_in(MIGRATIONS)
-        production_then = [v for v in checkout if v < "20260816120000"]
+        incident = "20260816120000"
+        checkout_then = [v for v in gate.versions_in(MIGRATIONS) if v <= incident]
+        production_then = [v for v in checkout_then if v < incident]
 
-        missing = gate.missing_versions(checkout, production_then)
+        missing = gate.missing_versions(checkout_then, production_then)
 
-        assert missing == ["20260816120000"]
+        assert missing == [incident]
         assert missing, "the gate must refuse this release"

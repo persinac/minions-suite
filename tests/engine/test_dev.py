@@ -52,7 +52,29 @@ def _mock_engine(db):
     # unpacks to nothing and surfaces as "not enough values to unpack" from
     # whichever caller happens to touch it first.
     engine._resolve_service = MagicMock(return_value=(None, None))
-    engine._run_in_process = AsyncMock()
+
+    async def _finalize_the_row(*args, **kwargs):
+        """Mirror the one DB side effect `_run_in_process` guarantees.
+
+        `run_agent` ALWAYS writes a terminal status onto the agent row before
+        returning (`runner.py`), so a caller that inspects the result is looking
+        at a task with no live agent. A bare `AsyncMock` returns a done-looking
+        Agent object while leaving the real row `starting` forever.
+
+        That was invisible until `idx_agents_one_live_per_task` landed. Now the
+        stale row means the task still has a live agent, and the next legitimate
+        insert — the finisher — is refused. The mock was modelling production
+        wrongly the whole time; the index is just the first thing to notice.
+        """
+        agent = kwargs.get("agent")
+        if agent is None and len(args) >= 3:
+            agent = args[2]
+        result = engine._run_in_process.return_value
+        if isinstance(result, Agent) and getattr(agent, "id", None):
+            await db.update_agent(agent.id, status=result.status, error=result.error)
+        return result
+
+    engine._run_in_process = AsyncMock(side_effect=_finalize_the_row)
     engine._nats_agent_status = AsyncMock()
     engine._trello_comment = AsyncMock()
 

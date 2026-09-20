@@ -23,7 +23,7 @@ from ..core.models import Agent, AgentRole, JobStatus, Message, Subtask, Subtask
 from ..core.service_grounding import check_grounding, mismatch_remedy
 from ..core.spec_contract import SpecContractError, validate_refined_spec
 from ..core.state_transitions import ArbiterUnavailableError, InvalidTransitionError, PreconditionError
-from ..db import AbstractDatabase
+from ..db import AbstractDatabase, AgentClaimConflictError
 
 logger = logging.getLogger(__name__)
 
@@ -84,10 +84,11 @@ async def find_claimable_work(db: AbstractDatabase, config: Config | None) -> li
 
             # An agent row means somebody already owns this task -- either a
             # previous claim or an in-process run. Only an unowned task is
-            # claimable. NOTE: check-then-create, so two herders racing could
-            # both win. Fine for a single worker; a second one needs a unique
-            # index on (task_id, status) rather than a tighter check here,
-            # because the race is in the database, not this function.
+            # claimable. This is check-then-create, so two workers racing can
+            # both pass here; the database closes that window with
+            # `idx_agents_one_live_per_task` and the loser's create_agent
+            # raises AgentClaimConflictError. Do not try to tighten the check
+            # instead -- the race is in the database, not this function.
             if any(a.status in ("starting", "running") for a in agents if a.task_id == task.id):
                 continue
 
@@ -489,7 +490,17 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
         if is_revision:
             feedback = await get_review_feedback(SimpleNamespace(db=db), job.id, task)
 
-        agent = await db.create_agent(Agent(job_id=job.id, role=task.agent_role, task_id=task.id, model=f"herder:{worker}", status="running"))
+        try:
+            agent = await db.create_agent(Agent(job_id=job.id, role=task.agent_role, task_id=task.id, model=f"herder:{worker}", status="running"))
+        except AgentClaimConflictError:
+            # Someone else claimed this item between the scan above and the
+            # insert. "Nothing waiting" is the honest answer and the one a
+            # polling herder already handles; returning an error would make an
+            # ordinary collision look like an outage and could stop a trigger.
+            await db.record_event(job.id, "work_item_claim_lost", worker, f"task={task.id}")
+            logger.info("Work item %s was claimed by someone else before %s could take it", task.id, worker)
+            return json.dumps({"work": None})
+
         await db.record_event(job.id, "work_item_claimed", worker, f"task={task.id} agent={agent.id} revision={task.revision_count}")
         logger.info("Work item %s claimed by %s (agent=%s)", task.id, worker, agent.id)
 
