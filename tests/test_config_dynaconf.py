@@ -243,3 +243,58 @@ def test_loads_without_settings_toml(monkeypatch):
     assert config.model == "claude-opus-5"
     assert config.agent_timeout == 600
     assert config.mcp_port == 8321
+
+
+def _engine_section(name: str) -> dict:
+    """Parse one [<name>] table out of the real settings.toml, values as raw text."""
+    import pathlib
+
+    out, inside = {}, False
+    for line in pathlib.Path("settings.toml").read_text().splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            inside = stripped == f"[{name}]"
+            continue
+        if inside and "=" in stripped and not stripped.startswith("#"):
+            key, value = stripped.split("=", 1)
+            out[key.strip()] = value.split("#")[0].strip()
+    return out
+
+
+def test_production_engine_declares_the_classifier_backend():
+    """A dynaconf env table REPLACES the default table; it does not merge into it.
+
+    settings.toml sets environments=true and uses no dynaconf_merge, so
+    [production.engine] is the WHOLE of `engine` in production. Release 0.8.70 set
+    classifier_backend in [default.engine] only, deployed green, and the pod still
+    read "litellm".
+    """
+    production = _engine_section("production.engine")
+
+    assert "classifier_backend" in production, (
+        "classifier_backend is missing from [production.engine]. Setting it only in "
+        "[default.engine] has no effect in production — the env table replaces the default."
+    )
+    assert production["classifier_backend"] == '"shadow"'
+
+
+def test_no_dynaconf_merge_means_production_engine_must_be_self_contained():
+    """Pins the mechanism, so adding dynaconf_merge makes this test tell you to revisit.
+
+    Fixing the root cause would make [default.engine] live in production for the first
+    time, changing 26 other values at once (agent_max_turns 60 -> 120 among them). That
+    is a deliberate change, not a cleanup, and this test is here so it cannot happen by
+    accident.
+    """
+    import pathlib
+    import re
+
+    text = pathlib.Path("settings.toml").read_text()
+    # A KEY assignment, not a mention -- the comment above classifier_backend names
+    # dynaconf_merge to explain why it is absent, and matching bare text tripped on that.
+    declared = re.search(r"^\s*dynaconf_merge\s*=", text, re.MULTILINE)
+
+    assert declared is None, (
+        "dynaconf_merge was added to settings.toml. [default.engine] now reaches production, "
+        "which changes ~26 settings at once. Re-read the 0.8.71 release notes before deleting this test."
+    )

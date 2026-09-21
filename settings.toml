@@ -247,6 +247,15 @@ mcp_host = "0.0.0.0"
 # stalling. Flip back to "in_process" to disable entirely.
 engineer_dispatch = "external"
 
+# MUST be repeated here, not only in [default.engine]. With environments=true a
+# dynaconf env section REPLACES the default table rather than merging into it, and
+# there is no dynaconf_merge anywhere in this file — so [production.engine] is the
+# whole of `engine` in production. Release 0.8.70 set this in [default.engine]
+# alone, deployed green, and the pod still read "litellm". 26 other settings are
+# lost the same way; see the release notes for 0.8.71.
+classifier_backend = "shadow"
+classifier_min_confidence = 0.5
+
 [production.nats]
 enabled = true
 
