@@ -300,6 +300,19 @@ Promotion to `CLASSIFIER_BACKEND=typesafe` waits on the calibration in §5.
 6. **Debug logging is not body-redacted.** `sdk/python/usage.md` states that at `debug`
    level, secret *headers* are redacted but request and response bodies are **not**. Ticket
    text would land in logs. Do not enable SDK debug logging in the deployed engine.
+
+6a. **Enabling shadow mode sends every intake ticket to a third party.** This was missing
+   from the first version of this document, which is a real omission: the rollout section
+   argued shadow mode is risk-free because it cannot change routing, and that is true about
+   *routing* while being silent about *egress*. Turning the backend on doubles the
+   destinations for ticket prose — Anthropic and now TypeSafe — and ticket text is not
+   always innocuous: it can carry customer names, internal hostnames, repository layout, or
+   a pasted stack trace. Nothing in `classify_difficulty` redacts. The vendor states
+   customer data is not used for training and there is no per-account fine-tuning
+   (`models.md`), which bounds one concern and not the others. **This needs a human's
+   explicit yes, separately from the cost and correctness argument, and it is not something
+   an agent should turn on because the config change happens to be one line and
+   revertible.** Enabling is reversible; the disclosure it performs is not.
 7. **First non-LiteLLM AI call in the system.** Architectural, not incidental — call it out
    in review rather than letting it arrive as a surprise.
 8. **`minions/` has mixed line endings** and no `.gitattributes`. `classifier.py` is LF
