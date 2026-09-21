@@ -19,7 +19,7 @@ import time
 
 sys.path.insert(0, "/home/persinac/repos/.worktrees/personal_minions-suite--jevai")
 
-from minions.classifier import EASY, HARD, MEDIUM
+from minions.classifier import EASY, HARD, MEDIUM, _classify_litellm
 from minions.classifier_jev import score_difficulty_jev
 
 
@@ -29,6 +29,12 @@ class _Cfg:
     typesafe_api_key = os.environ.get("TYPESAFE_API_KEY", "")
     typesafe_model = ""
     typesafe_timeout = 60.0
+
+
+class _BaselineCfg:
+    classifier_enabled = True
+    classifier_model = "claude-haiku-4-5"
+    classifier_max_chars = 6000
 
 
 # (label, expected tier per classifier.py's calibration table, ticket text)
@@ -86,6 +92,7 @@ async def main():
     print(f"key present: yes (length {len(_Cfg.typesafe_api_key)})\n")
 
     agreed = 0
+    baseline_agreed = 0
     total_cost = 0.0
     latencies = []
     rows = []
@@ -96,21 +103,28 @@ async def main():
         elapsed = time.monotonic() - started
         latencies.append(elapsed)
 
+        # The incumbent, on the SAME ticket: without it, "6/6" cannot say Jev beats what
+        # we already run, and an unexecuted baseline flatters the challenger.
+        baseline, _baseline_reason = await _classify_litellm(text, _BaselineCfg())
+        baseline_match = baseline == expected
+        baseline_agreed += int(baseline_match)
+
         if not telemetry:
-            print(f"[{label}] FAILED: {reason}")
+            print(f"[{label}] FAILED: {reason}   (haiku said {baseline!r})")
             continue
 
         total_cost += telemetry["cost_usd"]
         match = difficulty == expected
         agreed += int(match)
-        rows.append((label, expected, difficulty, telemetry, elapsed, match))
+        rows.append((label, expected, difficulty, telemetry, elapsed, match, baseline, baseline_match))
 
         s = telemetry["scores"]
         c = telemetry["confidences"]
         n = telemetry["normalized"]
         print(f"[{label}]")
         print(
-            f"  expected {expected:6s} -> jev {difficulty!s:6s} {'OK' if match else 'MISS'}   {elapsed * 1000:.0f} ms  ${telemetry['cost_usd']:.6f}"
+            f"  expected {expected:6s} -> jev {difficulty!s:6s} {'OK' if match else 'MISS'}   "
+            f"| haiku {baseline!s:6s} {'OK' if baseline_match else 'MISS'}   {elapsed * 1000:.0f} ms  ${telemetry['cost_usd']:.6f}"
         )
         print(f"  effort {s['effort']:.2f}/3 (conf {c['effort']:.2f})   clarity {s['clarity']:.2f}/2 (conf {c['clarity']:.2f})")
         print(
@@ -123,13 +137,22 @@ async def main():
         print()
 
     print("=" * 72)
-    print(f"agreement with the calibration table: {agreed}/{len(TICKETS)}")
+    print(f"agreement with the calibration table — jev:   {agreed}/{len(TICKETS)}")
+    print(f"agreement with the calibration table — haiku: {baseline_agreed}/{len(TICKETS)}  (the incumbent, same tickets)")
+    if baseline_agreed >= agreed:
+        print("=> Jev does NOT beat the incumbent on this corpus. 6/6 alone would have hidden that.")
     if latencies:
         print(f"latency: median {statistics.median(latencies) * 1000:.0f} ms, max {max(latencies) * 1000:.0f} ms")
-    print(f"total cost for {len(TICKETS)} classifications: ${total_cost:.6f}")
-    misses = [(label, exp, got) for label, exp, got, _, _, ok in rows if not ok]
+    print(f"total cost for {len(TICKETS)} jev classifications: ${total_cost:.6f}")
+
+    disagreements = [(label, exp, got, base) for label, exp, got, _, _, _, base, _ in rows if got != base]
+    print(f"\njev/haiku disagreements: {len(disagreements)}")
+    for label, exp, got, base in disagreements:
+        print(f"  {label}: expected {exp}, jev {got}, haiku {base}")
+
+    misses = [(label, exp, got) for label, exp, got, _, _, ok, _, _ in rows if not ok]
     if misses:
-        print("\nmisses (these are what the thresholds have to be fitted against):")
+        print("\njev misses (what the thresholds have to be fitted against):")
         for label, exp, got in misses:
             print(f"  {label}: expected {exp}, got {got}")
     return 0

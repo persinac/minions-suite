@@ -202,6 +202,41 @@ collapsed a 4-level scale into a binary and is why `add a mirrored test` came ba
 this touch" genuinely has no answer in the ticket. Rewording its criteria is a real task
 (§6), and it is the reason `blast_radius` is a lift and not a decider.
 
+## 4b. Two limitations found by testing, not by reasoning
+
+**Jev is consistently wrong, not randomly wrong, where local policy contradicts
+semantics.** RELAYED from `agents-nexus`, who ran it against a real read/modify permission
+gate on 2026-09-21: their policy classifies a force-less `git push` as "read" by local
+convention, and Jev called it wrong 5/5 — but at confidence mean 0.074, sd 0.042. Their
+other cases: `mv report.txt archive.txt` right 5/5 at 0.664, `git fetch origin` right 5/5
+at 0.990 (sd 0.000), `cat > /etc/motd` right 5/5 at 1.000 (sd 0.000).
+
+Two things follow, and the second is the one that generalizes:
+
+- Confidence is **stable and tracks correctness**, so a threshold in 0.2–0.6 converts a
+  persistent error into a refusal rather than a wrong answer. That is the property this
+  design leans on and it held up under repetition by someone else.
+- **`criteria` prose will not absorb counterintuitive policy.** The model's prior beats the
+  wording every time. Policy that contradicts ordinary semantics needs a deterministic
+  pre-rule in code, not a better-worded question. For this classifier that means a project
+  whose conventions invert normal difficulty reading cannot be handled by editing
+  `EFFORT_CRITERIA`; it needs a rule ahead of the call.
+
+Their headline was a wash on accuracy — 17/18 against Haiku's 17/18, zero unsafe
+`modify -> read` on either — with calibrated uncertainty, not accuracy, as the
+differentiator. Haiku's single miss carried no uncertainty signal at all.
+
+**The 6/6 in §4a needs a baseline, and now has one — but it is still not a fair fight.**
+`scripts/jev_calibration_probe.py` now runs the incumbent LiteLLM classifier on the same
+six tickets. Measured 2026-09-21: **Jev 6/6, Haiku 5/6**, one disagreement (`new endpoint,
+clear pattern` — Jev medium, Haiku easy, expected medium).
+
+That is a real edge and it does **not** establish Jev is better, for a reason worth being
+explicit about: the six thresholds in §4 were *fitted to these same six tickets* across
+three iterations, while Haiku's prompt was not. Tuning on the test set and then reporting a
+win over an untuned baseline is the polite version of a rigged comparison. n=6 either way.
+The corpus fit in §5 is the honest test, and it is still the thing that has not been done.
+
 ## 5. How we would know it works
 
 Production cannot A/B this. Routing is deterministic, so the cheap tier and the easy
