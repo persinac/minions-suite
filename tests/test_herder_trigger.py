@@ -113,6 +113,23 @@ class TestSpawnCommand:
         assert "SEED_PROMPT=" in " ".join(argv)
         assert "--workspace" in argv
 
+    def test_the_pane_is_pinned_to_the_long_context_model(self, trig, monkeypatch):
+        """CLAUDE_MODEL, not CLAUDE_EXTRA_ARGS — open-claude.sh expands that one unquoted and `[1m]` globs."""
+        captured = {}
+
+        class Done:
+            returncode = 0
+            stderr = ""
+            stdout = "w1:pA"
+
+        monkeypatch.setattr(trig.subprocess, "run", lambda argv, **k: captured.update(argv=argv) or Done())
+        trig.spawn({"task_id": "abcdef1234", "service": "healthcheck", "title": "t"}, dry=False)
+
+        command = " ".join(captured["argv"])
+        assert "CLAUDE_MODEL=" in command
+        assert "1m" in command, f"the long-context variant must survive quoting: {command}"
+        assert "CLAUDE_MODEL=" not in trig.CLAUDE_EXTRA_ARGS
+
     def test_the_command_is_one_argument_not_pre_wrapped(self, trig, monkeypatch):
         """substrate.sh joins everything after <cwd> and wraps it in its own
         `sh -c`. Passing `sh -c <cmd>` double-wraps: the joined string became
