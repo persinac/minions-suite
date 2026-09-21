@@ -30,6 +30,7 @@ dependencies = [
     "redis[hiredis]>=5.0",
     "prometheus-client>=0.20",
     "dynaconf>=3.2",
+    "typesafe-sdk>=0.7.0",
 ]
 
 [tool.uv.sources]

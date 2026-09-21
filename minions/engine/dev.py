@@ -640,7 +640,7 @@ async def launch_spec_analyst(engine: JobEngine, job: Job):
     # every agent on this job. A failed classification returns None, which
     # resolve_model treats as "use the default model".
     if job.difficulty is None and engine.config.classifier_enabled:
-        difficulty, reason = await classify_difficulty(job.spec, engine.config)
+        difficulty, reason = await classify_difficulty(job.spec, engine.config, db=engine.db, job_id=job.id)
         if difficulty is not None:
             job.difficulty = difficulty
             await engine.db.update_job_difficulty(job.id, difficulty)

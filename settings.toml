@@ -111,6 +111,15 @@ max_jobs_per_month = 500
 classifier_enabled = true
 classifier_model = "claude-haiku-4-5"
 classifier_max_chars = 6000
+
+# "litellm" = Haiku + parsed JSON (the default, unchanged). "typesafe" = Jev typed
+# questions. "shadow" = both, where litellm's verdict is the one used and Jev's is
+# only recorded as a difficulty_shadow event, so it cannot change any routing.
+# Needs TYPESAFE_API_KEY. See openspec/changes/typesafe-classifier/.
+classifier_backend = "litellm"
+classifier_min_confidence = 0.5
+typesafe_model = ""
+typesafe_timeout = 30.0
 model_easy = "claude-haiku-4-5"
 model_medium = "claude-sonnet-5"
 model_hard = "claude-opus-5"
