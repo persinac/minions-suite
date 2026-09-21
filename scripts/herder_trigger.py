@@ -82,6 +82,10 @@ WORKSPACE = os.environ.get("MINIONS_HERDER_WORKSPACE", "minions/herd")
 # bounds how many, and the reviewers still gate the merge.
 CLAUDE_EXTRA_ARGS = os.environ.get("MINIONS_HERDER_CLAUDE_ARGS", "--dangerously-skip-permissions")
 
+# Passed as CLAUDE_MODEL, not folded into CLAUDE_EXTRA_ARGS: open-claude.sh
+# word-splits that one unquoted, and `[1m]` is a glob pattern.
+CLAUDE_MODEL = os.environ.get("MINIONS_HERDER_CLAUDE_MODEL", "claude-opus-5[1m]")
+
 SEED_PROMPT = (
     "You are the herder. Run the /herd skill now: claim the waiting minions "
     "engineering work item, implement it, and report back over MCP. "
@@ -324,7 +328,10 @@ def spawn(item: dict, dry: bool) -> str | None:
     # carry an inline `env VAR='multi word value' prog` prefix (e.g.
     # SEED_PROMPT)", which is precisely what this is.
     command = (
-        f"SEED_PROMPT={shlex.quote(seed)} CLAUDE_EXTRA_ARGS={shlex.quote(CLAUDE_EXTRA_ARGS)} exec {shlex.quote(str(NEXUS_DIR / 'open-claude.sh'))}"
+        f"SEED_PROMPT={shlex.quote(seed)} "
+        f"CLAUDE_EXTRA_ARGS={shlex.quote(CLAUDE_EXTRA_ARGS)} "
+        f"CLAUDE_MODEL={shlex.quote(CLAUDE_MODEL)} "
+        f"exec {shlex.quote(str(NEXUS_DIR / 'open-claude.sh'))}"
     )
     argv = [
         str(SUBSTRATE),
