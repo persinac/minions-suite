@@ -19,38 +19,49 @@ Nothing here changes which model a job gets until phase 4.
 
 ## Phase 1 — plumbing
 
-- [ ] Add `typesafe-sdk` to `pyproject.toml`; `task setup:uv-all`.
-- [ ] `Config`: `typesafe_api_key`, `classifier_backend` (`litellm` | `typesafe` |
-      `shadow`, default `litellm`), `classifier_min_confidence` (default 0.5).
-      Follow the existing `_env_or*` pattern in `config.py:542-544`.
-- [ ] `.env.example` + `docker-compose.yml` passthrough for `TYPESAFE_API_KEY`.
+- [x] Add `typesafe-sdk` to `pyproject.toml` (0.7.0; `requires-python >=3.10`).
+      Note `typesafe` on PyPI is an unrelated package and `typesafe-ai` is a redirect
+      shim — the vendor's own install line is `uv add typesafe-sdk`.
+- [x] `Config`: `typesafe_api_key`, `typesafe_model`, `typesafe_timeout`,
+      `classifier_backend`, `classifier_min_confidence`, via the existing `_env_or*`
+      pattern. Defaults keep `litellm`, so behaviour is unchanged until opted in.
+- [x] `.env.example` gains `TYPESAFE_API_KEY`; the three compose services already
+      use `env_file: .env`, so no per-var passthrough was needed. Tuning knobs went
+      to `settings.toml [engine]`, matching where `classifier_model` lives.
 - [ ] Preflight check in `minions/preflight.py`: key present and `GET /v1/models`
       reachable. **Warn-only** — the classifier is fail-open and must never gate startup.
 
 ## Phase 2 — the Jev backend
 
-- [ ] `minions/classifiers/jev.py`:
-  - [ ] The four `Score` questions from `design.md` §3, as module constants.
-  - [ ] `AsyncTypeSafeClient` call — one `system_one(state, questions)` for all four.
-  - [ ] `levels_to_difficulty()`: normalize by `len(criteria) - 1`, then the threshold
-        rules from §4. Pure function, no I/O — mirror how `score_to_difficulty()` is
-        testable in isolation.
-  - [ ] Confidence gate: any of the four below `classifier_min_confidence` → return
-        `None`, which `resolve_model()` already routes to the medium tier.
-  - [ ] `_jev_cost(usage)` — $0.042/Mtok on **input only**. Do not call
-        `litellm.completion_cost()`; it returns `0.0` for a non-LiteLLM provider.
-  - [ ] Catch `TypeSafeAPIError` and everything else; log and return `None`. Same
-        fail-open contract as the LiteLLM path.
-- [ ] Backend switch inside `classify_difficulty()`. Keep the `(difficulty, reason)`
-      return contract byte-compatible — `minions/engine/dev.py:643` must not change.
-- [ ] Reason string for the Jev path: include all four normalized scores **and** their
-      confidences, so a shadow row is self-describing without a join.
+Landed as `minions/classifier_jev.py`, not `minions/classifiers/jev.py` — a
+`classifiers/` package sitting beside the existing `classifier.py` module reads as a
+typo at every import site.
+
+- [x] The four `Score` questions as module constants, built lazily in
+      `build_questions()` so importing the module never requires typesafe-sdk.
+- [x] `AsyncTypeSafeClient` call — one `system_one(state, questions)` for all four.
+- [x] `levels_to_difficulty()`: normalizes by `len(criteria) - 1` internally, then the
+      threshold rules from §4. Pure, no I/O.
+- [x] Confidence gate on the weakest of the four answers, naming which question was
+      weakest so a gated row says *why*.
+- [x] `jev_cost_usd(usage)` — input only. `Usage.input_tokens` is `int | None` in the
+      SDK, so a missing count reads as 0.0 rather than raising inside a fail-open path.
+- [x] Fail-open on `ImportError`, a missing key, any exception, and a response missing
+      an expected answer.
+- [x] Backend switch inside `classify_difficulty()`, defaulting to `litellm`. An
+      unrecognised value also falls back to `litellm` rather than erroring.
+- [x] Reason string carries all four raw scores over their level maxima, the two
+      normalized drivers, and the weakest confidence.
+
+Deviation from the proposal: `dev.py` **did** change, by one line. Shadow mode has to
+write an event, and `classify_difficulty` had no database handle. It now takes optional
+`db` / `job_id`; omitting them loses the comparison, not the verdict.
 
 ## Phase 3 — shadow mode and calibration
 
-- [ ] `shadow`: run both, return the LiteLLM verdict, record Jev's as a
-      `difficulty_shadow` event. A Jev exception must be swallowed — assert this with a
-      test that raises from the fake and asserts the LiteLLM verdict still returns.
+- [x] `shadow`: runs both, returns the LiteLLM verdict, records Jev's as a
+      `difficulty_shadow` event carrying scores, confidences, probabilities, cost, and
+      an `agreed` flag. A Jev exception, and a failing event write, are both swallowed.
 - [ ] Deploy at `CLASSIFIER_BACKEND=shadow`. Measure real latency; the docs publish no
       figure ("adding questions barely changes the response time" is the only claim).
 - [ ] Replay harness over the phase-0 corpus. Emit: confusion matrix of Jev tier vs
@@ -73,20 +84,31 @@ Nothing here changes which model a job gets until phase 4.
 
 ## Tests
 
-- [ ] `levels_to_difficulty()` threshold table: every tier boundary, both sides.
-- [ ] Stakes guard in ordinal form: high blast radius + high consequence lifts easy to
-      medium; either one alone does not.
-- [ ] Confidence gate returns `None`, and `resolve_model(None, ...)` still lands on
-      `model_medium` — the existing fail-open path, re-asserted here because this change
-      adds a new way to reach it.
-- [ ] Shadow isolation: a **raising** fake Jev client leaves the returned verdict equal to
-      the LiteLLM one. (Use a counting spy, not just a raising mock — `gather(...,
-      return_exceptions=True)` swallows exceptions elsewhere in this codebase and a
-      raising fake can pass vacuously.)
-- [ ] Cost: a known `usage` payload produces the documented $0.042/Mtok figure, and
-      asserts output tokens contribute **zero**.
-- [ ] Backend switch: `litellm` never constructs a TypeSafe client. Assert by spy, so the
-      test fails if the client is built eagerly at import.
+33 tests in `tests/test_classifier_jev.py`. Fakes are built from the SDK's own
+`ScoreAnswer` / `SystemOneResponse` / `Usage` models, so a shape change in
+typesafe-sdk breaks them rather than passing them.
+
+- [x] `levels_to_difficulty()` threshold table, plus the `HARD_EFFORT` boundary from
+      both sides. Note 2.01/3 is 0.6699999… in binary float, so the "just over" case
+      uses 2.1 — the first attempt asserted 2.01 and failed for that reason.
+- [x] Stakes guard in ordinal form: both factors high lifts easy to medium; either
+      alone does not.
+- [x] Confidence gate returns `None`, and `resolve_model` then lands on `model_medium`
+      and explicitly not on `config.model`.
+- [x] Shadow isolation with a **counting** spy: asserts `client.calls == 1` alongside
+      the surviving verdict, because `gather(return_exceptions=True)` swallows the raise
+      and a raising fake that is never reached would otherwise pass vacuously.
+- [x] Cost: 1M input tokens equals the documented rate; output tokens change nothing;
+      `None` usage and `None` input_tokens are 0.0.
+- [x] Backend switch: the `litellm` path raises from a spy if it ever constructs a
+      TypeSafe client, so an eager module-scope client would fail the test.
+- [x] Negative control (in memory, nothing written to disk): mutating `HARD_EFFORT`,
+      `EASY_CLARITY`, `STAKES_BLAST` and `INPUT_USD_PER_MTOK` each changes an outcome,
+      so none of those thresholds is decorative.
+
+One real bug surfaced here rather than in review: a Jev *API error* returns empty
+telemetry, so the shadow record had no `difficulty` key at all — a hole in the corpus
+rather than a recorded "no verdict". `_classify_shadow` now defaults it.
 
 ## Out of scope
 

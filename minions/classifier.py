@@ -32,6 +32,7 @@ score leaves the job unclassified, and unclassified jobs use the configured
 default model. The classifier can only make a job cheaper or leave it unchanged.
 """
 
+import asyncio
 import json
 import logging
 
@@ -154,16 +155,8 @@ def _parse(raw: str) -> tuple[dict | None, str]:
     return factors, ""
 
 
-async def classify_difficulty(spec: str, config) -> tuple[str | None, str]:
-    """Classify a spec as easy/medium/hard from its RICE factors.
-
-    Returns (difficulty, reason). difficulty is None when classification was
-    disabled, failed, or produced something unusable — callers must treat that
-    as "use the default model", never as an error worth failing the job over.
-    """
-    if not getattr(config, "classifier_enabled", False):
-        return None, "classifier disabled"
-
+async def _classify_litellm(spec: str, config) -> tuple[str | None, str]:
+    """Score a spec's RICE factors with a chat model and parse the reply."""
     if not spec or not spec.strip():
         return None, "empty spec"
 
@@ -207,6 +200,63 @@ async def classify_difficulty(spec: str, config) -> tuple[str | None, str]:
     )
     logger.info("Classified job %s [classifier cost $%.5f]", reason, cost)
     return difficulty, reason
+
+
+async def _classify_shadow(spec: str, config, db=None, job_id: str = "") -> tuple[str | None, str]:
+    """Run both backends, return the LiteLLM verdict, record Jev's for comparison."""
+    from .classifier_jev import score_difficulty_jev
+
+    primary, shadow = await asyncio.gather(
+        _classify_litellm(spec, config),
+        score_difficulty_jev(spec, config),
+        return_exceptions=True,
+    )
+
+    if isinstance(primary, BaseException):
+        logger.warning("Shadow mode: the litellm classifier raised (%s)", primary)
+        primary = (None, f"classifier error: {primary}")
+
+    if isinstance(shadow, BaseException):
+        logger.warning("Shadow mode: jev raised (%s) — ignored", shadow)
+        record: dict = {"error": f"{type(shadow).__name__}: {shadow}", "difficulty": None}
+    else:
+        _, shadow_reason, telemetry = shadow
+        record = dict(telemetry)
+        record["reason"] = shadow_reason
+
+    # A jev API error yields empty telemetry, and a shadow row with no difficulty
+    # key is a hole in the corpus rather than a recorded "no verdict".
+    record.setdefault("difficulty", None)
+    record["litellm_difficulty"] = primary[0]
+    record["litellm_reason"] = primary[1]
+    record["agreed"] = record.get("difficulty") == primary[0]
+
+    if db is not None and job_id:
+        try:
+            await db.record_event(job_id, "difficulty_shadow", "classifier", json.dumps(record, default=str))
+        except Exception:
+            logger.warning("Shadow mode: could not record the comparison event", exc_info=True)
+
+    return primary
+
+
+async def classify_difficulty(spec: str, config, db=None, job_id: str = "") -> tuple[str | None, str]:
+    """Classify via the configured backend; None means "use the default model", never an error."""
+    if not getattr(config, "classifier_enabled", False):
+        return None, "classifier disabled"
+
+    backend = (getattr(config, "classifier_backend", "") or "litellm").strip().lower()
+
+    if backend == "typesafe":
+        from .classifier_jev import score_difficulty_jev
+
+        difficulty, reason, _ = await score_difficulty_jev(spec, config)
+        return difficulty, reason
+
+    if backend == "shadow":
+        return await _classify_shadow(spec, config, db=db, job_id=job_id)
+
+    return await _classify_litellm(spec, config)
 
 
 class UnpriceableModelError(RuntimeError):

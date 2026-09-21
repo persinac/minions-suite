@@ -232,6 +232,14 @@ class Config:
     classifier_enabled: bool = True
     classifier_model: str = "claude-haiku-4-5"
     classifier_max_chars: int = 6000
+
+    # "litellm" (Haiku + parsed JSON), "typesafe" (Jev typed questions), or
+    # "shadow" (both; litellm's verdict is used and Jev's is only recorded).
+    classifier_backend: str = "litellm"
+    classifier_min_confidence: float = 0.5
+    typesafe_api_key: str = ""
+    typesafe_model: str = ""
+    typesafe_timeout: float = 30.0
     model_easy: str = "claude-haiku-4-5"
     model_medium: str = "claude-sonnet-5"
     model_hard: str = "claude-opus-5"
@@ -542,6 +550,11 @@ class Config:
             classifier_enabled=_env_or_bool("CLASSIFIER_ENABLED", _get("engine", "classifier_enabled"), True),
             classifier_model=_env_or("CLASSIFIER_MODEL", _get("engine", "classifier_model"), "claude-haiku-4-5"),
             classifier_max_chars=_env_or_int("CLASSIFIER_MAX_CHARS", _get("engine", "classifier_max_chars"), 6000),
+            classifier_backend=_env_or("CLASSIFIER_BACKEND", _get("engine", "classifier_backend"), "litellm"),
+            classifier_min_confidence=_env_or_float("CLASSIFIER_MIN_CONFIDENCE", _get("engine", "classifier_min_confidence"), 0.5),
+            typesafe_api_key=_env_or("TYPESAFE_API_KEY", _get("engine", "typesafe_api_key"), ""),
+            typesafe_model=_env_or("TYPESAFE_MODEL", _get("engine", "typesafe_model"), ""),
+            typesafe_timeout=_env_or_float("TYPESAFE_TIMEOUT", _get("engine", "typesafe_timeout"), 30.0),
             model_easy=_env_or("MODEL_EASY", _get("engine", "model_easy"), "claude-haiku-4-5"),
             model_medium=_env_or("MODEL_MEDIUM", _get("engine", "model_medium"), "claude-sonnet-5"),
             model_hard=_env_or("MODEL_HARD", _get("engine", "model_hard"), "claude-opus-5"),
