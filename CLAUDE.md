@@ -158,13 +158,32 @@ A committed `doppler.yaml` does **not** change what `doppler run` resolves; only
 `doppler setup` reads it. It is committed so `doppler setup` is non-interactive, but
 nothing depends on it.
 
-**This is local only.** Nothing in the deployed path touches Doppler:
+**Nothing in the deployed path touches Doppler AT RUNTIME** — but Doppler is still
+where prod secrets are authored:
 
 | where | how secrets arrive |
 |---|---|
 | `task minion:*` (local) | `doppler run --` → `mcp-minions`/`dev` |
 | `task docker:up` | `.env` file, via compose `env_file` |
 | k8s (prod) | `envFrom` three secretRefs; `minion-suite-config` is an **ExternalSecret** synced hourly from the `aws-secrets-manager` ClusterSecretStore |
+
+⚠️ **Do not hand-edit the AWS secret.** Doppler **`mcp-minions`/`prd` syncs INTO**
+`infrastructure/mcp-minions`, so a direct write there is reverted on the next sync.
+The full chain is Doppler → AWS Secrets Manager → ExternalSecret (hourly) → the k8s
+Secret → pod env. Author in Doppler; everything downstream is a copy.
+
+An earlier version of this section read "This is local only", which is true of the
+runtime and false of the authoring, and it cost a wrong set of instructions. The tell,
+if you ever need to re-derive it: the AWS blob carries `DOPPLER_PROJECT`,
+`DOPPLER_CONFIG` and `DOPPLER_ENVIRONMENT` as keys — Doppler injects those into every
+config, so their presence means the blob came from Doppler.
+
+Adding a prod secret: `doppler secrets set KEY --project mcp-minions --config prd
+--silent`. Keep `--silent` — without it the command echoes the row it just wrote,
+value included. Then force the ExternalSecret (`kubectl annotate externalsecret
+minion-suite-config -n minion-suite force-sync=$(date +%s) --overwrite`) and **restart
+the pods**: `envFrom` is read at container start, so a synced Secret does not
+hot-reload.
 
 The app itself never shells out to Doppler — it reads environment variables. The one
 reference in `minions/preflight.py` runs `doppler me` as a health check, nothing more.
