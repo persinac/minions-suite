@@ -41,10 +41,15 @@ QUESTION_NAMES = ("effort", "clarity", "blast_radius", "consequence")
 HARD_EFFORT = 0.67
 HARD_EFFORT_IF_VAGUE = 0.45
 VAGUE_CLARITY = 0.25
-EASY_EFFORT = 0.25
+# 0.25 made level-1-of-4 effort (0.333) unreachable for easy, collapsing the scale to a
+# binary; the blast lift then separates a one-file change from a one-service one.
+EASY_EFFORT = 0.40
 EASY_CLARITY = 0.60
-STAKES_BLAST = 0.5
-STAKES_CONSEQUENCE = 0.5
+LIFT_BLAST = 0.40
+LIFT_CONSEQUENCE = 0.50
+
+# The gate reads whichever questions actually decided THIS verdict, reported by
+# levels_to_difficulty: a low-confidence answer that changed nothing must not veto one.
 
 
 def _normalize(score: float, criteria: list[str]) -> float:
@@ -65,16 +70,25 @@ def levels_to_difficulty(effort: float, clarity: float, blast_radius: float, con
     b = _normalize(blast_radius, BLAST_RADIUS_CRITERIA)
     q = _normalize(consequence, CONSEQUENCE_CRITERIA)
 
-    if e >= HARD_EFFORT or (e >= HARD_EFFORT_IF_VAGUE and c <= VAGUE_CLARITY):
+    if e >= HARD_EFFORT:
         difficulty = HARD
+        deciding = ["effort"]
+    elif e >= HARD_EFFORT_IF_VAGUE and c <= VAGUE_CLARITY:
+        difficulty = HARD
+        deciding = ["effort", "clarity"]
     elif e <= EASY_EFFORT and c >= EASY_CLARITY:
         difficulty = EASY
+        deciding = ["effort", "clarity"]
     else:
         difficulty = MEDIUM
+        deciding = ["effort", "clarity"]
 
+    # Breadth and irreversibility are independent reasons not to use the cheapest
+    # model. Both are one-way, so they stay out of `deciding`: a wrong lift costs one
+    # tier, where a wrong veto costs the whole classification.
     stakes_applied = False
-    if difficulty == EASY and b >= STAKES_BLAST and q >= STAKES_CONSEQUENCE:
-        logger.info("Stakes guard: blast=%.2f consequence=%.2f — raising easy to medium", b, q)
+    if difficulty == EASY and (b >= LIFT_BLAST or q >= LIFT_CONSEQUENCE):
+        logger.info("Stakes lift: blast=%.2f consequence=%.2f — raising easy to medium", b, q)
         difficulty = MEDIUM
         stakes_applied = True
 
@@ -84,6 +98,7 @@ def levels_to_difficulty(effort: float, clarity: float, blast_radius: float, con
         "blast_n": round(b, 3),
         "consequence_n": round(q, 3),
         "stakes_guard": stakes_applied,
+        "deciding": deciding,
     }
     return difficulty, detail
 
@@ -182,8 +197,6 @@ async def score_difficulty_jev(spec: str, config, client=None) -> tuple[str | No
 
     cost = jev_cost_usd(getattr(response, "usage", None))
     confidences = {name: float(a.confidence) for name, a in raw.items()}
-    weakest_name = min(confidences, key=lambda k: confidences[k])
-    weakest = confidences[weakest_name]
 
     difficulty, detail = levels_to_difficulty(
         effort=float(raw["effort"].score),
@@ -191,6 +204,10 @@ async def score_difficulty_jev(spec: str, config, client=None) -> tuple[str | No
         blast_radius=float(raw["blast_radius"].score),
         consequence=float(raw["consequence"].score),
     )
+
+    deciding = {name: confidences[name] for name in detail["deciding"]}
+    weakest_name = min(deciding, key=lambda k: deciding[k])
+    weakest = deciding[weakest_name]
 
     telemetry = {
         "scores": {name: round(float(a.score), 3) for name, a in raw.items()},

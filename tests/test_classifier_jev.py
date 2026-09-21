@@ -134,15 +134,33 @@ class TestLevelsToDifficulty:
         assert clear == MEDIUM
         assert vague == HARD
 
-    def test_stakes_guard_needs_both_factors_high(self):
+    def test_breadth_or_irreversibility_each_lift_easy_to_medium(self):
+        """Independent one-way lifts, unlike the LiteLLM path's reach x impact product."""
         wide_and_costly, detail = levels_to_difficulty(effort=0.0, clarity=2.0, blast_radius=2.0, consequence=2.0)
         wide_only, _ = levels_to_difficulty(effort=0.0, clarity=2.0, blast_radius=2.0, consequence=0.0)
         costly_only, _ = levels_to_difficulty(effort=0.0, clarity=2.0, blast_radius=0.0, consequence=2.0)
+        neither, quiet = levels_to_difficulty(effort=0.0, clarity=2.0, blast_radius=0.0, consequence=0.0)
 
         assert wide_and_costly == MEDIUM
         assert detail["stakes_guard"] is True
-        assert wide_only == EASY, "blast radius alone must not lift the tier"
-        assert costly_only == EASY, "consequence alone must not lift the tier"
+        assert wide_only == MEDIUM, "a cross-cutting change must not get the cheapest tier"
+        assert costly_only == MEDIUM, "an irreversible change must not get the cheapest tier"
+        assert neither == EASY
+        assert quiet["stakes_guard"] is False
+
+    def test_a_lift_never_makes_a_job_cheaper(self):
+        for blast in (0.0, 1.0, 2.0):
+            for consequence in (0.0, 1.0, 2.0):
+                lifted, _ = levels_to_difficulty(effort=0.0, clarity=2.0, blast_radius=blast, consequence=consequence)
+                assert lifted in (EASY, MEDIUM), f"blast={blast} consequence={consequence} escaped the one-way lift"
+
+    def test_only_the_questions_that_decided_are_reported(self):
+        """A verdict reached on effort alone must not list clarity as deciding."""
+        _, by_effort = levels_to_difficulty(effort=3.0, clarity=1.0, blast_radius=0.0, consequence=0.0)
+        _, by_both = levels_to_difficulty(effort=1.5, clarity=0.0, blast_radius=0.0, consequence=0.0)
+
+        assert by_effort["deciding"] == ["effort"]
+        assert by_both["deciding"] == ["effort", "clarity"]
 
     def test_scores_are_normalized_across_differing_scale_lengths(self):
         _, detail = levels_to_difficulty(effort=3.0, clarity=2.0, blast_radius=2.0, consequence=2.0)
@@ -201,6 +219,27 @@ class TestConfidenceGate:
 
         assert telemetry["min_confidence_question"] == "clarity"
         assert "clarity" in reason
+
+    async def test_a_verdict_decided_by_effort_alone_survives_low_clarity_confidence(self):
+        """Real probe: effort 3.00/3 at conf 1.00 was gated by clarity conf 0.49."""
+        response = _response(3.0, 0.66, 2.0, 2.0, confidence=1.0, confidences={"clarity": 0.10})
+        client = _FakeClient(response)
+
+        difficulty, _, telemetry = await score_difficulty_jev("a spec", _config(), client=client)
+
+        assert difficulty == HARD
+        assert telemetry["gated"] is False
+        assert telemetry["normalized"]["deciding"] == ["effort"]
+
+    async def test_a_lift_survives_low_blast_confidence(self):
+        """Real probe: blast_radius is the systematically least-confident question."""
+        response = _response(0.0, 2.0, 2.0, 0.0, confidence=0.95, confidences={"blast_radius": 0.10})
+        client = _FakeClient(response)
+
+        difficulty, _, telemetry = await score_difficulty_jev("a spec", _config(), client=client)
+
+        assert difficulty == MEDIUM, "the lift must still apply"
+        assert telemetry["gated"] is False, "a one-way lift input must not veto the verdict"
 
     async def test_high_confidence_is_acted_on(self):
         client = _FakeClient(_response(0.0, 2.0, 0.0, 0.0, confidence=0.95))

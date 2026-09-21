@@ -17,7 +17,7 @@ or assumed, not measured**, and each is tagged.
 | Question types | `Choice`, `Score`, `Noul` — mixed freely in one request | `primitives.md` |
 | Python SDK | `typesafe_sdk`, `TypeSafeClient` / `AsyncTypeSafeClient`, `system_one(state, questions)` | `sdk/python/usage.md` |
 | Auth | `TYPESAFE_API_KEY` from env, never passed in code | `sdk/python/usage.md` |
-| Latency | *no numeric figure published* — only "adding questions barely changes the response time" | `introduction.md` |
+| Latency | *no numeric figure published* — only "adding questions barely changes the response time". Measured at median 293 ms for a 4-question request; see §4a | `introduction.md` |
 
 `Score` specifics that drive the design (`primitives/score.md`):
 
@@ -132,26 +132,75 @@ c = clarity.score      / 2.0   # how well specified
 b = blast_radius.score / 2.0   # how wide
 q = consequence.score  / 2.0   # how costly to get wrong
 
-# Difficulty rises with effort and falls with clarity.
-if e >= 0.67 or (e >= 0.45 and c <= 0.25):
-    difficulty = HARD
-elif e <= 0.25 and c >= 0.60:
-    difficulty = EASY
+if e >= HARD_EFFORT:                                    # 0.67
+    difficulty, deciding = HARD, ["effort"]
+elif e >= HARD_EFFORT_IF_VAGUE and c <= VAGUE_CLARITY:
+    difficulty, deciding = HARD, ["effort", "clarity"]
+elif e <= EASY_EFFORT and c >= EASY_CLARITY:
+    difficulty, deciding = EASY, ["effort", "clarity"]
 else:
-    difficulty = MEDIUM
+    difficulty, deciding = MEDIUM, ["effort", "clarity"]
 
-# Stakes guard, preserved in ordinal form. The old rule was
-# `reach * impact >= 15`, which needs both factors high (5x3, 8x2) -- an AND,
-# expressed as a product. Keep it an AND and skip the product.
-if difficulty == EASY and b >= 0.5 and q >= 0.5:
+if difficulty == EASY and (b >= LIFT_BLAST or q >= LIFT_CONSEQUENCE):
     difficulty = MEDIUM
 ```
 
-> ⚠️ **Those six numbers are guesses.** `EASY_MAX = 3.0` and `MEDIUM_MAX = 8.0` earned
-> their values from the calibration table in `classifier.py`'s docstring — six real
-> tickets with known outcomes, including the wallet-api ticket that genuinely needed Opus
-> and billed $20.57. The thresholds above have no such backing and **must not ship
-> un-calibrated**. §5 is how they get calibrated.
+Two structural properties, both of which real probe data forced (§4a):
+
+- **Only `effort` and `clarity` decide a tier.** `blast_radius` and `consequence` feed a
+  *one-way lift* that can only raise easy to medium. A wrong lift costs one tier; a wrong
+  veto costs the whole classification, so lifts are never gated on confidence.
+- **The confidence gate reads `deciding`, not a fixed list** — the questions that decided
+  *this* verdict. A verdict reached on `e >= HARD_EFFORT` alone is not vetoed by a
+  low-confidence clarity answer that played no part in it.
+
+The lift is an OR where `classifier.py` uses `reach * impact >= 15`, which is an AND.
+That is deliberate: the AND was an artifact of expressing two independent concerns as a
+product. Breadth and irreversibility are each, on their own, a reason not to use the
+cheapest model, and both directions are one-way.
+
+> ⚠️ **The thresholds are fitted to six data points and are therefore overfitted.**
+> `EASY_MAX = 3.0` / `MEDIUM_MAX = 8.0` in `classifier.py` earned their values from six
+> real tickets with known outcomes; these were fitted to those *same* six across three
+> iterations, which is a weaker claim, not an equal one. Two of the six sit within 0.04
+> of flipping (`bump a dependency` q=0.48 against `LIFT_CONSEQUENCE` 0.50; `wallet-api`
+> e=0.71 against `HARD_EFFORT` 0.67). **The structural properties above generalize; the
+> numbers do not.** §5 is what settles them.
+
+## 4a. Measured against the live API, 2026-09-21
+
+The six tickets in `classifier.py`'s calibration docstring, rewritten as genuine ticket
+prose (naming a difficulty would measure label-reading — jaggedness §6 warns that text
+arguing for its own classification moves the answer), run through real `jev-1.13.0`:
+
+| | measured |
+|---|---|
+| agreement with the calibration table | **6/6** after two fixes; **3/6** before |
+| latency | median **293 ms**, max 349 ms (the docs publish no figure) |
+| cost | **$0.000027** per classification, $0.000162 for all six |
+
+Against ~$0.0015 for the Haiku call it replaces, that is roughly **55x cheaper** — still
+not the reason to do this, but a bigger gap than the headline rate suggested.
+
+**Both fixes came from the misses, and both were bugs in this design rather than in Jev:**
+
+1. **Gating on the minimum of all four confidences** let the least-confident question veto
+   a confident verdict. `bump a dependency` was gated at `blast_radius` conf 0.46 while
+   effort read 0.01/3 at conf 0.99; `wallet-api` was gated at blast conf 0.30 while
+   clarity read 0.00/2 at conf 1.00. Hence the one-way-lift split.
+2. **Gating on a fixed `(effort, clarity)` pair** then still vetoed `auth refactor`, whose
+   effort was 3.00/3 at conf **1.00** — a verdict reached on the effort branch alone —
+   because clarity happened to read 0.48. Hence `deciding`.
+
+`EASY_EFFORT = 0.25` was separately a structural bug: with a 4-level effort scale, level 1
+normalizes to 0.333, so *no* ticket Jev read as level-1 effort could ever be easy. That
+collapsed a 4-level scale into a binary and is why `add a mirrored test` came back medium.
+
+**The weak question is `blast_radius`.** Its confidence across the six was 0.98, 0.46,
+0.99, 0.71, 0.38, 1.00 — two below the 0.5 floor — where `effort` never dropped below
+0.75. That is partly Jev being right: for a dependency bump, "how much of the system does
+this touch" genuinely has no answer in the ticket. Rewording its criteria is a real task
+(§6), and it is the reason `blast_radius` is a lift and not a decider.
 
 ## 5. How we would know it works
 

@@ -42,8 +42,11 @@ typo at every import site.
 - [x] `AsyncTypeSafeClient` call — one `system_one(state, questions)` for all four.
 - [x] `levels_to_difficulty()`: normalizes by `len(criteria) - 1` internally, then the
       threshold rules from §4. Pure, no I/O.
-- [x] Confidence gate on the weakest of the four answers, naming which question was
-      weakest so a gated row says *why*.
+- [x] Confidence gate on the weakest of the questions that **decided this verdict**
+      (`detail["deciding"]`), naming which one was weakest so a gated row says *why*.
+      Gating on all four, then on a fixed `(effort, clarity)` pair, both let a question
+      that played no part in the verdict veto it — see `design.md` §4a, which is real
+      probe data, not reasoning.
 - [x] `jev_cost_usd(usage)` — input only. `Usage.input_tokens` is `int | None` in the
       SDK, so a missing count reads as 0.0 rather than raising inside a fail-open path.
 - [x] Fail-open on `ImportError`, a missing key, any exception, and a response missing
@@ -62,8 +65,15 @@ write an event, and `classify_difficulty` had no database handle. It now takes o
 - [x] `shadow`: runs both, returns the LiteLLM verdict, records Jev's as a
       `difficulty_shadow` event carrying scores, confidences, probabilities, cost, and
       an `agreed` flag. A Jev exception, and a failing event write, are both swallowed.
-- [ ] Deploy at `CLASSIFIER_BACKEND=shadow`. Measure real latency; the docs publish no
-      figure ("adding questions barely changes the response time" is the only claim).
+- [x] Latency measured directly instead of waiting on a deployment: median 293 ms, max
+      349 ms for a 4-question request (`design.md` §4a).
+- [x] Sanity-check the thresholds against the six calibration tickets: **6/6**. But this
+      is a fit to six points, two of them within 0.04 of flipping, so it is a smoke test
+      and **not** the calibration. Corpus fit still required.
+- [ ] Deploy at `CLASSIFIER_BACKEND=shadow` on the real intake and let it accumulate.
+- [ ] Reword the `blast_radius` criteria. It is the systematically least-confident
+      question (two of six below the 0.5 floor, against `effort` never below 0.75), which
+      is why it is a lift and not a decider.
 - [ ] Replay harness over the phase-0 corpus. Emit: confusion matrix of Jev tier vs
       outcome, disagreement rate vs Haiku, and the disagreements sorted by realized cost.
 - [ ] Fit the six thresholds in §4 against **outcomes**, not against Haiku's verdicts.
