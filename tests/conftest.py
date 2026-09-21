@@ -23,6 +23,7 @@ Without it, every DB-backed test errors at fixture setup rather than failing.
 """
 
 import asyncio
+import hashlib
 import os
 import sys
 from pathlib import Path
@@ -42,7 +43,15 @@ TEST_PG_URL = os.getenv(
     "TEST_POSTGRES_URL",
     "postgresql://minion:minion@localhost:5434/minion",
 )
-TEST_SCHEMA = "minions_test"
+
+
+def _schema_for(checkout: Path) -> str:
+    """One schema per checkout: the :5434 postgres is shared by every worktree."""
+    digest = hashlib.sha1(str(checkout).encode()).hexdigest()[:8]
+    return f"minions_test_{digest}"
+
+
+TEST_SCHEMA = os.getenv("TEST_SCHEMA") or _schema_for(Path(__file__).resolve().parent)
 
 _SCHEMA_SQL = (Path(__file__).parent / "conftest_pg_schema.sql").read_text(encoding="utf-8")
 
