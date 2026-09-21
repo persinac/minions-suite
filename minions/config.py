@@ -498,6 +498,9 @@ class Config:
     # Langfuse (optional, LLM observability)
     langfuse_public_key: str = ""
     slack_webhook_url: str = ""
+    slack_bot_token: str = ""
+    # A webhook can only reach the destination baked into its URL, never a DM.
+    slack_dm_target: str = ""
     langfuse_secret_key: str = ""
     langfuse_host: str = "https://cloud.langfuse.com"
 
@@ -626,6 +629,8 @@ class Config:
             # -- Langfuse (keys are secrets, host is a setting) --
             langfuse_public_key=os.getenv("LANGFUSE_PUBLIC_KEY", ""),  # SECRET
             slack_webhook_url=os.getenv("SLACK_WEBHOOK_URL", ""),  # SECRET — destination is baked into the URL
+            slack_bot_token=os.getenv("SLACK_BOT_TOKEN", ""),  # SECRET
+            slack_dm_target=os.getenv("SLACK_DM_TARGET", ""),  # channel or user id, not a secret
             langfuse_secret_key=os.getenv("LANGFUSE_SECRET_KEY", ""),  # SECRET
             langfuse_host=_env_or("LANGFUSE_OTEL_HOST", _get("langfuse", "host"), "https://cloud.langfuse.com"),
         )
@@ -634,6 +639,11 @@ class Config:
     def from_env(cls) -> Config:
         """Load configuration. Alias for Config.load() — backward compatible."""
         return cls.load()
+
+    @property
+    def slack_enabled(self) -> bool:
+        """Any notification transport configured. Guards must use this, not the webhook alone."""
+        return bool(self.slack_webhook_url or (self.slack_bot_token and self.slack_dm_target))
 
     @property
     def mcp_url(self) -> str:

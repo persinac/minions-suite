@@ -279,7 +279,9 @@ All three are **required** by the `protect-main` ruleset, with 0 approvals and s
 
 The `test` job asserts a collection floor (root ≥ 1400, agent-memory ≥ 60) before running anything: without a reachable Postgres every DB-backed test *errors* at fixture setup rather than failing, and a collection failure exits 0 having run nothing — from outside, both are indistinguishable from success. If you add or remove a large block of tests, move the floor with it.
 
-**Tests need a real PostgreSQL with pgvector — not SQLite.** `tests/conftest.py` connects to `postgresql://minion:minion@localhost:5434/minion` (override with `TEST_POSTGRES_URL`) and creates a `minions_test` schema per session. Without it, every DB-backed test *errors* at fixture setup rather than failing — easy to misread as "my change broke the suite".
+**Tests need a real PostgreSQL with pgvector — not SQLite.** `tests/conftest.py` connects to `postgresql://minion:minion@localhost:5434/minion` (override with `TEST_POSTGRES_URL`). Without it, every DB-backed test *errors* at fixture setup rather than failing — easy to misread as "my change broke the suite".
+
+The schema is **per checkout** — `minions_test_<8 hex of the tests/ path>`, overridable with `TEST_SCHEMA`. That postgres is shared by every worktree on the box and the `db` fixture TRUNCATEs between tests, so a single shared schema meant two concurrent full-suite runs destroyed each other's fixtures. On 2026-09-21 that produced 140 phantom failures in one checkout and 132 then 210 in another, every one passing in isolation, and both agents debugged their own diff first. Serialising on `pgrep -af bin/pytest` is check-then-run and needs everyone to remember; deriving the name removes the shared resource instead. `tests/test_schema_isolation.py` pins it.
 
 pgvector specifically is required: the test schema declares `public.vector(1536)`, so plain `postgres:17` fails with `type "public.vector" does not exist`.
 
