@@ -31,10 +31,20 @@ logger = logging.getLogger(__name__)
 _TIMEOUT_SECONDS = 5.0
 
 
-async def notify(webhook_url: str, message: str) -> bool:
-    """POST one message to a Slack incoming webhook. Empty URL = off."""
-    if not webhook_url:
-        return False
+_CHAT_POST_MESSAGE = "https://slack.com/api/chat.postMessage"
+
+
+async def notify(webhook_url: str, message: str, *, bot_token: str = "", target: str = "") -> bool:
+    """Send one notification; bot token wins over webhook. Nothing set = no-op, returns False."""
+    if bot_token and target:
+        return await _post_as_bot(bot_token, target, message)
+    if webhook_url:
+        return await _post_webhook(webhook_url, message)
+    return False
+
+
+async def _post_webhook(webhook_url: str, message: str) -> bool:
+    """POST one message to a Slack incoming webhook."""
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
             response = await client.post(webhook_url, json={"text": message})
@@ -44,6 +54,29 @@ async def notify(webhook_url: str, message: str) -> bool:
         return True
     except Exception as e:
         logger.warning("Slack notify failed: %s", e)
+        return False
+
+
+async def _post_as_bot(bot_token: str, target: str, message: str) -> bool:
+    """POST via chat.postMessage. True only on {"ok": true}: Slack refuses with HTTP 200."""
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
+            response = await client.post(
+                _CHAT_POST_MESSAGE,
+                json={"channel": target, "text": message},
+                headers={"Authorization": f"Bearer {bot_token}"},
+            )
+        if response.status_code >= 300:
+            logger.warning("Slack chat.postMessage failed (HTTP %s): %s", response.status_code, response.text[:120])
+            return False
+        body = response.json()
+        if not body.get("ok"):
+            # Never log the token; the error code is the whole diagnosis.
+            logger.warning("Slack chat.postMessage refused for %s: %s", target, str(body.get("error"))[:120])
+            return False
+        return True
+    except Exception as e:
+        logger.warning("Slack chat.postMessage failed: %s", e)
         return False
 
 

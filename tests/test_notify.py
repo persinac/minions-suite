@@ -66,6 +66,105 @@ class TestNotifyIsBestEffort:
             assert await notify(WEBHOOK, "hello") is False
 
 
+BOT_TOKEN = "xoxb-not-a-real-token"
+DM_TARGET = "U01QYVD8UTD"
+CHAT_URL = "https://slack.com/api/chat.postMessage"
+
+
+def _bot_http(status_code=200, body=None, raises=None):
+    """Like _http, but records headers and returns a body worth judging."""
+    seen = []
+
+    class _Response:
+        def __init__(self):
+            self.status_code = status_code
+            self.text = "ng" if status_code >= 300 else "ok"
+
+        def json(self):
+            return {"ok": True} if body is None else body
+
+    class _Client:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            if raises:
+                raise raises
+            seen.append({"url": url, "json": json, "headers": headers or {}})
+            return _Response()
+
+    return _Client, seen
+
+
+class TestTheBotPath:
+    """A webhook cannot DM; Workflow Builder can but is paid-plan only."""
+
+    async def test_a_bot_token_and_target_dm_via_chat_post_message(self):
+        client, seen = _bot_http()
+        with patch("minions.notify.httpx.AsyncClient", client):
+            assert await notify("", "hello", bot_token=BOT_TOKEN, target=DM_TARGET) is True
+        assert seen[0]["url"] == CHAT_URL
+        assert seen[0]["json"] == {"channel": DM_TARGET, "text": "hello"}
+        assert seen[0]["headers"]["Authorization"] == f"Bearer {BOT_TOKEN}"
+
+    async def test_the_bot_wins_when_both_are_configured(self):
+        client, seen = _bot_http()
+        with patch("minions.notify.httpx.AsyncClient", client):
+            assert await notify(WEBHOOK, "hello", bot_token=BOT_TOKEN, target=DM_TARGET) is True
+        assert seen[0]["url"] == CHAT_URL, "a configured bot must not fall back to the channel-only webhook"
+
+    async def test_a_token_without_a_target_falls_back_to_the_webhook(self):
+        """Half-configured must not send nowhere while a working webhook sits there."""
+        client, calls = _http()
+        with patch("minions.notify.httpx.AsyncClient", client):
+            assert await notify(WEBHOOK, "hello", bot_token=BOT_TOKEN) is True
+        assert calls == [(WEBHOOK, {"text": "hello"})]
+
+    async def test_nothing_configured_is_still_a_no_op(self):
+        client, seen = _bot_http()
+        with patch("minions.notify.httpx.AsyncClient", client):
+            assert await notify("", "hello", bot_token="", target="") is False
+        assert not seen
+
+    async def test_a_refusal_at_http_200_is_false(self):
+        """Slack refuses with HTTP 200; reading the status code would call it delivered."""
+        client, _ = _bot_http(status_code=200, body={"ok": False, "error": "channel_not_found"})
+        with patch("minions.notify.httpx.AsyncClient", client):
+            assert await notify("", "hello", bot_token=BOT_TOKEN, target=DM_TARGET) is False
+
+    async def test_a_bot_network_failure_is_false_not_raised(self):
+        client, _ = _bot_http(raises=OSError("connection refused"))
+        with patch("minions.notify.httpx.AsyncClient", client):
+            assert await notify("", "hello", bot_token=BOT_TOKEN, target=DM_TARGET) is False
+
+    def test_the_call_sites_guard_on_slack_enabled_not_the_webhook(self):
+        """Both notify call sites are behind a config check. Gate on the webhook
+        alone and a bot-only setup sends nothing while looking configured."""
+        from minions.config import Config
+
+        cfg = Config.from_env()
+        cfg.slack_webhook_url = ""
+        cfg.slack_bot_token = BOT_TOKEN
+        cfg.slack_dm_target = DM_TARGET
+        assert cfg.slack_enabled is True
+
+        cfg.slack_dm_target = ""
+        assert cfg.slack_enabled is False, "a token with nowhere to post is not configured"
+
+        cfg.slack_bot_token = ""
+        cfg.slack_webhook_url = WEBHOOK
+        assert cfg.slack_enabled is True
+
+        cfg.slack_webhook_url = ""
+        assert cfg.slack_enabled is False
+
+
 def _job(status=JobStatus.DONE, spec="# Fix the flux capacitor\n\ndetails", difficulty="medium", error=None):
     job = MagicMock()
     job.id = "abcd1234"
