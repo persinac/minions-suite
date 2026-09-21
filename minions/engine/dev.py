@@ -649,12 +649,18 @@ async def launch_spec_analyst(engine: JobEngine, job: Job):
     # Tell the human a job started. Deduped through the events table because
     # this launcher re-runs on relaunch and a second pickup DM reads like a
     # second job. Best-effort: a Slack failure must not gate the analyst.
-    if engine.config.slack_webhook_url:
+    if engine.config.slack_enabled:
         from ..notify import notify, pickup_message
 
         events = await engine.db.get_events(job.id)
         if not any(e.get("event_type") == "notify_pickup" for e in events):
-            if await notify(engine.config.slack_webhook_url, pickup_message(job)):
+            sent = await notify(
+                engine.config.slack_webhook_url,
+                pickup_message(job),
+                bot_token=engine.config.slack_bot_token,
+                target=engine.config.slack_dm_target,
+            )
+            if sent:
                 await engine.db.record_event(job.id, "notify_pickup", "engine", "pickup DM sent")
 
     # Create a virtual task for the spec analyst

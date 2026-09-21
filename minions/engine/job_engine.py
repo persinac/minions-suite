@@ -125,7 +125,7 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
         # paths can reach this hook more than once, and two DMs for one job
         # reads like two jobs. Best-effort throughout: a Slack outage that
         # failed jobs would invert the point of notifications entirely.
-        if self.config.slack_webhook_url:
+        if self.config.slack_enabled:
             try:
                 from ..notify import notify, terminal_message
 
@@ -136,7 +136,13 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
                         tasks = await self.db.get_tasks(job_id)
                         usage = await self.db.get_job_usage(job_id)
                         cost = float(usage.get("total_cost_usd") or 0.0)
-                        if await notify(self.config.slack_webhook_url, terminal_message(job, tasks, cost)):
+                        sent = await notify(
+                            self.config.slack_webhook_url,
+                            terminal_message(job, tasks, cost),
+                            bot_token=self.config.slack_bot_token,
+                            target=self.config.slack_dm_target,
+                        )
+                        if sent:
                             await self.db.record_event(job_id, "notify_terminal", "engine", "terminal DM sent")
             except Exception:
                 logger.exception("Failed to send terminal notification for job %s", job_id)
