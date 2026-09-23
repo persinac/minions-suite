@@ -49,9 +49,8 @@ def _completed(returncode=0, stdout="", stderr=""):
 class TestRefusal:
     @pytest.mark.asyncio
     async def test_a_body_with_no_verify_line_is_refused(self):
-        with patch("subprocess.run", return_value=_completed(0, stdout=NO_LINE_BODY)):
-            with pytest.raises(PRVerificationError) as exc:
-                await _require_verify_line(URL, 106)
+        with patch("subprocess.run", return_value=_completed(0, stdout=NO_LINE_BODY)), pytest.raises(PRVerificationError) as exc:
+            await _require_verify_line(URL, 106)
 
         assert "does not contain a `VERIFY:` line" in exc.value.remedy
         assert "prompts/agents/engineer.md" in exc.value.remedy
@@ -60,15 +59,14 @@ class TestRefusal:
     async def test_an_empty_pr_description_is_refused(self):
         """jq prints `null` for a PR opened with no description. It is empty,
         not unreadable -- the one body guaranteed to lack the line."""
-        with patch("subprocess.run", return_value=_completed(0, stdout="null\n")):
-            with pytest.raises(PRVerificationError):
-                await _require_verify_line(URL, 106)
+        with patch("subprocess.run", return_value=_completed(0, stdout="null\n")), pytest.raises(PRVerificationError):
+            await _require_verify_line(URL, 106)
 
     @pytest.mark.asyncio
     async def test_a_process_claim_is_refused(self):
-        with patch("subprocess.run", return_value=_completed(0, stdout="## Summary\n\nstuff\n\nVERIFY: CI is green.\n")):
-            with pytest.raises(PRVerificationError) as exc:
-                await _require_verify_line(URL, 106)
+        body = "## Summary\n\nstuff\n\nVERIFY: CI is green.\n"
+        with patch("subprocess.run", return_value=_completed(0, stdout=body)), pytest.raises(PRVerificationError) as exc:
+            await _require_verify_line(URL, 106)
 
         assert "process" in exc.value.remedy
 
