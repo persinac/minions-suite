@@ -72,9 +72,21 @@ MISSING_VERIFY_ERROR = (
 # collected to 3 passed` is not, because the claim carries a measurement the
 # list cannot match. That asymmetry is deliberate: a false refusal costs the
 # agent a turn, so the check only fires where there is nothing else in the line.
+EMPTY_VERIFY_ERROR = (
+    "The PR body has a `VERIFY:` line with nothing after it. Name the measurement, "
+    "or state `VERIFY: none — <why>` if the change genuinely is not observable from "
+    "outside. An empty claim is indistinguishable from not having looked.\n"
+    "\n"
+    "Required syntax: VERIFY: <command or query> returns <expected outcome>. "
+    "Before the fix <describe broken behavior>.\n"
+    "\n"
+    "See prompts/agents/engineer.md for worked examples.\n"
+    "\n"
+    "Update the PR description, then call report_pr again."
+)
+
 VACUOUS_CLAIMS = frozenset(
     {
-        "",
         "ci is green",
         "ci passes",
         "ci passed",
@@ -188,6 +200,8 @@ def validate_pr_body(body: str) -> None:
     claim = extract_verify_line(body)
     if claim is None:
         raise PRVerificationError(MISSING_VERIFY_ERROR)
+    if not _normalise(claim):
+        raise PRVerificationError(EMPTY_VERIFY_ERROR)
     if _normalise(claim) in VACUOUS_CLAIMS:
         raise PRVerificationError(_vacuous_error(claim))
 

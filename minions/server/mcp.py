@@ -20,6 +20,7 @@ from fastmcp import FastMCP
 
 from ..config import Config
 from ..core.models import Agent, AgentRole, JobStatus, Message, Subtask, SubtaskStatus, Task, TaskStatus, _now
+from ..core.pr_contract import PRVerificationError, validate_pr_body
 from ..core.service_grounding import check_grounding, mismatch_remedy
 from ..core.spec_contract import SpecContractError, validate_refined_spec
 from ..core.state_transitions import ArbiterUnavailableError, InvalidTransitionError, PreconditionError
@@ -373,6 +374,72 @@ async def _verify_reported_pr(pr_url: str, pr_number: int, branch_name: str) -> 
         return False, f"PR #{pr_number} has head branch {head!r}, not {branch_name!r}"
 
     return True, "ok"
+
+
+async def _require_verify_line(pr_url: str, pr_number: int) -> None:
+    """Raise PRVerificationError if the PR body carries no usable `VERIFY:` line.
+
+    The engineer prompt has asked for that line since it was written, and until
+    now nothing read the PR body back to see whether one arrived. A convention
+    that lives only in a prompt gates nothing, so this is the half that refuses.
+
+    Fetched separately from `_verify_reported_pr` rather than by widening that
+    call. Folding both into one `gh api` would save a round trip per task --
+    once, at the end of a job that has already spent dollars -- and in exchange
+    would change the shape every existing test of that function mocks. The
+    cheap thing is not worth rewriting a passing safety test for.
+
+    **Fails OPEN on an unreadable body and CLOSED on a readable one that lacks
+    the line.** Same asymmetry as `_verify_reported_pr`, for the same reason: a
+    transient GitHub error must not fail a job whose work is genuinely
+    finished, whereas a body we have actually read and found wanting is a fact
+    the agent can act on. The cost of being wrong is one retry in one direction
+    and a lost job in the other.
+
+    **GitLab is not checked.** The fetch is `gh`, and threading an MR client in
+    here would be a larger change than this gate is worth. A downstream scraper
+    can rely on `VERIFY:` being present on GitHub PRs opened after this shipped
+    and on nothing else -- said plainly because a guarantee that quietly covers
+    half its subjects is worse than a narrow one.
+    """
+    import subprocess
+
+    repo = _repo_from_url(pr_url)
+    if not repo:
+        # A GitLab MR, or a URL `_verify_reported_pr` has already judged. Do not
+        # invent a verdict for a provider this cannot read.
+        return
+
+    try:
+        result = subprocess.run(
+            ["gh", "api", f"repos/{repo}/pulls/{pr_number}", "--jq", ".body"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={**os.environ},
+        )
+    except Exception as e:
+        logger.warning("Could not read PR #%s body to check for a VERIFY: line (%s) — allowing", pr_number, e)
+        return
+
+    if result.returncode != 0:
+        logger.warning(
+            "PR #%s body unreadable (rc=%s) — allowing without a VERIFY: check: %s",
+            pr_number,
+            result.returncode,
+            f"{result.stdout}{result.stderr}"[:160],
+        )
+        return
+
+    body = (result.stdout or "").strip()
+    # jq renders a PR opened with no description as the four characters `null`.
+    # That body is EMPTY, not unreadable, so it must fail closed -- treating it
+    # as a fetch failure would let the one PR body guaranteed to have no VERIFY:
+    # line through the gate written to catch exactly that.
+    if body == "null":
+        body = ""
+
+    validate_pr_body(body)
 
 
 def _repo_from_url(url: str) -> str:
@@ -1340,6 +1407,13 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
                 logger.warning("report_pr REJECTED for task %s (pr=%s branch=%s): %s", task_id, pr_number, branch_name, why)
                 return json.dumps({"error": f"PR {pr_number} not accepted: {why}. Open the PR, then report it."})
 
+            # The PR body must carry a VERIFY: line. Checked here -- after the PR
+            # is known to exist, before any of it is recorded -- so that a body
+            # that fails leaves the task exactly where it was and the agent can
+            # edit the description and call report_pr again. Retryable: the fix
+            # is in the agent's own next action, not in anything it waits for.
+            await _require_verify_line(pr_url, pr_number)
+
             if _nats_client:
                 task = await db.get_task(task_id)
                 if not task:
@@ -1367,6 +1441,13 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
                 await _label_mr(config, task.job_id, task.service, pr_url, pr_number)
 
             return json.dumps({"task_id": task_id, "status": "pr_open", "pr_url": pr_url})
+        except PRVerificationError as e:
+            # Same handling as SpecContractError in submit_refined_spec: hand the
+            # remedy back verbatim rather than re-wording it into something less
+            # actionable, and mark it retryable so the agent edits the PR body
+            # and calls again instead of treating a fixable refusal as failure.
+            logger.warning("report_pr REJECTED for task %s (pr=%s): no usable VERIFY: line in the PR body", task_id, pr_number)
+            return json.dumps({"error": e.remedy, "retryable": True})
         except ArbiterUnavailableError as e:
             # Transient: the Arbiter would not answer, but the request was
             # never judged illegal. Say so, so the caller retries instead of
