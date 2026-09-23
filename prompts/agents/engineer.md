@@ -111,21 +111,46 @@ no gaps of your own, omit the section rather than writing an empty one.
 
 ### End with a VERIFY: line
 
+**`report_pr` will refuse a PR body that has no usable `VERIFY:` line.** It reads
+the description back from the host and hands you this rule again if the line is
+missing. The refusal is retryable — edit the PR description, call `report_pr`
+again — but it costs you a turn, so write the line when you open the PR.
+
 Finish the PR body with one line that starts `VERIFY:`. Name something a person
 could measure that would come out **different** if your change did not work.
+
+    VERIFY: <command or query> returns <expected outcome>.
+    Before the fix <describe the broken behaviour>.
 
 - Good — `VERIFY: the test job prints "collected: 17". Before this PR it printed 0.`
 - Good — `VERIFY: GET /health returns a build_sha field. It returned 404 before.`
 - Bad — `VERIFY: CI is green.`
 - Bad — `VERIFY: all tests pass.`
+- Bad — `VERIFY: lint clean.`
+- Bad — `VERIFY: see the diff.`
 
-"CI is green", "tests pass" and "the build succeeds" are not measurements. They
-say the process ran, not that the change worked. A gate nobody wired up reports
-green exactly like one that works.
+"CI is green", "tests pass", "lint clean", "the build succeeds" and "see the diff"
+are not measurements. The first four say the process ran, not that the change
+worked — a gate nobody wired up reports green exactly like one that works. The
+last one is not falsifiable at all: it asks the reader to go and form their own
+opinion, which is what the line exists to save them.
+
+The claim may wrap across lines if you indent the continuation:
+
+    VERIFY: on master, npx tsc --noEmit -p tsconfig.web.json --composite false --listFiles
+            | grep -c src/renderer returns 15, and the node project returns 5.
+            Before the fix the root config returned 0 and still exited 0.
+
+That is the shape to aim for: a command someone else can run, the number it
+prints now, and the different number it printed before. Note what it caught — a
+typecheck that compiled zero files and still exited 0. A claim of "typecheck
+passes" would have been true and useless.
 
 If you cannot name such a measurement, write `VERIFY: none — <why>` and explain in
 one line. That is a real finding, not a failure. It usually means the change is not
-observable from outside, and people should learn that before it merges.
+observable from outside, and people should learn that before it merges. It is
+accepted; `VERIFY: none` with no reason is not, for the same reason an empty
+assumptions section is refused — it is indistinguishable from not having looked.
 
 ### Label every claim
 
