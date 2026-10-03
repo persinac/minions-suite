@@ -52,7 +52,8 @@ a trigger, a profile prompt, a pinned model, a tool set, a typed output, and a d
   PR's `VERIFY:` line and the spec's acceptance scenarios, and does honeycomb-style checks:
   it queries SigNoz traces and Prometheus for the signal the change should move,
   before versus after the deploy. Verdict: `CONFIRMED` / `DRIFTED` / `UNFALSIFIABLE`.
-  `DRIFTED` files a card; `UNFALSIFIABLE` is recorded against the ticket, so weight learns
+  `DRIFTED` files a new card straight into `On-deck` linking the original; `UNFALSIFIABLE`
+  is recorded against the ticket, so weight learns
   which tickets ship without an oracle.
 - **Per-role model pinning** — a `[engine.role_models]` table. Stations get a fixed model;
   engineers keep difficulty routing, because that is where routing pays.
@@ -71,7 +72,7 @@ a trigger, a profile prompt, a pinned model, a tool set, a typed output, and a d
 - New read-only tool executors for Prometheus, SigNoz, ArgoCD, and the CircleCI API.
 - Trello: a new `Inbox` lane and `source:*` labels. The groomer prompt changes so the queue
   decision reads weight records.
-- Cost: bounded by station budgets. Initial proposal is ≤ $3/day across all stations, beside
+- Cost: bounded by station budgets: ≤ $3/day across all stations (agreed), beside
   the line's ~$1.50/day.
 
 ## Not in this change

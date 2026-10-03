@@ -104,8 +104,16 @@ contract; the tool boundary is (memory `prompt-text-is-not-a-contract`).
      (service, route, error type), not just a dashboard average.
 - **output tool:** `submit_verification(job_id, verdict{CONFIRMED,DRIFTED,UNFALSIFIABLE}, evidence[], queries[])`.
   `queries[]` is required so a human can re-run what the verifier saw.
-- **consequences:** `DRIFTED` files an `Inbox` card linked to the job. `UNFALSIFIABLE` is
-  written back to the job and counted against the weight record that let it through.
+- **consequences:** `DRIFTED` files a **new** card straight into `On-deck` with the
+  `minion` label, so the line picks it up with no human step and no weight pass (Alex,
+  2026-10-03). The card links the original card, job, and PR, and quotes the verifier's
+  evidence and `queries[]` as its acceptance test. The original card is left as it is.
+  `UNFALSIFIABLE` is written back to the job and counted against the weight record that
+  let it through.
+- **drift loop guard:** a drift card carries `drift_depth` (original = 0). A job that came
+  from a drift card and drifts again files at depth + 1. At `drift_max_depth` (default 2)
+  the verifier files nothing and raises andon instead. Two automatic fix attempts that
+  didn't hold mean the ticket is wrong, not the code.
 - **model:** sonnet.
 - **scope at first:** services with a `telemetry:` block — flashback-cns services,
   management-api, management-dashboard, and minions-suite itself. Firmware is out; it has
@@ -131,9 +139,11 @@ contract; the tool boundary is (memory `prompt-text-is-not-a-contract`).
 ## Risks
 
 - **Scout floods the board.** Mitigated by `max_findings` per run, runs per day, 90-day
-  fingerprint dedupe, weight gating, and the `outcome` metric. A human approves the first
-  ~20 scout cards before scout output can reach `On-deck` (`scout_autoqueue = false` at
-  launch).
+  fingerprint dedupe, weight gating, and the `outcome` metric. Weight-`eligible` scout
+  cards go straight to `On-deck` from day one (`scout_autoqueue = true`; Alex, 2026-10-03).
+  No human approval step, so the guards above are the whole defence. `scout_enabled = false`
+  is the kill switch, and andon `line_idle_with_queue` is blind to a flood, so the
+  `outcome` metric is the signal to watch in week one.
 - **The verifier claims CONFIRMED on noise.** A before/after window on a quiet service can
   show nothing either way. The tool requires `queries[]`. A verdict with no queries that
   touch the changed service is refused and comes back as `UNFALSIFIABLE`.
@@ -142,10 +152,10 @@ contract; the tool boundary is (memory `prompt-text-is-not-a-contract`).
 - **Station spend creeps into the line's budget.** Budgets are per station and checked
   before launch, not after.
 
-## Open questions for Alex
+## Decided (Alex, 2026-10-03)
 
-1. Scout autoqueue: should a weight-`eligible` scout card ever reach `On-deck` without a
-   human, and after how many approved ones? Proposal: off at launch, revisit after 20.
-2. Verify `DRIFTED`: is a new `Inbox` card the right consequence, or should it reopen the
-   original card?
-3. Budget: is ≤ $3/day across all stations the right ceiling to start?
+1. **Scout autoqueue: on from launch.** Weight-`eligible` scout cards go straight to
+   `On-deck`. No human approval step.
+2. **`DRIFTED` → new card in `On-deck`, referencing the original.** The minions pick it up.
+   The drift loop guard above is this design's addition, not part of the answer.
+3. **Budget: ≤ $3/day across all stations.**

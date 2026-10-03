@@ -21,8 +21,11 @@ Phases are in build order. Each phase ships and runs live before the next one st
       missing `test_command`, red non-required checks
 - [ ] `submit_scout_finding` tool: refuses no-oracle findings and 90-day duplicate fingerprints
 - [ ] `prompts/agents/scout.md`
-- [ ] Trello `Inbox` lane + `source:scout` label; `scout_autoqueue = false`
-- [ ] First live run on one repo; Alex reviews the findings
+- [ ] Trello `Inbox` lane + `source:scout` label; `scout_autoqueue = true`, `scout_enabled` kill switch
+- [ ] Until phase 3 ships, the groomer's existing rubric is the gate. Scout cards land in
+      `Inbox` and the groomer queues them on its normal pass; scout never writes to
+      `On-deck` itself before `submit_weight` exists
+- [ ] First live run on one repo; check the `outcome` metric after a week
 - [ ] Hardcoded first kind: `missing_test_oracle` across the allowlist
 
 ## 3. Weight
@@ -47,5 +50,6 @@ Phases are in build order. Each phase ships and runs live before the next one st
 - [ ] Read-only executors: Prometheus query, SigNoz query (traces/logs), `VERIFY:` runner
 - [ ] `submit_verification` tool: refuses a verdict whose `queries[]` never touch the
       changed service
-- [ ] `DRIFTED` → `Inbox` card; `UNFALSIFIABLE` → counted against the weight record
+- [ ] `DRIFTED` → new `On-deck` card (minion label) linking the original card, job, and PR; `drift_depth` guard at `drift_max_depth` = 2 → andon
+- [ ] `UNFALSIFIABLE` → counted against the weight record
 - [ ] `prompts/agents/verifier.md`
