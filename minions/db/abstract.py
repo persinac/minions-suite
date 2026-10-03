@@ -127,6 +127,8 @@ class AbstractDatabase(Protocol):
 
     async def get_events(self, job_id: str) -> list[dict]: ...
 
+    async def get_events_by_type(self, event_types: list[str], since_iso: str) -> list[dict]: ...
+
     async def record_tool_call(
         self,
         tool_name: str,

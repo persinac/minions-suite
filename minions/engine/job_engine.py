@@ -414,6 +414,11 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
         # `gh` invocation added later that forgets to.
         self._spawn(self._token_refresh_loop(), name="token-refresh")
 
+        # The andon also runs on its own task, for the same reason: a stalled
+        # poll loop is one of the things it exists to report.
+        if self.config.andon_enabled:
+            self._spawn(self._andon_loop(), name="andon")
+
         while self._running:
             try:
                 await self._poll()
@@ -437,6 +442,22 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
             except Exception:
                 logger.exception("Token refresh failed; will retry")
             await asyncio.sleep(60)
+
+    async def _andon_loop(self) -> None:
+        """Check for a stopped line every andon_check_interval_seconds and DM a human.
+
+        Sleeps first, so startup recovery gets one interval to act before its
+        leftovers are judged. Never lets an exception end the loop: an alarm
+        that dies quietly is the failure it was built to end.
+        """
+        from .. import andon
+
+        while self._running:
+            await asyncio.sleep(self.config.andon_check_interval_seconds)
+            try:
+                await andon.check_engine(self.db, self.config)
+            except Exception:
+                logger.exception("Andon check failed; will retry")
 
     def _spawn(self, coro, name: str) -> asyncio.Task:
         """Wrap an async coroutine as a background task with auto-cleanup."""
