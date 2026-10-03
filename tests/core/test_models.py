@@ -62,6 +62,9 @@ class TestEnums:
             # Owns only the git sequence. A new role needs a prompt, a tool set
             # and a model tier, which is why this set is asserted exactly.
             "finisher",
+            # The first station (core/stations.py): prompt agents/scout.md,
+            # tools SCOUT_TOOL_DEFINITIONS, model pinned in [engine.role_models].
+            "scout",
         }
         assert expected == {r.value for r in AgentRole}
 

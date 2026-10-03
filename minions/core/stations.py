@@ -109,13 +109,18 @@ class StationBudgetGuard:
     def __init__(self) -> None:
         self._last_exhausted_event: dict[str, datetime] = {}
 
-    async def check(self, db, config, station: str, now: datetime | None = None) -> BudgetDecision:
+    async def check(self, db, config, station: str, now: datetime | None = None, include_runs: bool = True) -> BudgetDecision:
         """Whether `station` may launch one more run right now.
 
         Read BEFORE launch: once the model is called the money is spent, so a
         check after the fact only reports an overrun. Three caps, any one of
         which refuses: the station's runs today, the station's spend today, and
         the spend of every station together.
+
+        `include_runs=False` is for the second check, made just before the model
+        call of a run that was already admitted. The run itself now exists and
+        counts toward the run cap, so applying that cap again would refuse the
+        run it just admitted; the spend caps still apply.
         """
         if now is None:
             now = datetime.now(UTC)
@@ -130,7 +135,7 @@ class StationBudgetGuard:
         total_cap = float(getattr(config, "station_total_daily_usd", 0.0) or 0.0)
 
         reason = ""
-        if runs >= budget.max_runs_per_day:
+        if include_runs and runs >= budget.max_runs_per_day:
             reason = f"{station} has run {runs} time(s) in 24h, cap {budget.max_runs_per_day}"
         elif spend >= budget.daily_usd:
             reason = f"{station} has spent ${spend:.2f} in 24h, cap ${budget.daily_usd:.2f}"

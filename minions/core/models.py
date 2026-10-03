@@ -85,6 +85,10 @@ class AgentRole(StrEnum):
     # engineer ran long — repeatedly producing finished edits and no PR.
     FINISHER = "finisher"
 
+    # The first station (core/stations.py). Reads one repo and files findings
+    # as cards; never edits code, never opens a PR, never queues work itself.
+    SCOUT = "scout"
+
     # Alias: ORCHESTRATOR resolves to ARBITER (same value = enum alias)
     ORCHESTRATOR = "arbiter"
 

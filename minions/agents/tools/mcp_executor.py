@@ -21,6 +21,7 @@ from pathlib import Path
 
 from ...core.models import AgentRole, Job, Task
 from .args import coerce_line_number
+from .definitions import SCOUT_ALLOWED_TOOLS
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,9 @@ _STATE_TOOL_INJECTIONS: dict[str, list[tuple[str, str]]] = {
     "mark_phases_created": [("job_id", "job_id")],
     "create_phase_card": [("job_id", "job_id")],
     "create_trello_tech_debt": [("job_id", "job_id")],
+    # Scout station: the job is injected so a finding is always charged to the
+    # run that made it -- the per-run cap and the dedupe both key on it.
+    "submit_scout_finding": [("job_id", "job_id")],
     "update_task_status": [("task_id", "task_id")],
     "report_pr": [("task_id", "task_id")],
     # Terminal no-PR close. Absent from this map until 0.8.49, the schema
@@ -178,6 +182,12 @@ class McpToolExecutor:
         self._reread_chars = 0
 
     async def execute(self, tool_name: str, arguments: dict) -> str:
+        # The scout is read-only, enforced here and not only by the schema it is
+        # shown. Its checkout is the scout's own, but run_command or write_file
+        # would still let it change a tree, and this executor otherwise routes
+        # any local tool name it is handed.
+        if self.agent_role == AgentRole.SCOUT and tool_name not in SCOUT_ALLOWED_TOOLS:
+            return json.dumps({"error": f"The scout may not call {tool_name!r}. Allowed: {', '.join(sorted(SCOUT_ALLOWED_TOOLS))}."})
         try:
             if tool_name in _STATE_TOOL_INJECTIONS:
                 return await self._call_mcp_tool(tool_name, arguments)

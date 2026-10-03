@@ -333,3 +333,23 @@ ALTER TABLE ONLY subtasks
     ADD CONSTRAINT subtasks_task_id_fkey FOREIGN KEY (task_id) REFERENCES tasks(id);
 ALTER TABLE ONLY tasks
     ADD CONSTRAINT tasks_job_id_fkey FOREIGN KEY (job_id) REFERENCES jobs(id);
+-- The scout station (database/pgsql/migrations/20261003120000_add_scout_tables.sql).
+CREATE TABLE scout_signals (
+    id bigserial PRIMARY KEY,
+    job_id text NOT NULL,
+    repo text NOT NULL,
+    signals jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE TABLE scout_findings (
+    id bigserial PRIMARY KEY,
+    job_id text NOT NULL,
+    repo text NOT NULL,
+    kind text NOT NULL,
+    fingerprint text NOT NULL,
+    title text NOT NULL,
+    outcome text NOT NULL,
+    card_id text,
+    card_url text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);

@@ -57,6 +57,8 @@ _SCHEMA_SQL = (Path(__file__).parent / "conftest_pg_schema.sql").read_text(encod
 
 # All tables in dependency-safe truncation order (children before parents)
 _TABLES = [
+    "scout_findings",
+    "scout_signals",
     "state_transitions",
     "heartbeats",
     "subtasks",

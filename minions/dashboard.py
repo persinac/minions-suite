@@ -1535,6 +1535,7 @@ async def _render_metrics() -> str:
         out = await db.get_outcome_breakdown(days=config.metrics_window_days)
         andon_raised = await andon.load_raised(db, config, datetime.now(UTC))
         stations = await db.get_station_outcomes(sorted(STATIONS), days=config.metrics_window_days)
+        scout_findings = await db.get_scout_finding_outcomes(days=config.metrics_window_days)
     finally:
         await db.close()
 
@@ -1634,6 +1635,14 @@ async def _render_metrics() -> str:
         "minion_station_spend_usd",
         "Station spend in USD in the window, by station",
         [({"station": s}, v) for s, v in station_spend.items()],
+    )
+    # The week-one signal for a scout that files without a human in the loop:
+    # outcome is `filed` or `refused_<reason>`. A rising refused_duplicate or
+    # refused_invalid share means the scout is spending on findings that bounce.
+    lines += _metric_lines(
+        "minion_scout_findings_total",
+        "Scout findings in the window by kind and outcome (filed, or refused_<reason>)",
+        [({"kind": r["kind"], "outcome": r["outcome"]}, r["count"]) for r in scout_findings],
     )
     lines += _metric_lines(
         "minion_metrics_window_days",

@@ -83,6 +83,36 @@ class AbstractDatabase(Protocol):
 
     async def get_station_outcomes(self, stations: list[str], days: int = 30) -> list[dict]: ...
 
+    async def create_station_job(self, job_type: str, spec: str, task: Task) -> tuple[Job, Task]: ...
+
+    async def get_last_station_job_at(self, job_type: str) -> str | None: ...
+
+    async def get_last_run_per_service(self, job_type: str) -> dict[str, str]: ...
+
+    async def scout_tables_exist(self) -> bool: ...
+
+    async def record_scout_signals(self, job_id: str, repo: str, signals: dict) -> None: ...
+
+    async def find_filed_scout_finding(self, fingerprint: str, since_iso: str) -> dict | None: ...
+
+    async def count_filed_scout_findings(self, job_id: str) -> int: ...
+
+    async def has_filed_scout_kind(self, repo: str, kind: str, since_iso: str) -> bool: ...
+
+    async def record_scout_finding(
+        self,
+        job_id: str,
+        repo: str,
+        kind: str,
+        fingerprint: str,
+        title: str,
+        outcome: str,
+        card_id: str | None = None,
+        card_url: str | None = None,
+    ) -> None: ...
+
+    async def get_scout_finding_outcomes(self, days: int = 30) -> list[dict]: ...
+
     async def update_job_status(
         self,
         job_id: str,
