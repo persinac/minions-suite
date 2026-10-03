@@ -46,6 +46,17 @@ async def _raised_events(db, condition: str | None = None) -> list[dict]:
     return [e for e in events if str(e["detail"]).startswith(condition + ":")]
 
 
+async def _event_at(db, job_id: str, event_type: str, detail: str, when: datetime) -> None:
+    """record_event always stamps NOW(); this writes one at a chosen time."""
+    import minions.db.postgres as pg_mod
+
+    async with db._pool.connection() as conn:
+        await conn.execute(
+            f"INSERT INTO {pg_mod.JOB_SCHEMA}.events (job_id, event_type, source, detail, created_at) VALUES (%s, %s, %s, %s, %s)",
+            (job_id, event_type, "test", detail, when),
+        )
+
+
 async def _herder(db, job_id: str, task_id: str | None = None, model: str = "herder:herder-w4D-p1", status: str = "running") -> Agent:
     agent = await db.create_agent(Agent(model=model, job_id=job_id, task_id=task_id, role=AgentRole.FRONTEND_ENGINEER))
     await db.update_agent(agent.id, status=status)
@@ -95,13 +106,28 @@ class TestStalledJob:
         assert await andon.find_stalled_jobs(db, config, now) == []
 
     async def test_its_own_events_do_not_reset_the_clock(self, db, sample_job):
-        """Raising writes an event on the job. If that counted, the alarm would silence itself."""
+        """Raising writes an event on the job. If that counted, the alarm would silence itself.
+
+        The events are stamped ten minutes before `now`, i.e. long after the job's
+        last real activity — written at the same instant as the job they could not
+        move the clock either way, and this test passed with the exclusion deleted.
+        """
         config = _config()
-        await db.record_event(sample_job.id, andon.EVENT_RAISED, "andon", f"stalled_job:{sample_job.id} dm")
-        await db.record_event(sample_job.id, "transition_rejected", "engine", "stuck against the state machine")
         now = _at(sample_job.updated_at, config.andon_stall_seconds + 60)
+        recent = now - timedelta(minutes=10)
+        await _event_at(db, sample_job.id, andon.EVENT_RAISED, f"stalled_job:{sample_job.id} dm", recent)
+        await _event_at(db, sample_job.id, andon.EVENT_CLEARED, f"stalled_job:{sample_job.id} dm", recent)
+        await _event_at(db, sample_job.id, "transition_rejected", "stuck against the state machine", recent)
 
         assert [a.subject for a in await andon.find_stalled_jobs(db, config, now)] == [sample_job.id]
+
+    async def test_a_real_event_does_reset_the_clock(self, db, sample_job):
+        """The control for the test above: the same timing with a progress event must NOT fire."""
+        config = _config()
+        now = _at(sample_job.updated_at, config.andon_stall_seconds + 60)
+        await _event_at(db, sample_job.id, "task_revision_requested", "task=t1 revision=1/3", now - timedelta(minutes=10))
+
+        assert await andon.find_stalled_jobs(db, config, now) == []
 
     async def test_a_terminal_job_never_fires(self, db, sample_job):
         config = _config()
