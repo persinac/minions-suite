@@ -13,6 +13,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from . import andon
 from .config import Config
+from .core.stations import STATIONS
 
 logger = logging.getLogger(__name__)
 
@@ -1533,6 +1534,7 @@ async def _render_metrics() -> str:
         eff = await db.get_model_effectiveness(days=config.metrics_window_days, turn_ceiling=config.agent_max_turns)
         out = await db.get_outcome_breakdown(days=config.metrics_window_days)
         andon_raised = await andon.load_raised(db, config, datetime.now(UTC))
+        stations = await db.get_station_outcomes(sorted(STATIONS), days=config.metrics_window_days)
     finally:
         await db.close()
 
@@ -1615,6 +1617,23 @@ async def _render_metrics() -> str:
         "minion_andon_active",
         "Stop-the-line alarms currently raised, by condition (see minions/andon.py)",
         [({"condition": condition}, count) for condition, count in raised_by_condition.items()],
+    )
+    # Stations are kept out of every line metric above (see core/stations.py),
+    # so their runs and spend are reported here and only here.
+    lines += _metric_lines(
+        "minion_station_runs_total",
+        "Station runs (scout, ...) in the window by station and outcome (done / failed / running)",
+        [({"station": r["station"], "outcome": r["outcome"]}, r["runs"]) for r in stations],
+    )
+    # Every station appears, at 0 when it has not run, so a stopped station
+    # reads as a flat line rather than as a missing series.
+    station_spend = {s: 0.0 for s in sorted(STATIONS)}
+    for r in stations:
+        station_spend[r["station"]] = round(station_spend.get(r["station"], 0.0) + r["spend_usd"], 4)
+    lines += _metric_lines(
+        "minion_station_spend_usd",
+        "Station spend in USD in the window, by station",
+        [({"station": s}, v) for s, v in station_spend.items()],
     )
     lines += _metric_lines(
         "minion_metrics_window_days",

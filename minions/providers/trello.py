@@ -11,6 +11,7 @@ import httpx
 from .. import andon
 from ..config import Config
 from ..core.models import Job, JobStatus
+from ..core.stations import line_jobs
 from ..db import AbstractDatabase
 
 logger = logging.getLogger(__name__)
@@ -253,7 +254,11 @@ class TrelloPoller:
         await self._monitor_jobs()
         await self._maybe_check_andon()
 
-        db_active = await self.db.get_active_jobs()
+        # Line jobs only. A station run (scout, ...) is a non-terminal job too,
+        # and with max_concurrent_jobs=1 counting it here would stop all card
+        # intake for as long as a scout ran -- the opposite of a station's job,
+        # which is to feed the line, never to borrow from it.
+        db_active = line_jobs(await self.db.get_active_jobs())
         active_count = max(len(self._active), len(db_active))
 
         if active_count >= self.config.max_concurrent_jobs:

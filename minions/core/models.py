@@ -29,6 +29,10 @@ class JobStatus(StrEnum):
     DEV_IN_PROGRESS = "dev_in_progress"
     PR_OPEN = "pr_open"
     REVIEW_IN_PROGRESS = "review_in_progress"
+    # A station job (see core/stations.py) whose one agent is running. Station
+    # jobs do not use the line's statuses: they never open a PR, never merge,
+    # and reusing review_in_progress would route them into review handlers.
+    SCOUTING = "scouting"
     MERGED = "merged"
     DEPLOYING = "deploying"
     DEPLOYED = "deployed"

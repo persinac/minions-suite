@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from ..core.stations import line_jobs
 from ..db import AbstractDatabase
 
 logger = logging.getLogger(__name__)
@@ -28,7 +29,10 @@ class Anomaly:
 async def check_stuck_tasks(db: AbstractDatabase, stuck_threshold_minutes: int = 15, engineer_dispatch: str = "in_process") -> list[Anomaly]:
     """Detect tasks stuck at IN_PROGRESS with no subtask activity for too long."""
     anomalies: list[Anomaly] = []
-    active_jobs = await db.get_active_jobs()
+    # Line jobs only. A station agent (scout, ...) creates no subtasks and owns
+    # its own lifecycle; fifteen quiet minutes is its normal profile, and a
+    # retry from here would spend a station run the budget never approved.
+    active_jobs = line_jobs(await db.get_active_jobs())
     now = time.time()
 
     for job in active_jobs:

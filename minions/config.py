@@ -6,7 +6,7 @@ Legacy env vars override TOML values for backward compatibility.
 """
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -105,6 +105,23 @@ def _get_nested(section: str, subsection: str, key: str, default=None):
         return sub_data.get(key, default)
     except Exception:
         return default
+
+
+def _plain_table(value) -> dict:
+    """A settings table as a plain dict, nested tables included.
+
+    dynaconf hands back its own Box type, which compares and serialises like a
+    dict but is not one. Converting at load keeps Config a plain value object.
+    """
+    if not isinstance(value, dict):
+        return {}
+    plain = {}
+    for key, item in value.items():
+        if isinstance(item, dict):
+            plain[str(key)] = _plain_table(item)
+        else:
+            plain[str(key)] = item
+    return plain
 
 
 def _env_or(env_var: str, dynaconf_val, default):
@@ -264,6 +281,24 @@ class Config:
     # pinned cheap rather than scaled. Exists mainly as an escape hatch if a
     # cheap model turns out to fumble `gh pr create`.
     model_finisher: str = ""
+
+    # Stations (core/stations.py): agents that work around the line -- scout
+    # first. Each station's model is PINNED here rather than routed by ticket
+    # difficulty, because a station has no ticket. Only station roles are read
+    # from this table; engineers keep difficulty routing, which is where routing
+    # pays. TOML-only (`[engine.role_models]`), no env override: a table is the
+    # unit someone edits, and a half-overridden table is worse than none.
+    role_models: dict = field(default_factory=dict)
+
+    # Per-station daily caps, `[engine.station_budgets.<station>]` with
+    # `daily_usd` and `max_runs_per_day`. Checked BEFORE a station launches. A
+    # station with no entry gets zero -- it cannot spend until someone decides
+    # to pay for it.
+    station_budgets: dict = field(default_factory=dict)
+
+    # Ceiling on all stations together, in USD per rolling 24h. Agreed at $3 on
+    # 2026-10-03, beside the line's ~$1.50/day.
+    station_total_daily_usd: float = 3.0
 
     # Git provider defaults
     git_provider: str = "gitlab"
@@ -590,6 +625,9 @@ class Config:
             model_reviewer=_env_or("MODEL_REVIEWER", _get("engine", "model_reviewer"), "claude-sonnet-5"),
             model_engineer=_env_or("MODEL_ENGINEER", _get("engine", "model_engineer"), ""),
             model_finisher=_env_or("MODEL_FINISHER", _get("engine", "model_finisher"), ""),
+            role_models=_plain_table(_get("engine", "role_models")),
+            station_budgets=_plain_table(_get("engine", "station_budgets")),
+            station_total_daily_usd=_env_or_float("STATION_TOTAL_DAILY_USD", _get("engine", "station_total_daily_usd"), 3.0),
             agent_log_dir=_env_or("AGENT_LOG_DIR", _get("engine", "agent_log_dir"), str(base / "logs" / "agents")),
             agent_dispatch_mode=_env_or("AGENT_DISPATCH_MODE", _get("engine", "agent_dispatch_mode"), "in_process"),
             engineer_dispatch=_env_or("ENGINEER_DISPATCH", _get("engine", "engineer_dispatch"), "in_process"),
