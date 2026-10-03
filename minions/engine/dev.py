@@ -166,6 +166,60 @@ def _agent_predates_current_attempt(agent, task: Task, unbounded: bool = False) 
     return (datetime.now(UTC) - task_updated).total_seconds() < ORPHAN_GRACE_SECONDS
 
 
+async def _release_abandoned_herder_claim(engine: JobEngine, job: Job, task: Task, latest_agent: Agent | None) -> Agent | None:
+    """Mark a herder claim failed once it has outlived herder_work_timeout_seconds.
+
+    A herder that claimed and then vanished holds the task forever. Every
+    recovery path in manage_dev_tasks needs either no agent (the unclaimed
+    fallback) or a FINISHED one (the orphan checks). A claim from a process that
+    no longer exists is neither: the row still says "running", so
+    peek_engineer_work excludes the task, no other herder takes it, and
+    herder_claim_timeout_seconds does not apply because the work is not
+    unclaimed. That timeout covers a herder that never claims, not one that
+    claims and dies.
+
+    Seen for real twice. A killed herdr workspace left agent 3eb959df "running"
+    on job c2b97f39. Then on job a9f2b36e a herder called report_pr, the
+    reviewer requested changes, and the pane was reaped before it ever called
+    complete_engineer_work — agent c6cd5a94 read "running" for seven days and,
+    with max_concurrent_jobs=1, no other card was picked up in that time. The
+    second one got past this check because it used to live inline in only ONE
+    of the two IN_PROGRESS branches, and a task awaiting its revision takes the
+    other. Both branches call this now, before their own running-agent checks.
+
+    Detection keys off agent age rather than heartbeats, because herders do not
+    send them. The timeout is deliberately generous: real herder runs have taken
+    5-20 minutes, and reaping a live one pushes its work onto the metered path —
+    or, on a revision, starts a second engineer on a branch the first is still
+    pushing to. Better late than wrong.
+
+    Marking it failed is the ENTIRE fix. Everything downstream already works —
+    the caller's own branch carries on as if the agent had finished. Returns the
+    task's latest agent as it reads after any release.
+    """
+    if not latest_agent:
+        return latest_agent
+    if latest_agent.status != "running":
+        return latest_agent
+    if not str(latest_agent.model or "").startswith("herder:"):
+        return latest_agent
+    limit = engine.config.herder_work_timeout_seconds
+    if limit <= 0:
+        return latest_agent
+    running_for = _seconds_since(latest_agent.started_at)
+    if running_for < limit:
+        return latest_agent
+
+    message = (
+        f"Herder claim on task {task.id} has been running {int(running_for)}s with no completion "
+        f"(limit {limit}s) — treating the worker as gone and releasing the claim"
+    )
+    logger.warning(message)
+    await engine.db.update_agent(latest_agent.id, status="failed", finished_at=datetime.now(UTC).isoformat(), error=message[:200])
+    await engine.db.record_event(job.id, "herder_claim_abandoned", "engine", f"task={task.id} agent={latest_agent.id} ran={int(running_for)}s")
+    return await engine.db.get_agent_for_task(task.id)
+
+
 async def _label_minions_mr(engine: JobEngine, task: Task) -> None:
     """Add a minions-job-<id> label to the MR so webhooks can skip it."""
     import re
@@ -2331,9 +2385,12 @@ async def manage_dev_tasks(engine: JobEngine, job: Job):
             # reviewer-dedup guard correctly refused a second fan-out, and the
             # job wedged at dev_in_progress forever (job 0f90844d).
             #
-            # Skip if there's already a running agent for this task
+            # Skip if there's already a running agent for this task — unless it is
+            # a herder claim that outlived its pane. Without the release this
+            # `continue` held job a9f2b36e for seven days: the herder had called
+            # report_pr, the reviewer asked for changes, and the pane was gone.
             latest_agent = await engine.db.get_agent_for_task(task.id)
-            latest_agent = await engine.db.get_agent_for_task(task.id)
+            latest_agent = await _release_abandoned_herder_claim(engine, job, task, latest_agent)
             if latest_agent and latest_agent.status in ("starting", "running"):
                 continue
             if task.revision_count >= engine.config.max_revisions:
@@ -2444,53 +2501,10 @@ async def manage_dev_tasks(engine: JobEngine, job: Job):
             # Check if the agent is actually dead (orphaned task)
             latest_agent = await engine.db.get_agent_for_task(task.id)
 
-            # A herder that claimed and then vanished holds the task forever.
-            #
-            # Every recovery path below requires either no agent (the unclaimed
-            # fallback) or a FINISHED one (the orphan checks). A claim from a
-            # process that no longer exists is neither: the row still says
-            # "running", so peek_engineer_work excludes the task, no other herder
-            # takes it, and herder_claim_timeout_seconds does not apply because
-            # the work is not unclaimed. release_engineer_work's docstring says
-            # that timeout covers this. It does not — it covers a herder that
-            # never claims, not one that claims and dies.
-            #
-            # Seen for real: a killed herdr workspace left agent 3eb959df
-            # "running" on job c2b97f39 with its pane gone, and the job parked
-            # indefinitely until the claim was released by hand. Crashes, closed
-            # laptops and killed panes make this the LIKELIER herder failure.
-            #
-            # Detection keys off agent age rather than heartbeats, because
-            # herders do not send them (3 heartbeat rows exist system-wide
-            # against ~60 agents). The timeout is deliberately generous: real
-            # herder runs have taken 5-20 minutes, and reaping a live one pushes
-            # its work onto the metered path, which is the cost this whole
-            # component exists to avoid. Better late than wrong.
-            #
-            # Marking it failed is the ENTIRE fix. Everything downstream already
-            # works — the engine fails the task, retries it, republishes the work
-            # item, and the trigger spawns a fresh herder. That sequence was
-            # observed end to end once the stale claim was cleared.
-            if (
-                latest_agent
-                and latest_agent.status == "running"
-                and str(latest_agent.model or "").startswith("herder:")
-                and engine.config.herder_work_timeout_seconds > 0
-            ):
-                running_for = _seconds_since(latest_agent.started_at)
-                if running_for >= engine.config.herder_work_timeout_seconds:
-                    message = (
-                        f"Herder claim on task {task.id} has been running {int(running_for)}s with no completion "
-                        f"(limit {engine.config.herder_work_timeout_seconds}s) — treating the worker as gone and releasing the claim"
-                    )
-                    from datetime import datetime
-
-                    logger.warning(message)
-                    await engine.db.update_agent(latest_agent.id, status="failed", finished_at=datetime.now(UTC).isoformat(), error=message[:200])
-                    await engine.db.record_event(
-                        job.id, "herder_claim_abandoned", "engine", f"task={task.id} agent={latest_agent.id} ran={int(running_for)}s"
-                    )
-                    latest_agent = await engine.db.get_agent_for_task(task.id)
+            # A herder that claimed and then vanished holds the task forever —
+            # see _release_abandoned_herder_claim. The revision branch above calls
+            # it too; a task awaiting its revision never reaches this one.
+            latest_agent = await _release_abandoned_herder_claim(engine, job, task, latest_agent)
 
             # Unclaimed external work item. A task IN_PROGRESS with no agent for
             # THIS attempt is the state external dispatch leaves behind, and it
