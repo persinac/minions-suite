@@ -49,6 +49,9 @@ def _trello(active: list[Job]) -> tuple[TrelloPoller, list]:
     async def _monitor_jobs():
         return None
 
+    async def _maybe_check_andon():
+        return None
+
     async def _get_cards(list_id, require_minion_label=False):
         return [{"id": "card-1", "name": "a card"}]
 
@@ -56,6 +59,7 @@ def _trello(active: list[Job]) -> tuple[TrelloPoller, list]:
         launched.append(card["id"])
 
     poller._monitor_jobs = _monitor_jobs
+    poller._maybe_check_andon = _maybe_check_andon
     poller._get_cards = _get_cards
     poller._launch_job = _launch_job
     return poller, launched
