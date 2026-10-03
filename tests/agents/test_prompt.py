@@ -162,6 +162,7 @@ class TestRoleMappings:
             "code_reviewer",
             "deploy_monitor",
             "finisher",
+            "scout",
         }
         assert set(_ROLE_TO_PROMPT.keys()) == expected_roles
 

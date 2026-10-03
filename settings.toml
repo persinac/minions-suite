@@ -154,6 +154,15 @@ agent_dispatch_mode = "in_process"
 # station configured only here has no model pin and a zero budget in prod.
 station_total_daily_usd = 3.0
 
+# Scout (minions/engine/scout.py). Kill switch, findings per run, and where it
+# clones (empty = <repo_base_dir>/.scout — never an engineer's checkout).
+# Runs per day and spend come from [*.engine.station_budgets.scout].
+scout_enabled = true
+scout_max_findings = 3
+scout_check_interval_seconds = 300
+scout_checkout_dir = ""
+scout_exclude_repos = ["infrastructure", "flashback-apple", "flashback-android", "lora-nodes", "esp-cryptoauthlib"]
+
 # Stations run on a pinned model, not the difficulty tier: a station has no
 # ticket, so there is no difficulty to route on. Only station roles are read
 # from this table — engineers keep difficulty routing.
@@ -298,6 +307,11 @@ andon_repeat_seconds = 21600
 # Repeated from [default.engine] for the same reason — this table is the whole
 # of `engine` in production. Keep the two in step.
 station_total_daily_usd = 3.0
+scout_enabled = true
+scout_max_findings = 3
+scout_check_interval_seconds = 300
+scout_checkout_dir = ""
+scout_exclude_repos = ["infrastructure", "flashback-apple", "flashback-android", "lora-nodes", "esp-cryptoauthlib"]
 
 [production.engine.role_models]
 scout = "claude-sonnet-5"

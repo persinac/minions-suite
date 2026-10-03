@@ -599,6 +599,148 @@ class PostgresDatabase:
                 for r in await cur.fetchall()
             ]
 
+    # ===================================================================
+    # Stations: job creation and the scout's records
+    # ===================================================================
+
+    async def create_station_job(self, job_type: str, spec: str, task: Task) -> tuple[Job, Task]:
+        """Create a station job with its single task, in one transaction.
+
+        Created at TASKS_CREATED, like a review job: a station has no spec to
+        refine and nothing to decompose, so it enters at the step that launches.
+        """
+        job = Job(spec=spec, status=JobStatus.TASKS_CREATED, job_type=job_type)
+        task = task.model_copy(update={"job_id": job.id})
+        async with self._pool.connection() as conn, conn.transaction():
+            await conn.execute(
+                f"""INSERT INTO {JOB_SCHEMA}.jobs (id, spec, status, job_type, created_at, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, %s)""",
+                (job.id, job.spec, job.status, job.job_type, job.created_at, job.updated_at),
+            )
+            await conn.execute(
+                f"""INSERT INTO {JOB_SCHEMA}.tasks
+                        (id, job_id, title, description, service, agent_role, status, attempt, max_attempts, created_at, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                (
+                    task.id,
+                    task.job_id,
+                    task.title,
+                    task.description,
+                    task.service,
+                    task.agent_role,
+                    task.status,
+                    task.attempt,
+                    task.max_attempts,
+                    task.created_at,
+                    task.updated_at,
+                ),
+            )
+        await self.record_event(job.id, "job_created", "db", f"status={job.status} job_type={job_type}")
+        return job, task
+
+    async def get_last_station_job_at(self, job_type: str) -> str | None:
+        """When the newest job of this station was created, or None if never."""
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(f"SELECT MAX(created_at) AS at FROM {JOB_SCHEMA}.jobs WHERE job_type = %s", (job_type,))
+            row = await cur.fetchone()
+        if not row or row["at"] is None:
+            return None
+        return row["at"].isoformat()
+
+    async def get_last_run_per_service(self, job_type: str) -> dict[str, str]:
+        """For each service a station has run on, when it last did. Backs round-robin."""
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                f"""SELECT t.service AS service, MAX(j.created_at) AS at
+                    FROM {JOB_SCHEMA}.jobs j JOIN {JOB_SCHEMA}.tasks t ON t.job_id = j.id
+                    WHERE j.job_type = %s
+                    GROUP BY t.service""",
+                (job_type,),
+            )
+            return {r["service"]: r["at"].isoformat() for r in await cur.fetchall()}
+
+    async def scout_tables_exist(self) -> bool:
+        """Whether the scout migration has been applied to this database.
+
+        Code ships before its migration is applied to the deployed database
+        (that is a separate, human step), so the scout asks rather than assumes
+        and stays off until the answer is yes.
+        """
+        async with self._pool.connection() as conn:
+            cur = await conn.execute("SELECT to_regclass(%s) IS NOT NULL AS ok", (f"{JOB_SCHEMA}.scout_findings",))
+            row = await cur.fetchone()
+            return bool(row and row["ok"])
+
+    async def record_scout_signals(self, job_id: str, repo: str, signals: dict) -> None:
+        async with self._pool.connection() as conn:
+            await conn.execute(
+                f"INSERT INTO {JOB_SCHEMA}.scout_signals (job_id, repo, signals) VALUES (%s, %s, %s)",
+                (job_id, repo, Json(signals)),
+            )
+
+    async def find_filed_scout_finding(self, fingerprint: str, since_iso: str) -> dict | None:
+        """A FILED finding with this fingerprint since `since_iso`, or None. Refusals do not count."""
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                f"""SELECT job_id, card_url, created_at FROM {JOB_SCHEMA}.scout_findings
+                    WHERE fingerprint = %s AND outcome = 'filed' AND created_at >= %s
+                    ORDER BY created_at DESC LIMIT 1""",
+                (fingerprint, since_iso),
+            )
+            row = await cur.fetchone()
+        if not row:
+            return None
+        return {"job_id": row["job_id"], "card_url": row["card_url"], "created_at": row["created_at"].isoformat()}
+
+    async def count_filed_scout_findings(self, job_id: str) -> int:
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                f"SELECT COUNT(*) AS n FROM {JOB_SCHEMA}.scout_findings WHERE job_id = %s AND outcome = 'filed'",
+                (job_id,),
+            )
+            row = await cur.fetchone()
+            return int(row["n"]) if row else 0
+
+    async def has_filed_scout_kind(self, repo: str, kind: str, since_iso: str) -> bool:
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                f"""SELECT 1 FROM {JOB_SCHEMA}.scout_findings
+                    WHERE repo = %s AND kind = %s AND outcome = 'filed' AND created_at >= %s LIMIT 1""",
+                (repo, kind, since_iso),
+            )
+            return await cur.fetchone() is not None
+
+    async def record_scout_finding(
+        self,
+        job_id: str,
+        repo: str,
+        kind: str,
+        fingerprint: str,
+        title: str,
+        outcome: str,
+        card_id: str | None = None,
+        card_url: str | None = None,
+    ) -> None:
+        async with self._pool.connection() as conn:
+            await conn.execute(
+                f"""INSERT INTO {JOB_SCHEMA}.scout_findings (job_id, repo, kind, fingerprint, title, outcome, card_id, card_url)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                (job_id, repo, kind, fingerprint, title[:500], outcome, card_id, card_url),
+            )
+
+    async def get_scout_finding_outcomes(self, days: int = 30) -> list[dict]:
+        """Findings by kind and outcome over the last `days`. Empty if the tables do not exist yet."""
+        if not await self.scout_tables_exist():
+            return []
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                f"""SELECT kind, outcome, COUNT(*) AS n FROM {JOB_SCHEMA}.scout_findings
+                    WHERE created_at >= NOW() - MAKE_INTERVAL(days => %s)
+                    GROUP BY kind, outcome ORDER BY kind, outcome""",
+                (days,),
+            )
+            return [{"kind": r["kind"], "outcome": r["outcome"], "count": int(r["n"])} for r in await cur.fetchall()]
+
     async def update_job_difficulty(self, job_id: str, difficulty: str | None) -> None:
         """Record the classifier's verdict. Drives model tier selection for every agent."""
         async with self._pool.connection() as conn:

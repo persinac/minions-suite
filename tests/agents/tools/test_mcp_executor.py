@@ -53,6 +53,7 @@ class TestStateToolInjections:
             "mark_phases_created",
             "create_phase_card",
             "create_trello_tech_debt",
+            "submit_scout_finding",
             "update_task_status",
             "report_pr",
             "report_no_work_needed",

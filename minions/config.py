@@ -300,6 +300,24 @@ class Config:
     # 2026-10-03, beside the line's ~$1.50/day.
     station_total_daily_usd: float = 3.0
 
+    # The scout station (engine/scout.py). `scout_enabled` is the kill switch.
+    # Runs per day and spend are the station budget above, not separate knobs.
+    scout_enabled: bool = True
+    # Findings one run may file. A run that wants to file more is told to stop.
+    scout_max_findings: int = 3
+    # Repos the scout never visits, matched against the project OR service name.
+    # Excluded 2026-09-21: infrastructure (pulumi mutates real AWS),
+    # flashback-apple (mac hardware), flashback-android (toolchain absent),
+    # lora-nodes (deprecated), esp-cryptoauthlib (vendored crypto).
+    scout_exclude_repos: tuple = ("infrastructure", "flashback-apple", "flashback-android", "lora-nodes", "esp-cryptoauthlib")
+    # How often the scheduler asks whether a scout run is due. Cheap: a few
+    # queries. The cadence itself comes from max_runs_per_day.
+    scout_check_interval_seconds: int = 300
+    # Where the scout clones. Its own tree, never an engineer's checkout: the
+    # scout fetches and resets to the default branch, which would yank an
+    # engineer's branch out from under it. Empty = <repo_base_dir>/.scout.
+    scout_checkout_dir: str = ""
+
     # Git provider defaults
     git_provider: str = "gitlab"
     gitlab_url: str = ""
@@ -628,6 +646,13 @@ class Config:
             role_models=_plain_table(_get("engine", "role_models")),
             station_budgets=_plain_table(_get("engine", "station_budgets")),
             station_total_daily_usd=_env_or_float("STATION_TOTAL_DAILY_USD", _get("engine", "station_total_daily_usd"), 3.0),
+            scout_enabled=_env_or_bool("SCOUT_ENABLED", _get("engine", "scout_enabled"), True),
+            scout_max_findings=_env_or_int("SCOUT_MAX_FINDINGS", _get("engine", "scout_max_findings"), 3),
+            scout_exclude_repos=tuple(
+                _get("engine", "scout_exclude_repos") or ("infrastructure", "flashback-apple", "flashback-android", "lora-nodes", "esp-cryptoauthlib")
+            ),
+            scout_check_interval_seconds=_env_or_int("SCOUT_CHECK_INTERVAL_SECONDS", _get("engine", "scout_check_interval_seconds"), 300),
+            scout_checkout_dir=_env_or("SCOUT_CHECKOUT_DIR", _get("engine", "scout_checkout_dir"), ""),
             agent_log_dir=_env_or("AGENT_LOG_DIR", _get("engine", "agent_log_dir"), str(base / "logs" / "agents")),
             agent_dispatch_mode=_env_or("AGENT_DISPATCH_MODE", _get("engine", "agent_dispatch_mode"), "in_process"),
             engineer_dispatch=_env_or("ENGINEER_DISPATCH", _get("engine", "engineer_dispatch"), "in_process"),

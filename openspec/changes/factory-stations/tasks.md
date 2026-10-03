@@ -20,16 +20,25 @@ Phases are in build order. Each phase ships and runs live before the next one st
 
 ## 2. Scout
 
-- [ ] `scout_signals`: churn × size, `lint_command`/`type_command`, TODO density,
-      missing `test_command`, red non-required checks
-- [ ] `submit_scout_finding` tool: refuses no-oracle findings and 90-day duplicate fingerprints
-- [ ] `prompts/agents/scout.md`
-- [ ] Trello `Inbox` lane + `source:scout` label; `scout_autoqueue = true`, `scout_enabled` kill switch
-- [ ] Until phase 3 ships, the groomer's existing rubric is the gate. Scout cards land in
+- [x] `scout_signals`: churn × size, TODO density, missing `test_command` (`engine/scout_signals.py`)
+- [ ] `scout_signals`: `lint_command`/`type_command` output — deferred: needs each repo's
+      dependencies installed in the engine pod (a sandbox question); recorded in the
+      signals as `deferred`, never as a clean result
+- [ ] `scout_signals`: red non-required checks — deferred: GitHub checks API per repo
+- [x] `submit_scout_finding` tool: refuses no-oracle findings and 90-day duplicate fingerprints;
+      also no-evidence, process-only oracles, the per-run cap, and a wrong repo
+- [x] `prompts/agents/scout.md`
+- [x] Trello `Inbox` lane + `source:scout` label (resolved or created by name); `scout_enabled` kill switch.
+      `scout_autoqueue` is NOT a setting yet: autoqueue means weight-eligible scout cards go to
+      `On-deck`, and there is no weight. It arrives with phase 3
+- [x] Until phase 3 ships, the groomer's existing rubric is the gate. Scout cards land in
       `Inbox` and the groomer queues them on its normal pass; scout never writes to
-      `On-deck` itself before `submit_weight` exists
+      `On-deck` itself — `providers/trello_cards.py` refuses the queue lanes and the `minion` label
 - [ ] First live run on one repo; check the `outcome` metric after a week
-- [ ] Hardcoded first kind: `missing_test_oracle` across the allowlist
+      (`minion_scout_findings_total{kind,outcome}`) — needs migration
+      `20261003120000_add_scout_tables.sql` applied and a release
+- [x] Hardcoded first kind: `missing_test_oracle` — the tool refuses any other kind for a repo
+      with no `test_command` until that finding is filed
 
 ## 3. Weight
 

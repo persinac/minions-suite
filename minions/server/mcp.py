@@ -12,6 +12,7 @@ validation, circuit breaking, and anomaly detection.
 import json
 import logging
 import os
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -20,10 +21,20 @@ from fastmcp import FastMCP
 
 from ..config import Config
 from ..core.models import Agent, AgentRole, JobStatus, Message, Subtask, SubtaskStatus, Task, TaskStatus, _now
+from ..core.scout_contract import (
+    DEDUPE_DAYS,
+    INBOX_LANE,
+    MISSING_TEST_ORACLE,
+    SCOUT_LABEL,
+    ScoutFindingError,
+    normalise_fingerprint,
+    validate_finding,
+)
 from ..core.service_grounding import check_grounding, mismatch_remedy
 from ..core.spec_contract import SpecContractError, validate_refined_spec
 from ..core.state_transitions import ArbiterUnavailableError, InvalidTransitionError, PreconditionError
 from ..db import AbstractDatabase, AgentClaimConflictError
+from ..providers import trello_cards
 
 logger = logging.getLogger(__name__)
 
@@ -1670,6 +1681,102 @@ def create_server(db: AbstractDatabase, config: Config | None = None, tuplespace
     # =========================================================================
     # Trello Tools
     # =========================================================================
+
+    @mcp.tool()
+    async def submit_scout_finding(
+        job_id: str,
+        repo: str,
+        kind: str,
+        title: str,
+        evidence: list[str],
+        scope: str,
+        oracle: str,
+        fingerprint: str,
+    ) -> str:
+        """File one scout finding as a card in the Inbox lane (scout station only).
+
+        Refuses, and says what to fix, when the finding breaks the contract
+        (core/scout_contract.py), when this run has already filed its maximum,
+        when the repo has no test command and this is not the
+        missing_test_oracle finding, or when the same fingerprint was filed in
+        the last 90 days. Never files into On-deck and never applies the
+        `minion` label: queueing is the gate's decision, not the scout's.
+        """
+        cfg = config or Config.from_env()
+        clean_repo = (repo or "").strip()
+        stored_fp = normalise_fingerprint(clean_repo, fingerprint or "")
+
+        async def refuse(outcome: str, message: str, retryable: bool) -> str:
+            await db.record_scout_finding(job_id, clean_repo, kind or "", stored_fp, title or "", outcome)
+            await db.record_event(job_id, "scout_finding_refused", "scout", f"{outcome}: {message[:300]}")
+            return json.dumps({"error": message, "retryable": retryable})
+
+        tasks = await db.get_tasks(job_id)
+        scout_task = next((t for t in tasks if t.agent_role == AgentRole.SCOUT), None)
+        if scout_task is None:
+            return json.dumps({"error": f"Job {job_id} is not a scout job; only the scout files findings."})
+        if clean_repo != scout_task.service:
+            return await refuse(
+                "refused_wrong_repo",
+                f"This run scouts {scout_task.service!r}, not {clean_repo!r}. File findings for {scout_task.service!r} only.",
+                True,
+            )
+
+        try:
+            validate_finding(kind, title, evidence, scope, oracle, fingerprint)
+        except ScoutFindingError as e:
+            return await refuse("refused_invalid", e.remedy, True)
+
+        if await db.count_filed_scout_findings(job_id) >= cfg.scout_max_findings:
+            return await refuse(
+                "refused_cap", f"This run has filed its maximum of {cfg.scout_max_findings} finding(s). Stop here — do not file more.", False
+            )
+
+        since = (datetime.now(UTC) - timedelta(days=DEDUPE_DAYS)).isoformat()
+
+        # Tests first: a repo with no test command cannot check anything the line
+        # ships there, so its first finding must be the one that fixes that.
+        from ..project_registry import build_registry
+
+        service = None
+        for project in build_registry(cfg.projects_file).values():
+            service = (project.services or {}).get(clean_repo) or service
+        has_tests = bool(service and (service.test_command or "").strip())
+        if not has_tests and kind != MISSING_TEST_ORACLE and not await db.has_filed_scout_kind(clean_repo, MISSING_TEST_ORACLE, since):
+            return await refuse(
+                "refused_order",
+                f"{clean_repo} has no test command, so its first finding must be kind={MISSING_TEST_ORACLE!r}: which test "
+                "framework fits, the smallest first test, and the command that would become test_command. File that first.",
+                True,
+            )
+
+        already = await db.find_filed_scout_finding(stored_fp, since)
+        if already:
+            return await refuse(
+                "refused_duplicate",
+                f"This finding was already filed on {already['created_at'][:10]} ({already['card_url'] or 'no url'}). Pick a different finding.",
+                False,
+            )
+
+        evidence_lines = "\n".join(f"- `{e.strip()}`" for e in evidence)
+        description = (
+            f"**Repo:** `{clean_repo}`  **Kind:** `{kind}`\n\n"
+            f"## Evidence\n{evidence_lines}\n\n"
+            f"## Scope\n{scope.strip()}\n\n"
+            f"## How to prove it is done\n{oracle.strip()}\n\n"
+            f"---\n_Filed by the scout station (job `{job_id}`), fingerprint `{stored_fp}`. "
+            f"It lands in {INBOX_LANE}; the groomer decides whether it is queued._"
+        )
+        try:
+            card = await trello_cards.file_card(cfg, INBOX_LANE, title.strip(), description, [SCOUT_LABEL])
+        except Exception as e:
+            logger.error("submit_scout_finding: filing the card failed: %s", e)
+            return json.dumps({"error": f"Could not file the card: {e}", "retryable": True})
+
+        await db.record_scout_finding(job_id, clean_repo, kind, stored_fp, title.strip(), "filed", card["card_id"], card["url"])
+        await db.record_event(job_id, "scout_finding_filed", "scout", f"{kind} {stored_fp} {card['url']}")
+        filed = await db.count_filed_scout_findings(job_id)
+        return json.dumps({"filed": True, "card_url": card["url"], "findings_filed": filed, "findings_left": max(cfg.scout_max_findings - filed, 0)})
 
     @mcp.tool()
     async def create_trello_tech_debt(job_id: str, title: str, description: str) -> str:

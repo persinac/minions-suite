@@ -1,6 +1,7 @@
 """State machine and agent launch orchestration for jobs."""
 
 import asyncio
+import dataclasses
 import logging
 import time
 from typing import TYPE_CHECKING
@@ -15,12 +16,13 @@ from ..config import Config
 from ..connectors.nats_publisher import publish_agent_status, publish_system_event
 from ..core.models import Agent, AgentRole, Job, JobStatus, Task, TaskStatus, _now
 from ..core.state_transitions import InvalidTransitionError
+from ..core.stations import SCOUT, StationBudgetGuard
 from ..core.timeout_config import TimeoutConfig
 from ..db import AbstractDatabase
 from ..project_registry import ProjectConfig, ServiceTarget, build_registry
 from ..providers.github_app import ensure_token
 from ..repos import ensure_checkout
-from . import deploy, dev, review
+from . import deploy, dev, review, scout
 from .job_graph import advance_job_via_graph
 
 if TYPE_CHECKING:
@@ -54,6 +56,8 @@ class JobEngine:
         self._artifact_uploader = artifact_uploader
         self._mcp_server = mcp_server
         self._advance_errors: dict[str, int] = {}  # job_id -> consecutive error count
+        # Station budget decisions (core/stations.py). Holds only de-dup state.
+        self.station_guard = StationBudgetGuard()
         # Memory system (optional, gated on config.memory_enabled)
         self.memory_store = memory_store
         self.tuplespace = tuplespace
@@ -419,6 +423,11 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
         if self.config.andon_enabled:
             self._spawn(self._andon_loop(), name="andon")
 
+        # Stations schedule on their own task too: a station is never allowed
+        # to slow the line, and the poll loop is the line.
+        if self.config.scout_enabled:
+            self._spawn(self._station_loop(), name="stations")
+
         while self._running:
             try:
                 await self._poll()
@@ -458,6 +467,20 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
                 await andon.check_engine(self.db, self.config)
             except Exception:
                 logger.exception("Andon check failed; will retry")
+
+    async def _station_loop(self) -> None:
+        """Ask every scout_check_interval_seconds whether a station run is due.
+
+        Sleeps first, like the andon, so startup recovery settles before a new
+        run is scheduled. Scheduling only creates the job; the poll loop then
+        drives it like any other. Never lets an exception end the loop.
+        """
+        while self._running:
+            await asyncio.sleep(self.config.scout_check_interval_seconds)
+            try:
+                await scout.scout_tick(self)
+            except Exception:
+                logger.exception("Scout scheduling failed; will retry")
 
     def _spawn(self, coro, name: str) -> asyncio.Task:
         """Wrap an async coroutine as a background task with auto-cleanup."""
@@ -721,6 +744,17 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
 
     async def _advance(self, job: Job):
         """Advance a job to the next state if conditions are met."""
+        # Station jobs have their own two-state lifecycle and never touch the
+        # line's graph. Routed first, so the LangGraph path below (on in
+        # production) cannot mistake a scout job for a development job.
+        if job.job_type == SCOUT:
+            try:
+                await scout.advance_scout_job(self, job)
+            except InvalidTransitionError as e:
+                logger.warning("Rejected state transition for scout job %s: %s", job.id, e)
+                await self.db.record_event(job.id, "transition_rejected", "engine", str(e))
+            return
+
         if self.config.use_langgraph_engine:
             try:
                 await advance_job_via_graph(self, job)
@@ -769,8 +803,17 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
         service: ServiceTarget | None,
         context: str | None = None,
         knowledge_context: str | None = None,
+        cost_limit_usd: float | None = None,
     ):
-        """Run an agent in-process using the LiteLLM tool-use loop."""
+        """Run an agent in-process using the LiteLLM tool-use loop.
+
+        `cost_limit_usd` lowers the per-agent spend ceiling for this one run. A
+        station passes what is left of its daily budget, so a single run cannot
+        spend past the cap it was admitted under.
+        """
+        run_config = self.config
+        if cost_limit_usd is not None:
+            run_config = dataclasses.replace(self.config, agent_cost_limit_usd=cost_limit_usd)
         # Per-job spend ceiling. The per-agent limit bounds one agent; this is
         # what bounds a job that keeps launching them. Checked before the agent
         # starts, because once litellm is called the money is already spent.
@@ -840,7 +883,7 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
             task=task,
             agent_id=agent.id,
             working_dir=working_dir,
-            config=self.config,
+            config=run_config,
             project=project,
         )
 
@@ -849,7 +892,7 @@ This is a **dry-run smoke test**. You MUST follow these constraints:
             task=task,
             project=project,
             service=service,
-            config=self.config,
+            config=run_config,
             db=self.db,
             tool_executor=tool_executor,
             context=context,

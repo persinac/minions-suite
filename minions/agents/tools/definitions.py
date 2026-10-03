@@ -11,6 +11,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from ...core.scout_contract import KINDS as SCOUT_KINDS
 from ...providers.git import GitProviderProtocol, InlineComment
 from .args import coerce_line_number
 
@@ -593,6 +594,53 @@ _FINISHER_TOOL_NAMES = frozenset(
 FINISHER_TOOL_DEFINITIONS: list[dict[str, Any]] = [t for t in ENGINEER_TOOL_DEFINITIONS if t["function"]["name"] in _FINISHER_TOOL_NAMES]
 
 
+# Scout: read the code, file findings. Nothing else.
+#
+# The read tools are taken from ENGINEER_TOOL_DEFINITIONS by name, like the
+# finisher's, so a schema fix reaches both. Withheld on purpose: write_file,
+# run_command and every git/PR tool. The scout reads one repo and files cards;
+# it has no business changing anything, and McpToolExecutor refuses those tools
+# for this role even if a schema ever offered them (SCOUT_ALLOWED_TOOLS).
+_SCOUT_READ_TOOL_NAMES = frozenset({"read_file", "search_code"})
+
+SCOUT_ALLOWED_TOOLS = frozenset(_SCOUT_READ_TOOL_NAMES | {"submit_scout_finding"})
+
+SCOUT_TOOL_DEFINITIONS: list[dict[str, Any]] = [t for t in ENGINEER_TOOL_DEFINITIONS if t["function"]["name"] in _SCOUT_READ_TOOL_NAMES] + [
+    _fn(
+        "submit_scout_finding",
+        (
+            "File ONE finding as a card. Call it once per finding, at most the number your signals section allows. "
+            "It refuses — and says what to fix — a finding with no `path:line` evidence, no oracle, a process-only "
+            "oracle like 'tests pass', or a fingerprint already filed in the last 90 days."
+        ),
+        {
+            "repo": {"type": "string", "description": "The repo this run scouts, exactly as named in your task context (Service)."},
+            "kind": {
+                "type": "string",
+                # From the contract itself, so the schema cannot offer a kind the tool refuses.
+                "enum": sorted(SCOUT_KINDS),
+                "description": "What sort of finding this is.",
+            },
+            "title": {"type": "string", "description": "One line, under 120 characters: what is wrong and where."},
+            "evidence": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Places you actually read, as `path:line` or `path:start-end`, e.g. `src/app/routes.py:142`.",
+            },
+            "scope": {"type": "string", "description": "What ONE pull request would change to fix this, and what it would leave alone."},
+            "oracle": {
+                "type": "string",
+                "description": "How someone proves the fix worked: a command or check whose result would come out DIFFERENT once fixed.",
+            },
+            "fingerprint": {
+                "type": "string",
+                "description": "Stable lowercase id: `<kind>:<path>` or `<kind>:<path>:<symbol>`, e.g. `hot_spot:src/app/routes.py`.",
+            },
+        },
+    ),
+]
+
+
 # Database engineer tools (no subtask decomposition, no PR workflow)
 DB_ENGINEER_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     _fn(
@@ -758,6 +806,9 @@ def get_tools_for_role(role: str, memory_enabled: bool = False) -> list[dict[str
         tools = DEPLOY_TOOL_DEFINITIONS
     elif role == "finisher":
         tools = FINISHER_TOOL_DEFINITIONS
+    elif role == "scout":
+        # No memory tools either: a scout's only output is its findings.
+        return SCOUT_TOOL_DEFINITIONS
     else:
         tools = ENGINEER_TOOL_DEFINITIONS
 
