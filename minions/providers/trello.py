@@ -8,6 +8,7 @@ from typing import Any
 
 import httpx
 
+from .. import andon
 from ..config import Config
 from ..core.models import Job, JobStatus
 from ..db import AbstractDatabase
@@ -58,6 +59,9 @@ class TrelloPoller:
         # every cycle goes stale instead of looking busy. Seeded at construction
         # so the first cycle gets a full window before the watchdog judges it.
         self.last_poll_at = time.monotonic()
+        # Monotonic time of the last andon intake check; None = check on the
+        # first cycle. See _maybe_check_andon.
+        self._last_andon_check: float | None = None
 
     @property
     def poll_interval(self) -> int:
@@ -247,6 +251,7 @@ class TrelloPoller:
     async def _poll(self):
         """One poll cycle: check for new cards, monitor running jobs."""
         await self._monitor_jobs()
+        await self._maybe_check_andon()
 
         db_active = await self.db.get_active_jobs()
         active_count = max(len(self._active), len(db_active))
@@ -264,6 +269,32 @@ class TrelloPoller:
         slots = self.config.max_concurrent_jobs - active_count
         for card in cards[:slots]:
             await self._launch_job(card)
+
+    async def _maybe_check_andon(self):
+        """Raise line_idle_with_queue when cards wait and nothing has started.
+
+        Lives here, not in the engine, because this is the only process that can
+        see the queue -- and because it runs in a different pod, so it still
+        fires when the engine is the thing that died. It must sit BEFORE the
+        capacity and throttle returns below: "at capacity behind a stuck job" is
+        precisely the state it exists to report, and it is the state in which
+        _poll never reaches _get_cards.
+
+        On its own cadence (andon_check_interval_seconds), not every poll, so it
+        costs one extra Trello read per interval. Never raises: an alarm check
+        must not be what breaks intake.
+        """
+        if not self.config.andon_enabled:
+            return
+        now = time.monotonic()
+        if self._last_andon_check is not None and now - self._last_andon_check < self.config.andon_check_interval_seconds:
+            return
+        self._last_andon_check = now
+        try:
+            cards = await self._get_cards(self._list_ids[LIST_ONDECK], require_minion_label=self.config.trello_require_label)
+            await andon.check_intake(self.db, self.config, len(cards))
+        except Exception:
+            logger.warning("Andon intake check failed; will retry next interval", exc_info=True)
 
     async def _get_cards(self, list_id: str, require_minion_label: bool = False) -> list:
         """Fetch cards from a Trello list.

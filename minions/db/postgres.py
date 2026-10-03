@@ -968,6 +968,24 @@ class PostgresDatabase:
                 result.append(d)
             return result
 
+    async def get_events_by_type(self, event_types: list[str], since_iso: str) -> list[dict]:
+        """Events of the given types created at or after since_iso, oldest first, across all jobs."""
+        if not event_types:
+            return []
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                f"SELECT * FROM {JOB_SCHEMA}.events WHERE event_type = ANY(%s) AND created_at >= %s ORDER BY created_at",
+                (list(event_types), since_iso),
+            )
+            rows = await cur.fetchall()
+            result = []
+            for r in rows:
+                d = dict(r)
+                if isinstance(d.get("created_at"), datetime):
+                    d["created_at"] = d["created_at"].isoformat()
+                result.append(d)
+            return result
+
     async def record_tool_call(
         self,
         tool_name: str,

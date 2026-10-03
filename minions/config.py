@@ -378,6 +378,32 @@ class Config:
     # spent in the error. 0 disables the cap.
     orchestration_max_attempts: int = 3
 
+    # Andon: stop-the-line alarms DM'd to a human (minions/andon.py).
+    #
+    # The line was stopped 2026-09-26 -> 10-03 behind job a9f2b36e and the only
+    # thing that noticed wrote to journald. These are deliberately coarse: the
+    # cost of a late alarm is hours, the cost of a noisy one is that it gets
+    # muted and the next stop is silent again.
+    andon_enabled: bool = True
+    # How often each process checks. Independent of the poll tick on purpose:
+    # the engine-side check runs on its own task, so a poll loop that hangs is
+    # exactly the thing it can still see.
+    andon_check_interval_seconds: int = 300
+    # No recorded activity for this long = stalled. Herder claims are released
+    # at herder_work_timeout_seconds (45 min) and in-process role timeouts top
+    # out at 30 min, so a healthy job writes a task, agent or event row well
+    # inside 2h. Shorter would page on a slow but working revision round.
+    andon_stall_seconds: int = 7200
+    # Slack past herder_work_timeout_seconds before a still-"running" herder
+    # claim is called stale. The engine's guard should release it first; this
+    # only fires if that guard did not.
+    andon_claim_grace_seconds: int = 900
+    # Cards queued but no job created for trello_min_job_interval + this. The
+    # throttle (4h in prod) is by design, so the clock starts after it.
+    andon_idle_seconds: int = 7200
+    # Re-send a still-raised alarm at most this often.
+    andon_repeat_seconds: int = 21600
+
     # K8s dispatch settings
     k8s_dispatch: bool = False
     k8s_namespace: str = "minion-suite"
@@ -571,6 +597,12 @@ class Config:
             herder_claim_timeout_seconds=_env_or_int("HERDER_CLAIM_TIMEOUT_SECONDS", _get("engine", "herder_claim_timeout_seconds"), 900),
             herder_work_timeout_seconds=_env_or_int("HERDER_WORK_TIMEOUT_SECONDS", _get("engine", "herder_work_timeout_seconds"), 2700),
             orchestration_max_attempts=_env_or_int("ORCHESTRATION_MAX_ATTEMPTS", _get("engine", "orchestration_max_attempts"), 3),
+            andon_enabled=_env_or_bool("ANDON_ENABLED", _get("engine", "andon_enabled"), True),
+            andon_check_interval_seconds=_env_or_int("ANDON_CHECK_INTERVAL_SECONDS", _get("engine", "andon_check_interval_seconds"), 300),
+            andon_stall_seconds=_env_or_int("ANDON_STALL_SECONDS", _get("engine", "andon_stall_seconds"), 7200),
+            andon_claim_grace_seconds=_env_or_int("ANDON_CLAIM_GRACE_SECONDS", _get("engine", "andon_claim_grace_seconds"), 900),
+            andon_idle_seconds=_env_or_int("ANDON_IDLE_SECONDS", _get("engine", "andon_idle_seconds"), 7200),
+            andon_repeat_seconds=_env_or_int("ANDON_REPEAT_SECONDS", _get("engine", "andon_repeat_seconds"), 21600),
             # -- Database --
             postgres_url=_build_postgres_url(),  # secret — always from env
             postgres_pool_min=_env_or_int("PG_POOL_MIN", _get("database", "pool_min"), 2),

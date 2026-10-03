@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
+from . import andon
 from .config import Config
 
 logger = logging.getLogger(__name__)
@@ -1531,6 +1532,7 @@ async def _render_metrics() -> str:
     try:
         eff = await db.get_model_effectiveness(days=config.metrics_window_days, turn_ceiling=config.agent_max_turns)
         out = await db.get_outcome_breakdown(days=config.metrics_window_days)
+        andon_raised = await andon.load_raised(db, config, datetime.now(UTC))
     finally:
         await db.close()
 
@@ -1600,6 +1602,19 @@ async def _render_metrics() -> str:
         "minion_review_verdicts",
         "Review verdicts recorded on tasks",
         [({"verdict": "approve"}, q["verdict_approve"]), ({"verdict": "request_changes"}, q["verdict_request_changes"])],
+    )
+    # Alert on this one too: > 0 means the line is stopped and a DM went out.
+    # Every condition is emitted, zero included, so an alert rule can tell
+    # "nothing raised" from "metric missing".
+    raised_by_condition = {condition: 0 for condition in andon.CONDITIONS}
+    for key in andon_raised:
+        condition = key.split(":", 1)[0]
+        if condition in raised_by_condition:
+            raised_by_condition[condition] += 1
+    lines += _metric_lines(
+        "minion_andon_active",
+        "Stop-the-line alarms currently raised, by condition (see minions/andon.py)",
+        [({"condition": condition}, count) for condition, count in raised_by_condition.items()],
     )
     lines += _metric_lines(
         "minion_metrics_window_days",

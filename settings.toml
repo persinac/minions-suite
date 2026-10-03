@@ -42,6 +42,16 @@ max_revisions = 3
 # fault that also kills at turn 0 cannot requeue forever.
 max_infra_retries = 3
 
+# Andon: stop-the-line alarms DM'd to a human (minions/andon.py). Defaults and
+# their reasoning live in config.py. Every key here is repeated in
+# [production.engine], which REPLACES this table rather than merging into it.
+andon_enabled = true
+andon_check_interval_seconds = 300
+andon_stall_seconds = 7200
+andon_claim_grace_seconds = 900
+andon_idle_seconds = 7200
+andon_repeat_seconds = 21600
+
 # --- Spend ceilings (USD; 0 disables) ---------------------------------------
 # Nothing bounded cost before these existed. The agent loop stopped on turns or
 # wall-clock only, with max_turns hardcoded at 100 — one backend_engineer run
@@ -255,6 +265,14 @@ engineer_dispatch = "external"
 # lost the same way; see the release notes for 0.8.71.
 classifier_backend = "shadow"
 classifier_min_confidence = 0.5
+
+# Andon — same rule: repeated here or prod silently uses the dataclass defaults.
+andon_enabled = true
+andon_check_interval_seconds = 300
+andon_stall_seconds = 7200
+andon_claim_grace_seconds = 900
+andon_idle_seconds = 7200
+andon_repeat_seconds = 21600
 
 [production.nats]
 enabled = true
