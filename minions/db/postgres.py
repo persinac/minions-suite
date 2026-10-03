@@ -32,6 +32,7 @@ from ..core.state_transitions import (
     validate_task_preconditions,
     validate_task_transition,
 )
+from ..core.stations import STATIONS
 from .abstract import AgentClaimConflictError
 
 logger = logging.getLogger(__name__)
@@ -444,6 +445,12 @@ class PostgresDatabase:
         """
         where = ["j.created_at >= NOW() - MAKE_INTERVAL(days => %s)"]
         params: list = [days]
+        # Station jobs (scout, ...) are not line output. Counting a scout run
+        # that ended DONE as a "success" would make the line's cost per success
+        # fall every time a scout ran. Station spend is reported on its own, as
+        # minion_station_spend_usd.
+        where.append("j.job_type <> ALL(%s)")
+        params.append(sorted(STATIONS))
         if project:
             where.append(f"EXISTS (SELECT 1 FROM {JOB_SCHEMA}.tasks t WHERE t.job_id = j.id AND t.service = %s)")
             params.append(project)
@@ -538,6 +545,59 @@ class PostgresDatabase:
             )
             row = await cur.fetchone()
             return int(row["n"]) if row else 0
+
+    async def get_station_usage(self, stations: list[str], since_iso: str) -> dict[str, dict]:
+        """Runs and spend per station since `since_iso`. Backs the station budget.
+
+        A run is a station JOB, not an agent row: a scout that found nothing
+        worth a model call still ran, and still used one of the day's runs. The
+        spend is every agent on those jobs. Stations with no runs are present as
+        zeros, so a caller can index any station without a default.
+        """
+        usage = {s: {"runs": 0, "spend_usd": 0.0} for s in stations}
+        if not stations:
+            return usage
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                f"""SELECT j.job_type AS station,
+                           COUNT(DISTINCT j.id) AS runs,
+                           COALESCE(SUM(a.cost_usd::numeric), 0) AS spend_usd
+                    FROM {JOB_SCHEMA}.jobs j
+                    LEFT JOIN {JOB_SCHEMA}.agents a ON a.job_id = j.id
+                    WHERE j.job_type = ANY(%s) AND j.created_at >= %s
+                    GROUP BY j.job_type""",
+                (list(stations), since_iso),
+            )
+            for r in await cur.fetchall():
+                usage[r["station"]] = {"runs": int(r["runs"]), "spend_usd": round(float(r["spend_usd"]), 4)}
+        return usage
+
+    async def get_station_outcomes(self, stations: list[str], days: int = 30) -> list[dict]:
+        """Station runs and spend by station and outcome, over the last `days`.
+
+        Outcome is the job status, folded to done / failed / running -- a
+        station job has no delivered/cancelled distinction, because nobody kills
+        one after it has shipped anything.
+        """
+        if not stations:
+            return []
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                f"""SELECT j.job_type AS station,
+                           CASE WHEN j.status IN ('done', 'failed') THEN j.status ELSE 'running' END AS outcome,
+                           COUNT(DISTINCT j.id) AS runs,
+                           COALESCE(SUM(a.cost_usd::numeric), 0) AS spend_usd
+                    FROM {JOB_SCHEMA}.jobs j
+                    LEFT JOIN {JOB_SCHEMA}.agents a ON a.job_id = j.id
+                    WHERE j.job_type = ANY(%s) AND j.created_at >= NOW() - MAKE_INTERVAL(days => %s)
+                    GROUP BY 1, 2
+                    ORDER BY 1, 2""",
+                (list(stations), days),
+            )
+            return [
+                {"station": r["station"], "outcome": r["outcome"], "runs": int(r["runs"]), "spend_usd": round(float(r["spend_usd"]), 4)}
+                for r in await cur.fetchall()
+            ]
 
     async def update_job_difficulty(self, job_id: str, difficulty: str | None) -> None:
         """Record the classifier's verdict. Drives model tier selection for every agent."""

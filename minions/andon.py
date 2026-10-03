@@ -42,6 +42,7 @@ from datetime import UTC, datetime, timedelta
 
 from .config import Config
 from .core.models import Agent, Job, Task
+from .core.stations import line_jobs
 from .db import AbstractDatabase
 from .notify import notify
 
@@ -213,7 +214,9 @@ async def find_idle_line(db: AbstractDatabase, config: Config, now: datetime, wa
     since = (now - timedelta(seconds=window)).isoformat()
     if await db.count_jobs_since(since) > 0:
         return []
-    active = await db.get_active_jobs()
+    # Line jobs only: a station run (core/stations.py) never holds an intake
+    # slot, so naming one here would send the reader to the wrong job.
+    active = line_jobs(await db.get_active_jobs())
     if active:
         holders = ", ".join(f"`{j.id}` (*{j.status}*)" for j in active[:3])
         reason = f"• Active job(s) holding the slot: {holders}."

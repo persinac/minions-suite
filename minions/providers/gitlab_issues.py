@@ -11,6 +11,7 @@ import httpx
 
 from ..config import Config
 from ..core.models import Job, JobStatus
+from ..core.stations import line_jobs
 from ..db import AbstractDatabase
 from ..project_registry import ProjectConfig
 
@@ -97,7 +98,8 @@ class GitLabIssuesPoller:
         """One poll cycle: monitor running jobs, then check for new issues."""
         await self._monitor_jobs()
 
-        db_active = await self.db.get_active_jobs()
+        # Line jobs only: a station run (scout, ...) must not occupy a line slot.
+        db_active = line_jobs(await self.db.get_active_jobs())
         active_count = max(len(self._active), len(db_active))
 
         if active_count >= self.config.max_concurrent_jobs:

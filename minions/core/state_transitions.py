@@ -67,7 +67,7 @@ class PreconditionError(Exception):
 JOB_TRANSITIONS: dict[str, set[str]] = {
     "spec_received": {"spec_ready", "done", "failed"},
     "spec_ready": {"tasks_created", "failed"},
-    "tasks_created": {"dev_in_progress", "review_in_progress", "no_work_needed", "failed"},
+    "tasks_created": {"dev_in_progress", "review_in_progress", "scouting", "no_work_needed", "failed"},
     # no_work_needed is reachable from dev_in_progress too: "there is nothing to
     # do here" is a conclusion an engineer reaches by READING the code, which
     # happens after dispatch, not before it. Allowing it only from
@@ -88,6 +88,9 @@ JOB_TRANSITIONS: dict[str, set[str]] = {
     # `review_in_progress -> tasks_created`.
     "pr_open": {"review_in_progress", "failed"},
     "review_in_progress": {"tasks_created", "merged", "done", "failed"},
+    # Station jobs (core/stations.py): one agent, no PR, no merge. Created at
+    # tasks_created like a review job, so they enter by the same door.
+    "scouting": {"done", "failed"},
     "merged": {"deploying", "deployed", "failed"},
     "deploying": {"deployed", "failed"},
     "deployed": {"done", "failed"},

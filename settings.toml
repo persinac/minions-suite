@@ -145,6 +145,27 @@ agent_timeout = 600
 agent_log_dir = "logs/agents"
 agent_dispatch_mode = "in_process"
 
+# Stations (minions/core/stations.py, openspec/changes/factory-stations/) — the
+# agents that work around the line. All stations together may spend at most this
+# per rolling 24h. Agreed at $3 on 2026-10-03.
+#
+# ⚠️ The station keys below are REPEATED in [production.engine]. That table
+# replaces this one in production rather than merging into it (see #102), so a
+# station configured only here has no model pin and a zero budget in prod.
+station_total_daily_usd = 3.0
+
+# Stations run on a pinned model, not the difficulty tier: a station has no
+# ticket, so there is no difficulty to route on. Only station roles are read
+# from this table — engineers keep difficulty routing.
+[default.engine.role_models]
+scout = "claude-sonnet-5"
+
+# Per-station caps, checked before launch. A station absent from this table has
+# a ZERO budget and never runs.
+[default.engine.station_budgets.scout]
+daily_usd = 2.0
+max_runs_per_day = 3
+
 [default.database]
 pool_min = 2
 # The connection budget must fit the server: max_connections is 25 on the
@@ -273,6 +294,17 @@ andon_stall_seconds = 7200
 andon_claim_grace_seconds = 900
 andon_idle_seconds = 7200
 andon_repeat_seconds = 21600
+
+# Repeated from [default.engine] for the same reason — this table is the whole
+# of `engine` in production. Keep the two in step.
+station_total_daily_usd = 3.0
+
+[production.engine.role_models]
+scout = "claude-sonnet-5"
+
+[production.engine.station_budgets.scout]
+daily_usd = 2.0
+max_runs_per_day = 3
 
 [production.nats]
 enabled = true

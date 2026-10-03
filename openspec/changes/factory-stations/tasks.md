@@ -4,16 +4,19 @@ Phases are in build order. Each phase ships and runs live before the next one st
 
 ## 0. Pull the cord (separate PRs, in flight 2026-10-03)
 
-- [ ] Abandoned-herder guard reaches the `changes_requested` branch (job `a9f2b36e`)
-- [ ] Andon: `stalled_job`, `stale_claim`, `line_idle_with_queue` → Slack DM
+- [x] Abandoned-herder guard reaches the `changes_requested` branch (job `a9f2b36e`) — #107
+- [x] Andon: `stalled_job`, `stale_claim`, `line_idle_with_queue` → Slack DM — #109
 
 ## 1. Station rails
 
-- [ ] `[engine.role_models]` table, declared in both `[default.engine]` and
+- [x] `[engine.role_models]` table, declared in both `[default.engine]` and
       `[production.engine]`; verified by running the loader, not by grepping
-- [ ] Station budget check before launch, plus a `station_budget_exhausted` event
-- [ ] `scout` and `verify` job types with transition-map entries; invariant tests pass
-- [ ] `/metrics`: `minion_station_runs_total{station,outcome}`, `minion_station_spend_usd{station}`
+- [x] Station budget check before launch, plus a `station_budget_exhausted` event
+- [x] `scout` job type (`scouting` status) with transition-map entries; invariant tests pass.
+      `verify` is deferred to phase 5: a status with no producer is dead vocabulary
+- [x] `/metrics`: `minion_station_runs_total{station,outcome}`, `minion_station_spend_usd{station}`
+- [x] Stations stay off the line: excluded from intake capacity, cost-per-success, the
+      stuck-task rule, and the andon slot-holder message
 
 ## 2. Scout
 

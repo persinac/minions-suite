@@ -222,6 +222,20 @@ class TestIdleLine:
         assert [a.subject for a in alarms] == ["intake"]
         assert sample_job.id in alarms[0].message, "name the job holding the slot"
 
+    async def test_a_running_station_is_not_named_as_the_slot_holder(self, db):
+        """A scout run never holds an intake slot (core/stations.py), so the
+        alarm must not send the reader to it."""
+        import minions.db.postgres as pg
+
+        scout = await db.create_job("scout run")
+        async with db._pool.connection() as conn:
+            await conn.execute(f"UPDATE {pg.JOB_SCHEMA}.jobs SET job_type = 'scout' WHERE id = %s", (scout.id,))
+
+        alarms = await andon.find_idle_line(db, _config(), datetime.now(UTC), waiting_cards=3)
+
+        assert scout.id not in alarms[0].message
+        assert "No job is active" in alarms[0].message
+
 
 # --------------------------------------------------------------------------
 # Delivery and dedupe

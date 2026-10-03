@@ -79,6 +79,10 @@ class AbstractDatabase(Protocol):
 
     async def count_jobs_since(self, since_iso: str) -> int: ...
 
+    async def get_station_usage(self, stations: list[str], since_iso: str) -> dict[str, dict]: ...
+
+    async def get_station_outcomes(self, stations: list[str], days: int = 30) -> list[dict]: ...
+
     async def update_job_status(
         self,
         job_id: str,
