@@ -28,7 +28,8 @@ class TestEnums:
         assert set(GitProvider) == {"gitlab", "github", "bitbucket"}
 
     def test_job_status_count(self):
-        assert len(JobStatus) == 12
+        # 13 since `scouting`, the first station status (core/stations.py).
+        assert len(JobStatus) == 13
 
     def test_job_status_has_terminal_states(self):
         assert "done" in JobStatus.__members__.values()
