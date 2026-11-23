@@ -1,3 +1,8 @@
+> [!IMPORTANT]
+> **This repository is archived (2026-11-23).** minions-suite now lives in the
+> [agents-nexus](https://github.com/persinac/agents-nexus) monorepo under
+> `minions/`, with its full git history. Open issues and PRs there.
+
 # Minion Suite
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
